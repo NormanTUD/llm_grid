@@ -1,6 +1,6 @@
 # 🔬 Metric Space Explorer — Transformer Residual Streams
 
-![Screenshot](screen0.jpg)
+![Screenshot](screen0.png)
 
 ## What is this?
 
