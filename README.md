@@ -39,7 +39,7 @@ where`v(p)`is an RBF-interpolated vector field derived from the per-token residu
 **None** — the script bootstraps itself. Just run it with any Python 3.7+:
 
 ```bash
-python3 test.py
+python3 app.py
 ```
 
 On first run it will:
@@ -52,13 +52,13 @@ On first run it will:
 
 ```bash
 # Default (gpt2)
-python3 test.py
+python3 app.py
 
 # Choose model
-python3 test.py --model gpt2-medium
+python3 app.py --model gpt2-medium
 
 # Custom port
-python3 test.py --port 9000
+python3 app.py --port 9000
 
 # Available models: gpt2, gpt2-medium, gpt2-large
 ```
@@ -78,7 +78,7 @@ Then enter any text in the browser and click **Run**.
 
 ## Architecture
 
-Everything is a single`test.py`file:
+Everything is a single`app.py`file:
 
 - **Python backend**: Loads GPT-2, extracts hidden states & residual deltas, serves HTTP
 - **Browser frontend**: Pure HTML5 Canvas + vanilla JS, all computation client-side
