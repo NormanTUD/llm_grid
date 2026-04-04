@@ -4,7 +4,7 @@
 
 ## What is this?
 
-A self-contained visualization tool that reveals **how GPT-2 deforms the metric structure of its hidden representation space** layer by layer. Instead of tracking where tokens "move," it shows how the **fabric of space itself** stretches and compresses around fixed token landmarks — like watching spacetime warp around massive objects.
+A self-contained visualization tool that reveals **how LLMs deform the metric structure of its hidden representation space** layer by layer. Instead of tracking where tokens "move," it shows how the **fabric of space itself** stretches and compresses around fixed token landmarks — like watching spacetime warp around massive objects.
 
 Each transformer layer applies a residual update`h_{l+1} = h_l + Δ_l`. This tool interprets each layer as a **diffeomorphism** of the representation space:
 
