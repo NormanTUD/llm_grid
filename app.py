@@ -2,7 +2,13 @@
 """
 Metric Space Explorer für Transformer Residual Streams
 =======================================================
-Usage: python3 test.py [--model gpt2] [--port 8765]
+Usage: python3 app.py [--model gpt2] [--port 8765]
+
+Supported models: gpt2, gpt2-medium, gpt2-large, gpt2-xl,
+                  bert-base-uncased, bert-large-uncased,
+                  distilbert-base-uncased, roberta-base,
+                  EleutherAI/pythia-160m, EleutherAI/pythia-410m,
+                  facebook/opt-125m, facebook/opt-350m
 """
 
 import os, sys, subprocess, argparse
@@ -35,29 +41,69 @@ bootstrap()
 import json, threading, webbrowser, time
 import numpy as np
 import torch
-from transformers import GPT2Tokenizer, GPT2Model
+from transformers import AutoTokenizer, AutoModel, AutoConfig
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
 MODEL_NAME = "gpt2"
 TOKENIZER = None
 MODEL = None
+MODEL_CONFIG = None
+
+# ---------- Model registry ----------
+# Each entry: { "type": "causal" | "masked", "n_layer_key": ..., "n_embd_key": ... }
+# We auto-detect most of this from config, but keep a type hint for architecture.
+
+def detect_model_type(config):
+    """Detect whether a model is causal (decoder) or masked (encoder)."""
+    arch = getattr(config, "architectures", []) or []
+    arch_str = " ".join(arch).lower()
+    if any(k in arch_str for k in ["causal", "gpt", "opt", "pythia", "neox"]):
+        return "causal"
+    if any(k in arch_str for k in ["masked", "bert", "roberta", "electra"]):
+        return "masked"
+    # Fallback: check if config has is_decoder
+    if getattr(config, "is_decoder", False):
+        return "causal"
+    return "causal"  # default
+
+def get_n_layers(config):
+    for attr in ["n_layer", "num_hidden_layers", "num_layers"]:
+        v = getattr(config, attr, None)
+        if v is not None:
+            return v
+    return 12
+
+def get_hidden_dim(config):
+    for attr in ["n_embd", "hidden_size", "d_model"]:
+        v = getattr(config, attr, None)
+        if v is not None:
+            return v
+    return 768
 
 def load_model(model_name):
-    global TOKENIZER, MODEL, MODEL_NAME
+    global TOKENIZER, MODEL, MODEL_NAME, MODEL_CONFIG
     MODEL_NAME = model_name
     print(f"[Model] Loading {model_name}...")
-    TOKENIZER = GPT2Tokenizer.from_pretrained(model_name)
-    MODEL = GPT2Model.from_pretrained(model_name, output_hidden_states=True)
+    TOKENIZER = AutoTokenizer.from_pretrained(model_name)
+    MODEL = AutoModel.from_pretrained(model_name, output_hidden_states=True)
     MODEL.eval()
-    print(f"[Model] Loaded. Layers={MODEL.config.n_layer}, dim={MODEL.config.n_embd}")
+    MODEL_CONFIG = MODEL.config
+    n_layers = get_n_layers(MODEL_CONFIG)
+    hidden_dim = get_hidden_dim(MODEL_CONFIG)
+    mtype = detect_model_type(MODEL_CONFIG)
+    print(f"[Model] Loaded. Type={mtype}, Layers={n_layers}, dim={hidden_dim}")
 
 
-def process_text(text):
-    global TOKENIZER, MODEL
+def process_text(text, model_name=None):
+    global TOKENIZER, MODEL, MODEL_NAME, MODEL_CONFIG
 
-    hidden_dim = MODEL.config.n_embd
-    n_layers = MODEL.config.n_layer
+    # Switch model if requested
+    if model_name and model_name != MODEL_NAME:
+        load_model(model_name)
+
+    hidden_dim = get_hidden_dim(MODEL_CONFIG)
+    n_layers = get_n_layers(MODEL_CONFIG)
 
     # Tokenize real input
     inputs = TOKENIZER(text, return_tensors="pt")
@@ -126,9 +172,29 @@ def process_text(text):
     n_synth = n_total - n_real
     print(f"[Model] {n_total} points ({n_real} real + {n_synth} probes)")
 
+    # ----- Compute neighbor info for real tokens -----
+    # For each real token, find K nearest neighbors among ALL tokens (real + probe)
+    K_NEIGHBORS = 10
+    real_embeddings = np.stack(all_layer0[:n_real], axis=0)  # [n_real, dim]
+    all_embeddings = np.stack(all_layer0, axis=0)  # [n_total, dim]
+
+    neighbors = []  # list of lists: for each real token, list of {idx, label, dist}
+    for ri in range(n_real):
+        dists = np.linalg.norm(all_embeddings - real_embeddings[ri], axis=1)
+        # Exclude self
+        dists[ri] = np.inf
+        nearest_idx = np.argsort(dists)[:K_NEIGHBORS]
+        nlist = []
+        for ni in nearest_idx:
+            nlist.append({
+                "idx": int(ni),
+                "label": all_labels[ni],
+                "dist": float(dists[ni]),
+                "is_real": all_is_real[ni]
+            })
+        neighbors.append(nlist)
+
     # Now create additional synthetic probes at grid intersections
-    # in the PCA space of the embeddings, using nearest-neighbor
-    # interpolation of the existing deltas
     print("[Model] Creating grid intersection probes...")
     layer0_mat = np.stack(all_layer0, axis=0)
     centroid = np.mean(layer0_mat, axis=0)
@@ -154,25 +220,18 @@ def process_text(text):
     g1 = np.linspace(mn1 - pad_frac*r1, mx1 + pad_frac*r1, n_side)
     g2 = np.linspace(mn2 - pad_frac*r2, mx2 + pad_frac*r2, n_side)
 
-    # For each grid point, find nearest existing point and use its deltas
-    # but position it at the grid intersection in embedding space
     grid_layer0 = []
     grid_deltas = []
-    existing_proj = np.stack([proj1, proj2], axis=1)  # [n_total, 2]
+    existing_proj = np.stack([proj1, proj2], axis=1)
 
     for v1 in g1:
         for v2 in g2:
-            # Position in full embedding space
             emb = centroid + v1 * pc1 + v2 * pc2
             grid_layer0.append(emb)
-
-            # Find nearest existing point for delta interpolation
             dists = (existing_proj[:, 0] - v1)**2 + (existing_proj[:, 1] - v2)**2
-            # RBF-weighted average of K nearest deltas
             sigma_nn = r1 * 0.2
             weights = np.exp(-dists / (2 * sigma_nn**2))
             weights /= weights.sum() + 1e-15
-
             point_deltas = []
             for l in range(n_layers):
                 d = np.zeros(hidden_dim)
@@ -184,7 +243,6 @@ def process_text(text):
     n_grid = len(grid_layer0)
     print(f"[Model] Added {n_grid} grid intersection probes")
 
-    # Combine everything
     for gi in range(n_grid):
         all_layer0.append(grid_layer0[gi])
         all_deltas_per_point.append(grid_deltas[gi])
@@ -216,6 +274,7 @@ def process_text(text):
         "deltas": deltas,
         "model_name": MODEL_NAME,
         "text": text,
+        "neighbors": neighbors,  # NEW: neighbor info for each real token
     }
 
     json_str = json.dumps(data)
@@ -228,7 +287,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#1a1a2e;color:#e0e0e0;font-family:'Segoe UI',sans-serif;display:flex;height:100vh;overflow:hidden}
-#side{width:350px;min-width:350px;background:#16213e;padding:12px;overflow-y:auto;border-right:2px solid #0f3460;display:flex;flex-direction:column;gap:6px}
+#side{width:370px;min-width:370px;background:#16213e;padding:12px;overflow-y:auto;border-right:2px solid #0f3460;display:flex;flex-direction:column;gap:6px}
 #side h2{color:#e94560;font-size:14px;margin-bottom:4px}
 #side h3{color:#53a8b6;font-size:11px;margin-top:5px;border-bottom:1px solid #0f3460;padding-bottom:2px}
 .cr{display:flex;align-items:center;gap:5px;font-size:11px}
@@ -245,6 +304,9 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:'Segoe UI',sans-serif;display:
 #btn-run{background:#e94560;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:bold}
 #btn-run:hover{background:#c73e54}
 #btn-run:disabled{background:#555;cursor:wait}
+#model-area{display:flex;gap:4px;margin-bottom:4px;align-items:center}
+#model-area label{font-size:11px;color:#a0a0c0;min-width:50px}
+#sel-model{flex:1;background:#0d1117;color:#e0e0e0;border:1px solid #0f3460;padding:4px;font-size:11px;border-radius:4px}
 #main{flex:1;display:flex;align-items:center;justify-content:center;position:relative}
 canvas{background:#0d1117}
 #status{position:absolute;bottom:8px;left:50%;transform:translateX(-50%);background:rgba(15,52,96,.9);padding:4px 12px;border-radius:12px;font-size:10px;color:#53a8b6}
@@ -252,9 +314,36 @@ canvas{background:#0d1117}
 .li{display:flex;align-items:center;gap:4px;margin:2px 0}
 .lc{width:16px;height:7px;border-radius:2px}
 #keys{font-size:8px;color:#555;margin-top:4px;line-height:1.3}
+#neighbor-panel{background:#0f3460;padding:6px;border-radius:4px;font-size:10px;line-height:1.5;max-height:200px;overflow-y:auto;display:none}
+#neighbor-panel h4{color:#e94560;font-size:11px;margin-bottom:4px}
+.nb-item{color:#a0a0c0;cursor:pointer;padding:1px 4px;border-radius:2px}
+.nb-item:hover{background:#1a1a2e;color:#fff}
+.nb-item.is-real{color:#53a8b6;font-weight:bold}
+.nb-item .nb-dist{color:#666;font-size:9px;margin-left:4px}
+#selected-tokens{display:flex;flex-wrap:wrap;gap:3px;margin-top:4px;min-height:20px}
+.sel-tok{background:#e94560;color:#fff;padding:2px 8px;border-radius:10px;font-size:10px;cursor:pointer;display:flex;align-items:center;gap:3px}
+.sel-tok:hover{background:#c73e54}
+.sel-tok .x{font-weight:bold;margin-left:2px}
 </style></head><body>
 <div id="side">
 <h2>Metric Space Explorer</h2>
+<div id="model-area">
+<label>Model:</label>
+<select id="sel-model">
+<option value="gpt2">GPT-2 (124M)</option>
+<option value="gpt2-medium">GPT-2 Medium (355M)</option>
+<option value="gpt2-large">GPT-2 Large (774M)</option>
+<option value="gpt2-xl">GPT-2 XL (1.5B)</option>
+<option value="distilbert-base-uncased">DistilBERT</option>
+<option value="bert-base-uncased">BERT Base</option>
+<option value="bert-large-uncased">BERT Large</option>
+<option value="roberta-base">RoBERTa Base</option>
+<option value="EleutherAI/pythia-160m">Pythia 160M</option>
+<option value="EleutherAI/pythia-410m">Pythia 410M</option>
+<option value="facebook/opt-125m">OPT 125M</option>
+<option value="facebook/opt-350m">OPT 350M</option>
+</select>
+</div>
 <div id="text-area">
 <input id="txt-in" type="text" placeholder="Enter text..." value="The quick brown fox jumps over the lazy dog">
 <button id="btn-run" onclick="runText()">Run</button>
@@ -264,6 +353,12 @@ Model: <span id="i-mod">-</span> |
 Points: <span id="i-pts">-</span> (<span id="i-real">-</span> real + <span id="i-syn">-</span> probes)<br>
 Layers: <span id="i-lay">-</span> | Dim: <span id="i-dim">-</span> |
 Tokens: <span id="i-tok">-</span>
+</div>
+<h3>Selected Tokens (click canvas to select)</h3>
+<div id="selected-tokens"><span style="color:#555;font-size:10px">Click on a token dot to select it</span></div>
+<div id="neighbor-panel">
+<h4 id="nb-title">Neighbors</h4>
+<div id="nb-list"></div>
 </div>
 <h3>Layer &amp; Deformation</h3>
 <div class="cr"><label>Layer:</label><input type="range" id="sl-layer" min="0" max="11" value="0" step="1"><span class="v" id="v-layer">0</span></div>
@@ -279,6 +374,10 @@ Tokens: <span id="i-tok">-</span>
 <h3>Dimensions</h3>
 <div class="cr"><label>Dim X:</label><input type="range" id="sl-dx" min="0" max="767" value="0" step="1"><span class="v" id="v-dx">0</span></div>
 <div class="cr"><label>Dim Y:</label><input type="range" id="sl-dy" min="0" max="767" value="1" step="1"><span class="v" id="v-dy">1</span></div>
+<h3>Neighbor Tracing</h3>
+<div class="cr"><label>K Neighbors:</label><input type="range" id="sl-kn" min="1" max="20" value="5" step="1"><span class="v" id="v-kn">5</span></div>
+<div class="cb"><input type="checkbox" id="cb-nb" checked><label for="cb-nb">Show Neighbor Lines</label></div>
+<div class="cb"><input type="checkbox" id="cb-nblabel" checked><label for="cb-nblabel">Show Neighbor Labels</label></div>
 <h3>RBF &amp; Grid</h3>
 <div class="cr"><label>Bandwidth σ:</label><input type="range" id="sl-sig" min="0.01" max="20" value="1.0" step="0.01"><span class="v" id="v-sig">1.00</span></div>
 <div class="cr"><label>Grid Res:</label><input type="range" id="sl-gr" min="10" max="80" value="30" step="1"><span class="v" id="v-gr">30</span></div>
@@ -290,7 +389,7 @@ Tokens: <span id="i-tok">-</span>
 <div class="cb"><input type="checkbox" id="cb-syn"><label for="cb-syn">Probe Points</label></div>
 <div class="cb"><input type="checkbox" id="cb-sc" checked><label for="cb-sc">Strain Color</label></div>
 <div class="cb"><input type="checkbox" id="cb-vec"><label for="cb-vec">Vector Arrows</label></div>
-<div id="keys"><b>Keys:</b> ←→ Layer | ↑↓ t | A/Z Amp | Space Auto | R Reset | D Dims</div>
+<div id="keys"><b>Keys:</b> ←→ Layer | ↑↓ t | A/Z Amp | Space Auto | R Reset | D Dims | Click token to trace neighbors</div>
 </div>
 <div id="main">
 <canvas id="cv"></canvas>
@@ -299,23 +398,27 @@ Tokens: <span id="i-tok">-</span>
 <div class="li"><div class="lc" style="background:#0077b6"></div>Contraction</div>
 <div class="li"><div class="lc" style="background:#666"></div>Isometry</div>
 <div class="li"><div class="lc" style="background:#e94560"></div>Expansion</div>
+<div class="li"><div class="lc" style="background:#0f0"></div>Selected</div>
+<div class="li"><div class="lc" style="background:rgba(0,255,200,0.5)"></div>Neighbor</div>
 </div>
 <div id="status">Enter text and click Run</div>
 </div>
 <script>
 var D=null,AP=null;
+var selectedTokens=new Set(); // indices of selected real tokens
 
 function runText(){
     var txt=document.getElementById('txt-in').value.trim();
     if(!txt)return;
+    var modelName=document.getElementById('sel-model').value;
     var btn=document.getElementById('btn-run');
     btn.disabled=true;btn.textContent='Running...';
-    document.getElementById('status').textContent='Processing...';
+    document.getElementById('status').textContent='Processing (model: '+modelName+')...';
     fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({text:txt})})
+        body:JSON.stringify({text:txt, model:modelName})})
     .then(function(r){if(!r.ok)throw new Error('Server error '+r.status);return r.json()})
     .then(function(d){
-        D=d;onData();
+        D=d;selectedTokens.clear();updateSelectedUI();onData();
         btn.disabled=false;btn.textContent='Run';
     }).catch(function(e){
         document.getElementById('status').textContent='Error: '+e;
@@ -334,9 +437,11 @@ function onData(){
     document.getElementById('i-lay').textContent=D.n_layers;
     document.getElementById('i-dim').textContent=D.hidden_dim;
     document.getElementById('i-tok').textContent=D.tokens.slice(0,D.n_real).join(' ');
+    // Set model selector to match
+    document.getElementById('sel-model').value=D.model_name;
     autoParams();
     draw();
-    document.getElementById('status').textContent='Ready — '+D.n_real+' tokens, '+D.n_synth+' probes';
+    document.getElementById('status').textContent='Ready — '+D.n_real+' tokens, '+D.n_synth+' probes | Model: '+D.model_name;
 }
 
 function autoParams(){
@@ -350,13 +455,11 @@ function autoParams(){
         if(x<mnx)mnx=x;if(x>mxx)mxx=x;if(y<mny)mny=y;if(y>mxy)mxy=y;
     }
     var range=Math.max(mxx-mnx,mxy-mny)||1;
-    // Auto sigma
     var sig=range*0.15;
     var slSig=document.getElementById('sl-sig');
     slSig.max=Math.max(20,range*2).toFixed(1);
     slSig.value=sig.toFixed(2);
     document.getElementById('v-sig').textContent=sig.toFixed(2);
-    // Auto amplify
     var norms=[];
     for(var l=0;l<D.n_layers;l++){
         for(var p=0;p<nP;p++){
@@ -371,6 +474,117 @@ function autoParams(){
     document.getElementById('sl-amp').value=amp.toFixed(1);
     document.getElementById('v-amp').textContent=amp.toFixed(1);
 }
+
+// --- Selection & Neighbor UI ---
+function updateSelectedUI(){
+    var cont=document.getElementById('selected-tokens');
+    cont.innerHTML='';
+    if(selectedTokens.size===0){
+        cont.innerHTML='<span style="color:#555;font-size:10px">Click on a token dot to select it</span>';
+        document.getElementById('neighbor-panel').style.display='none';
+        return;
+    }
+    selectedTokens.forEach(function(ti){
+        var el=document.createElement('span');
+        el.className='sel-tok';
+        el.innerHTML='['+ti+'] '+D.tokens[ti]+' <span class="x">×</span>';
+        el.onclick=function(){selectedTokens.delete(ti);updateSelectedUI();draw()};
+        cont.appendChild(el);
+    });
+    updateNeighborPanel();
+}
+
+function updateNeighborPanel(){
+    var panel=document.getElementById('neighbor-panel');
+    var list=document.getElementById('nb-list');
+    var title=document.getElementById('nb-title');
+    if(!D||!D.neighbors||selectedTokens.size===0){
+        panel.style.display='none';
+        return;
+    }
+    panel.style.display='block';
+    var kn=+document.getElementById('sl-kn').value;
+    var html='';
+    selectedTokens.forEach(function(ti){
+        if(ti>=D.neighbors.length)return;
+        html+='<div style="margin-bottom:6px"><b style="color:#e94560">['+ti+'] '+D.tokens[ti]+'</b> neighbors:';
+        var nbs=D.neighbors[ti].slice(0,kn);
+        for(var ni=0;ni<nbs.length;ni++){
+            var nb=nbs[ni];
+            var cls=nb.is_real?'nb-item is-real':'nb-item';
+            html+='<div class="'+cls+'" data-idx="'+nb.idx+'" onclick="clickNeighbor('+nb.idx+','+nb.is_real+')">';
+            html+=(nb.is_real?'★ ':'')+nb.label+'<span class="nb-dist">d='+nb.dist.toFixed(2)+'</span></div>';
+        }
+        html+='</div>';
+    });
+    list.innerHTML=html;
+    title.textContent='Neighbors (K='+kn+')';
+}
+
+function clickNeighbor(idx, isReal){
+    // If it's a real token, select it too
+    if(isReal && idx < D.n_real){
+        selectedTokens.add(idx);
+        updateSelectedUI();
+    }
+    draw();
+}
+
+// --- Canvas click handler for selecting tokens ---
+document.getElementById('cv').addEventListener('click', function(e){
+    if(!D)return;
+    var cv=document.getElementById('cv');
+    var rect=cv.getBoundingClientRect();
+    var mx=e.clientX-rect.left, my=e.clientY-rect.top;
+    var dx=+document.getElementById('sl-dx').value;
+    var dy=+document.getElementById('sl-dy').value;
+    var nP=D.n_points, nR=D.n_real;
+    var W=cv.width, H=cv.height, M2=42, dW2=W-2*M2, dH2=H-2*M2;
+
+    // Recompute viewport (same as draw)
+    var fx=new Float64Array(nP),fy=new Float64Array(nP);
+    for(var i=0;i<nP;i++){fx[i]=D.fixed_pos[i][dx];fy[i]=D.fixed_pos[i][dy]}
+    var mnx=fx[0],mxx=fx[0],mny=fy[0],mxy=fy[0];
+    for(var i2=1;i2<nP;i2++){
+        if(fx[i2]<mnx)mnx=fx[i2];if(fx[i2]>mxx)mxx=fx[i2];
+        if(fy[i2]<mny)mny=fy[i2];if(fy[i2]>mxy)mxy=fy[i2];
+    }
+    var mr=Math.max(mxx-mnx,mxy-mny)||1;
+    var cxv=(mnx+mxx)/2,cyv=(mny+mxy)/2;
+    var pd2=0.12;
+    var vx0=cxv-mr*(.5+pd2),vy0=cyv-mr*(.5+pd2),vw=mr*(1+2*pd2),vh=vw;
+    function SX(x){return M2+((x-vx0)/vw)*dW2}
+    function SY(y){return M2+((y-vy0)/vh)*dH2}
+
+    // Find closest real token
+    var bestDist=Infinity, bestIdx=-1;
+    for(var ti=0;ti<nR;ti++){
+        var sx=SX(fx[ti]), sy=SY(fy[ti]);
+        var dd=Math.hypot(mx-sx, my-sy);
+        if(dd<bestDist){bestDist=dd;bestIdx=ti}
+    }
+    if(bestIdx>=0 && bestDist<25){
+        if(selectedTokens.has(bestIdx)){
+            selectedTokens.delete(bestIdx);
+        } else {
+            selectedTokens.add(bestIdx);
+        }
+        updateSelectedUI();
+        draw();
+    }
+});
+
+// Listen for neighbor controls
+['sl-kn'].forEach(function(id){
+    var s=document.getElementById(id);
+    s.addEventListener('input',function(){
+        document.getElementById('v-kn').textContent=s.value;
+        updateSelectedUI();draw();
+    });
+});
+['cb-nb','cb-nblabel'].forEach(function(id){
+    document.getElementById(id).addEventListener('change',function(){draw()});
+});
 
 window.addEventListener('resize',function(){rsz();draw()});
 function rsz(){
@@ -417,7 +631,10 @@ function gp(){return{
     tok:document.getElementById('cb-tok').checked,
     syn:document.getElementById('cb-syn').checked,
     sc:document.getElementById('cb-sc').checked,
-    vec:document.getElementById('cb-vec').checked
+    vec:document.getElementById('cb-vec').checked,
+    nb:document.getElementById('cb-nb').checked,
+    nblabel:document.getElementById('cb-nblabel').checked,
+    kn:+document.getElementById('sl-kn').value
 }}
 
 function onKey(e){
@@ -448,6 +665,7 @@ function rstAll(){
     document.getElementById('sl-dx').value='0';
     document.getElementById('sl-dy').value='1';
     document.getElementById('sl-gr').value='30';
+    selectedTokens.clear();updateSelectedUI();
     if(D)autoParams();
     ['sl-layer','sl-t','sl-amp','sl-dx','sl-dy','sl-sig','sl-gr'].forEach(function(id){
         document.getElementById(id).dispatchEvent(new Event('input'));
@@ -569,9 +787,9 @@ function draw(){
     // Reference grid
     if(p.ref){
         c.strokeStyle=isEmb?'rgba(255,255,255,0.15)':'rgba(255,255,255,0.07)';c.lineWidth=0.5;
-        for(var ry=0;ry<=N;ry++){
+        for(var ry2=0;ry2<=N;ry2++){
             c.beginPath();
-            for(var rx=0;rx<=N;rx++){var ri=ry*(N+1)+rx;if(rx===0)c.moveTo(SX(oX[ri]),SY(oY[ri]));else c.lineTo(SX(oX[ri]),SY(oY[ri]))}
+            for(var rx2=0;rx2<=N;rx2++){var ri=ry2*(N+1)+rx2;if(rx2===0)c.moveTo(SX(oX[ri]),SY(oY[ri]));else c.lineTo(SX(oX[ri]),SY(oY[ri]))}
             c.stroke();
         }
         for(var rx3=0;rx3<=N;rx3++){
@@ -625,6 +843,38 @@ function draw(){
         }
     }
 
+    // --- Neighbor lines for selected tokens ---
+    if(p.nb && D.neighbors && selectedTokens.size>0){
+        var kn=p.kn;
+        selectedTokens.forEach(function(ti){
+            if(ti>=D.neighbors.length)return;
+            var nbs=D.neighbors[ti].slice(0,kn);
+            var tx=SX(fx[ti]),ty=SY(fy[ti]);
+            for(var ni=0;ni<nbs.length;ni++){
+                var nb=nbs[ni];
+                var nidx=nb.idx;
+                if(nidx>=nP)continue;
+                var nx=SX(fx[nidx]),ny=SY(fy[nidx]);
+                // Line from selected token to neighbor
+                var alpha=Math.max(0.15, 1.0 - ni*0.08);
+                c.strokeStyle='rgba(0,255,200,'+alpha.toFixed(2)+')';
+                c.lineWidth=Math.max(0.5, 2.5 - ni*0.2);
+                c.setLineDash([3,3]);
+                c.beginPath();c.moveTo(tx,ty);c.lineTo(nx,ny);c.stroke();
+                c.setLineDash([]);
+                // Neighbor dot
+                c.beginPath();c.arc(nx,ny,5,0,Math.PI*2);
+                c.fillStyle=nb.is_real?'rgba(0,255,200,0.8)':'rgba(0,255,200,0.35)';
+                c.fill();c.strokeStyle='rgba(0,255,200,0.6)';c.lineWidth=1;c.stroke();
+                // Neighbor label
+                if(p.nblabel){
+                    c.font='9px monospace';c.fillStyle='rgba(0,255,200,0.9)';
+                    c.fillText(nb.label+' (d='+nb.dist.toFixed(1)+')',nx+8,ny-4);
+                }
+            }
+        });
+    }
+
     // Real tokens — FIXED, NEVER MOVE
     if(p.tok){
         var tc=['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71',
@@ -632,18 +882,26 @@ function draw(){
             '#f39c12','#d35400','#c0392b','#16a085','#27ae60',
             '#2980b9','#8e44ad','#2c3e50','#ecf0f1','#fd79a8'];
         for(var ti=0;ti<nR;ti++){
-            var tx=SX(fx[ti]),ty=SY(fy[ti]),col=tc[ti%tc.length];
+            var tx2=SX(fx[ti]),ty2=SY(fy[ti]),col=tc[ti%tc.length];
+            var isSel=selectedTokens.has(ti);
+            // Selection glow
+            if(isSel){
+                var grad2=c.createRadialGradient(tx2,ty2,0,tx2,ty2,30);
+                grad2.addColorStop(0,'rgba(0,255,0,0.25)');grad2.addColorStop(1,'rgba(0,255,0,0)');
+                c.beginPath();c.arc(tx2,ty2,30,0,Math.PI*2);c.fillStyle=grad2;c.fill();
+            }
             // Neighborhood glow
-            var grad=c.createRadialGradient(tx,ty,0,tx,ty,20);
+            var grad=c.createRadialGradient(tx2,ty2,0,tx2,ty2,20);
             grad.addColorStop(0,'rgba(255,255,255,0.08)');grad.addColorStop(1,'rgba(255,255,255,0)');
-            c.beginPath();c.arc(tx,ty,20,0,Math.PI*2);c.fillStyle=grad;c.fill();
+            c.beginPath();c.arc(tx2,ty2,20,0,Math.PI*2);c.fillStyle=grad;c.fill();
             // Dot
-            c.beginPath();c.arc(tx,ty,7,0,Math.PI*2);
-            c.fillStyle=col;c.fill();c.strokeStyle='#fff';c.lineWidth=2;c.stroke();
+            c.beginPath();c.arc(tx2,ty2,isSel?9:7,0,Math.PI*2);
+            c.fillStyle=col;c.fill();
+            c.strokeStyle=isSel?'#0f0':'#fff';c.lineWidth=isSel?3:2;c.stroke();
             // Label
             c.font='bold 11px monospace';c.lineWidth=3;c.strokeStyle='rgba(0,0,0,0.9)';
             var lb='['+ti+'] '+D.tokens[ti];
-            c.strokeText(lb,tx+12,ty-10);c.fillStyle='#fff';c.fillText(lb,tx+12,ty-10);
+            c.strokeText(lb,tx2+12,ty2-10);c.fillStyle=isSel?'#0f0':'#fff';c.fillText(lb,tx2+12,ty2-10);
         }
         // Embedding mode: connect sequential tokens
         if(isEmb&&nR>1){
@@ -689,9 +947,10 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 req=json.loads(body)
                 text=req.get("text","").strip()
+                model_name=req.get("model","").strip() or None
                 if not text:raise ValueError("Empty text")
-                print(f"\n[Server] Processing: {text[:60]}...")
-                json_str=process_text(text)
+                print(f"\n[Server] Processing: {text[:60]}... (model: {model_name or MODEL_NAME})...")
+                json_str=process_text(text, model_name)
                 self.send_response(200)
                 self.send_header("Content-Type","application/json")
                 self.end_headers()
@@ -708,7 +967,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     parser=argparse.ArgumentParser(description="Metric Space Explorer")
-    parser.add_argument("--model",type=str,default="gpt2",choices=["gpt2","gpt2-medium","gpt2-large"])
+    parser.add_argument("--model",type=str,default="gpt2",
+        help="Initial model to load (any HuggingFace model name)")
     parser.add_argument("--port",type=int,default=8765)
     args=parser.parse_args()
 
