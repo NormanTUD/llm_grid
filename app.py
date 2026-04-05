@@ -697,7 +697,8 @@ Tokens: <span id="i-tok">-</span>
 <div class="cb"><input type="checkbox" id="cb-syn"><label for="cb-syn">Probe Points</label></div>
 <div class="cb"><input type="checkbox" id="cb-sc" checked><label for="cb-sc">Strain Color</label></div>
 <div class="cb"><input type="checkbox" id="cb-vec"><label for="cb-vec">Vector Arrows</label></div>
-<div id="keys"><b>Keys:</b> ←→ Layer | ↑↓ t | A/Z Amp | Space Auto | R Reset | D Dims | Click token to trace neighbors</div>
+<div id="keys"><b>Keys:</b> ←→ Layer | ↑↓ t | A/Z Amp | Space Auto | R Reset | D Dims | 0 Reset Zoom<br>
+<b>Mouse:</b> Scroll=Zoom | Shift+Drag=Pan | Click=Select Token</div>
 </div>
 <div id="main">
 <canvas id="cv"></canvas>
@@ -712,6 +713,10 @@ Tokens: <span id="i-tok">-</span>
 <div id="status">Enter text and click Run</div>
 </div>
 <script>
+// Pan/Zoom state
+var zoomLevel = 1.0;
+var panX = 0, panY = 0;
+var panActive = false, panLastX = 0, panLastY = 0;
 var D=null,AP=null;
 var selectedTokens=new Set();
 var viewMode='2d';
@@ -885,23 +890,50 @@ function project3D(x, y, z, W, H){
 
 // Mouse drag for 3D rotation
 var cv3d=document.getElementById('cv');
+// Replace BOTH the existing 3D drag mousedown AND the pan mousedown with this single handler:
 cv3d.addEventListener('mousedown', function(e){
-    if(viewMode!=='3d')return;
-    dragActive=true;
-    dragLastX=e.clientX;
-    dragLastY=e.clientY;
+    if(viewMode==='3d'){
+        // 3D rotation drag (left click, no shift)
+        if(e.button===0 && !e.shiftKey){
+            dragActive=true;
+            dragLastX=e.clientX;
+            dragLastY=e.clientY;
+        }
+        return;
+    }
+    // 2D mode: middle-click or shift+left-click for pan
+    if(e.button===1 || (e.button===0 && e.shiftKey)){
+        e.preventDefault();
+        panActive=true;
+        panLastX=e.clientX;
+        panLastY=e.clientY;
+    }
 });
+
 window.addEventListener('mousemove', function(e){
-    if(!dragActive||viewMode!=='3d')return;
-    var dx=e.clientX-dragLastX, dy=e.clientY-dragLastY;
-    rotY+=dx*0.005;
-    rotX+=dy*0.005;
-    rotX=Math.max(-Math.PI/2, Math.min(Math.PI/2, rotX));
-    dragLastX=e.clientX;
-    dragLastY=e.clientY;
-    draw();
+    if(dragActive && viewMode==='3d'){
+        var ddx=e.clientX-dragLastX, ddy=e.clientY-dragLastY;
+        rotY+=ddx*0.005;
+        rotX+=ddy*0.005;
+        rotX=Math.max(-Math.PI/2, Math.min(Math.PI/2, rotX));
+        dragLastX=e.clientX;
+        dragLastY=e.clientY;
+        draw();
+        return;
+    }
+    if(panActive){
+        panX+=e.clientX-panLastX;
+        panY+=e.clientY-panLastY;
+        panLastX=e.clientX;
+        panLastY=e.clientY;
+        draw();
+    }
 });
-window.addEventListener('mouseup', function(){dragActive=false});
+
+window.addEventListener('mouseup', function(e){
+    dragActive=false;
+    panActive=false;
+});
 
 // Canvas click for token selection (2D mode only, or 3D with projected coords)
 document.getElementById('cv').addEventListener('click', function(e){
@@ -909,7 +941,18 @@ document.getElementById('cv').addEventListener('click', function(e){
     if(dragActive)return;
     var cv=document.getElementById('cv');
     var rect=cv.getBoundingClientRect();
-    var mx=e.clientX-rect.left, my=e.clientY-rect.top;
+    var rawMx=e.clientX-rect.left, rawMy=e.clientY-rect.top;
+
+    // Transform mouse coordinates back through zoom/pan (for 2D mode)
+    var mx, my;
+    if(viewMode==='2d'){
+        mx = (rawMx - panX) / zoomLevel;
+        my = (rawMy - panY) / zoomLevel;
+    } else {
+        mx = rawMx;
+        my = rawMy;
+    }
+
     var dx=+document.getElementById('sl-dx').value;
     var dy=+document.getElementById('sl-dy').value;
     var dz=+document.getElementById('sl-dz').value;
@@ -1041,6 +1084,7 @@ function onKey(e){
     else if(e.key===' '){e.preventDefault();togAP()}
     else if(e.key==='r'||e.key==='R'){rstAll()}
     else if(e.key==='d'||e.key==='D'){nxtD()}
+    else if(e.key==='0'){zoomLevel=1.0;panX=0;panY=0;draw()}
 }
 
 function togAP(){
@@ -1059,6 +1103,7 @@ function rstAll(){
     document.getElementById('sl-dz').value='2';
     document.getElementById('sl-gr').value='30';
     rotX=-0.4;rotY=0.6;rotZ=0;
+    zoomLevel=1.0;panX=0;panY=0;
     selectedTokens.clear();updateSelectedUI();
     if(D)autoParams();
     ['sl-layer','sl-t','sl-amp','sl-dx','sl-dy','sl-dz','sl-sig','sl-gr'].forEach(function(id){
@@ -1088,6 +1133,11 @@ function draw2D(){
     var p=gp(),cv=document.getElementById('cv'),c=cv.getContext('2d');
     var W=cv.width,H=cv.height;
     c.clearRect(0,0,W,H);
+
+    // Apply zoom/pan transform
+    c.save();
+    c.translate(panX, panY);
+    c.scale(zoomLevel, zoomLevel);
 
     var nP=D.n_points,nR=D.n_real,dx=p.dx,dy=p.dy;
     var isEmb=p.mode==='embedding';
@@ -1306,15 +1356,20 @@ function draw2D(){
         }
     }
 
+    // Restore transform before drawing HUD (so HUD stays fixed on screen)
+    c.restore();
+
+    // HUD text — drawn outside the transform so it doesn't scale/pan
     c.font='11px monospace';c.fillStyle='rgba(255,255,255,0.45)';
     if(isEmb){
-        c.fillText('EMBEDDING SPACE [2D]  Dims:'+dx+','+dy,M,18);
+        c.fillText('EMBEDDING SPACE [2D]  Dims:'+dx+','+dy,42,18);
     } else {
-        c.fillText('Layer '+p.layer+'/'+(D.n_layers-1)+'  t='+p.t.toFixed(2)+'  amp='+p.amp.toFixed(1)+'  Dims:'+dx+','+dy+'  Mode:'+p.mode+'  [2D]',M,18);
+        c.fillText('Layer '+p.layer+'/'+(D.n_layers-1)+'  t='+p.t.toFixed(2)+'  amp='+p.amp.toFixed(1)+'  Dims:'+dx+','+dy+'  Mode:'+p.mode+'  [2D]',42,18);
     }
+    c.font='10px monospace';c.fillStyle='rgba(255,255,255,0.35)';
+    c.fillText('Zoom: '+zoomLevel.toFixed(2)+'x  (Scroll=zoom, Shift+drag=pan, 0=reset)',42,H-10);
 }
 
-// ===================== 3D DRAWING =====================
 // ===================== 3D DRAWING =====================
 function draw3D(){
     var p=gp(),cv=document.getElementById('cv'),c=cv.getContext('2d');
@@ -1711,6 +1766,38 @@ function draw3D(){
         c.fillText('Layer '+p.layer+'/'+(D.n_layers-1)+'  t='+p.t.toFixed(2)+'  amp='+p.amp.toFixed(1)+'  Dims:'+dx+','+dy+','+dz+'  [3D]  Drag to rotate',42,18);
     }
 }
+
+// Scroll-wheel zoom
+cv3d.addEventListener('wheel', function(e) {
+    e.preventDefault();
+    var rect = cv3d.getBoundingClientRect();
+    var mx = e.clientX - rect.left;
+    var my = e.clientY - rect.top;
+
+    // Zoom toward/away from mouse cursor
+    var oldZoom = zoomLevel;
+    var zoomFactor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+    zoomLevel = Math.max(0.1, Math.min(50, zoomLevel * zoomFactor));
+
+    // Adjust pan so zoom centers on mouse position
+    panX = mx - (mx - panX) * (zoomLevel / oldZoom);
+    panY = my - (my - panY) * (zoomLevel / oldZoom);
+
+    draw();
+}, { passive: false });
+
+// Middle-click or Shift+click pan
+window.addEventListener('mousemove', function(e) {
+    if (!panActive) return;
+    panX += e.clientX - panLastX;
+    panY += e.clientY - panLastY;
+    panLastX = e.clientX;
+    panLastY = e.clientY;
+    draw();
+});
+window.addEventListener('mouseup', function(e) {
+    if (e.button === 1 || e.button === 0) panActive = false;
+});
 </script></body></html>"""
 
 
