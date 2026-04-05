@@ -990,7 +990,7 @@ class TestGridProbeEdgeCases(unittest.TestCase):
         existing_proj = np.stack([proj1, proj2], axis=1)
         all_deltas = [[np.ones(hidden_dim)] for _ in range(2)]
 
-        gl0, gd = app.create_grid_probes(
+        gl0, gd, gadd, gmlpd = app.create_grid_probes(
             centroid, pc1, pc2, proj1, proj2, existing_proj,
             all_deltas, n_layers, hidden_dim, n_side=1, pad_frac=0.3,
         )
