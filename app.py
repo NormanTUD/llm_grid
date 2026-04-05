@@ -10,6 +10,9 @@
 import argparse
 import os
 import sys
+import json
+import threading
+from urllib.parse import urlparse
 from datetime import datetime, timedelta
 
 
@@ -47,16 +50,12 @@ def ensure_safe_env():
 # This must run BEFORE heavy imports
 ensure_safe_env()
 
-import json
-import threading
 import webbrowser
 import time
 import numpy as np
 import torch
 from transformers import AutoTokenizer, AutoModel
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse
-
 
 # ============================================================
 # 2. MODEL DETECTION & CONFIG HELPERS
@@ -209,8 +208,8 @@ def compute_layer0_and_deltas(hidden_states, n_layers):
     for s in range(seq_len):
         layer0_vecs.append(hs[0][0][s].cpu().numpy())
         deltas = []
-        for l in range(n_layers):
-            deltas.append((hs[l + 1][0][s] - hs[l][0][s]).cpu().numpy())
+        for lay in range(n_layers):
+            deltas.append((hs[lay + 1][0][s] - hs[lay][0][s]).cpu().numpy())
         delta_lists.append(deltas)
     return layer0_vecs, delta_lists
 
@@ -327,10 +326,10 @@ def interpolate_deltas(weights, all_deltas_per_point, n_layers, hidden_dim):
     """Weighted-average the deltas from all points for one grid point."""
     n_total = len(all_deltas_per_point)
     point_deltas = []
-    for l in range(n_layers):
+    for lay in range(n_layers):
         d = np.zeros(hidden_dim)
         for pi in range(n_total):
-            d += weights[pi] * all_deltas_per_point[pi][l]
+            d += weights[pi] * all_deltas_per_point[pi][lay]
         point_deltas.append(d)
     return point_deltas
 
@@ -373,10 +372,10 @@ def build_fixed_pos(all_layer0):
 def build_deltas_array(all_deltas_per_point, n_layers, n_points):
     """Reshape per-point deltas into per-layer arrays for JSON."""
     deltas = []
-    for l in range(n_layers):
+    for lay in range(n_layers):
         layer_d = []
         for p in range(n_points):
-            layer_d.append(all_deltas_per_point[p][l].tolist())
+            layer_d.append(all_deltas_per_point[p][lay].tolist())
         deltas.append(layer_d)
     return deltas
 
