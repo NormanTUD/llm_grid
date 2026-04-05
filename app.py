@@ -98,6 +98,7 @@ def get_hidden_dim(config):
 MODEL_NAME = "gpt2"
 TOKENIZER = None
 MODEL = None
+LM_MODEL = None
 MODEL_CONFIG = None
 
 
@@ -230,6 +231,163 @@ def run_all_sequences(model, all_seqs, n_layers):
         all_layer0.extend(l0)
         all_deltas.extend(dl)
     return all_layer0, all_deltas
+
+
+# ============================================================
+# 6b. COMPONENT-DECOMPOSED HIDDEN STATE EXTRACTION
+#     (Attention vs MLP contribution per layer)
+# ============================================================
+
+def _get_transformer_blocks(model):
+    """Return the list of transformer block modules for supported architectures."""
+    # GPT-2
+    if hasattr(model, 'h'):
+        return list(model.h)
+    # BERT / RoBERTa / DistilBERT
+    if hasattr(model, 'encoder') and hasattr(model.encoder, 'layer'):
+        return list(model.encoder.layer)
+    # Pythia / GPT-NeoX
+    if hasattr(model, 'layers'):
+        return list(model.layers)
+    # OPT
+    if hasattr(model, 'decoder') and hasattr(model.decoder, 'layers'):
+        return list(model.decoder.layers)
+    return []
+
+
+def extract_component_deltas(model, input_ids, n_layers, hidden_dim):
+    """
+    Run a single sequence through the model with hooks to capture
+    attention-output and MLP-output contributions separately.
+
+    For GPT-2 style models, each block computes:
+        attn_out = block.attn(ln_1(h))
+        mlp_out  = block.mlp(ln_2(h + attn_out))
+        h_next   = h + attn_out + mlp_out
+
+    So the residual delta = attn_out + mlp_out.
+
+    Returns:
+        attn_deltas: list of list of numpy arrays [seq_len][n_layers]
+        mlp_deltas:  list of list of numpy arrays [seq_len][n_layers]
+    """
+    blocks = _get_transformer_blocks(model)
+    if len(blocks) == 0 or len(blocks) != n_layers:
+        return None, None
+
+    # Storage for captured outputs: layer -> tensor
+    attn_outputs = {}
+    mlp_outputs = {}
+    hooks = []
+
+    def _make_attn_hook(layer_idx):
+        def hook_fn(module, input, output):
+            # GPT-2 attn returns (attn_output, present, (attentions))
+            # BERT self-attention output layer returns (hidden_states,) or tuple
+            if isinstance(output, tuple):
+                attn_outputs[layer_idx] = output[0].detach()
+            else:
+                attn_outputs[layer_idx] = output.detach()
+        return hook_fn
+
+    def _make_mlp_hook(layer_idx):
+        def hook_fn(module, input, output):
+            if isinstance(output, tuple):
+                mlp_outputs[layer_idx] = output[0].detach()
+            else:
+                mlp_outputs[layer_idx] = output.detach()
+        return hook_fn
+
+    # Register hooks on each block's attention and MLP sub-modules
+    for layer_idx, block in enumerate(blocks):
+        # GPT-2: block.attn, block.mlp
+        if hasattr(block, 'attn') and hasattr(block, 'mlp'):
+            hooks.append(block.attn.register_forward_hook(_make_attn_hook(layer_idx)))
+            hooks.append(block.mlp.register_forward_hook(_make_mlp_hook(layer_idx)))
+        # BERT: block.attention, block.intermediate + block.output
+        elif hasattr(block, 'attention') and hasattr(block, 'output'):
+            hooks.append(block.attention.register_forward_hook(_make_attn_hook(layer_idx)))
+            # For BERT, the "MLP" is intermediate + output, but the output module
+            # also includes the residual. We hook the intermediate for the MLP signal.
+            if hasattr(block, 'intermediate'):
+                hooks.append(block.intermediate.register_forward_hook(_make_mlp_hook(layer_idx)))
+            else:
+                hooks.append(block.output.register_forward_hook(_make_mlp_hook(layer_idx)))
+        # DistilBERT: block.attention, block.ffn
+        elif hasattr(block, 'attention') and hasattr(block, 'ffn'):
+            hooks.append(block.attention.register_forward_hook(_make_attn_hook(layer_idx)))
+            hooks.append(block.ffn.register_forward_hook(_make_mlp_hook(layer_idx)))
+        else:
+            # Fallback: can't decompose this architecture
+            for h in hooks:
+                h.remove()
+            return None, None
+
+    try:
+        with torch.no_grad():
+            model(input_ids)
+    finally:
+        for h in hooks:
+            h.remove()
+
+    seq_len = input_ids.shape[1]
+
+    # Build per-token, per-layer attn and mlp delta arrays
+    attn_deltas_per_token = []  # [seq_len] x [n_layers] numpy arrays
+    mlp_deltas_per_token = []
+
+    for s in range(seq_len):
+        attn_list = []
+        mlp_list = []
+        for lay in range(n_layers):
+            if lay in attn_outputs:
+                attn_list.append(attn_outputs[lay][0][s].cpu().numpy())
+            else:
+                attn_list.append(np.zeros(hidden_dim))
+            if lay in mlp_outputs:
+                mlp_list.append(mlp_outputs[lay][0][s].cpu().numpy())
+            else:
+                mlp_list.append(np.zeros(hidden_dim))
+        attn_deltas_per_token.append(attn_list)
+        mlp_deltas_per_token.append(mlp_list)
+
+    return attn_deltas_per_token, mlp_deltas_per_token
+
+
+def run_all_sequences_with_components(model, all_seqs, n_layers, hidden_dim):
+    """
+    Run every sequence through the model and collect:
+      - layer0 embeddings
+      - full residual deltas
+      - attention-only deltas
+      - MLP-only deltas
+    Returns (all_layer0, all_deltas, all_attn_deltas, all_mlp_deltas).
+    If decomposition fails, attn/mlp deltas will be None.
+    """
+    all_layer0 = []
+    all_deltas = []
+    all_attn_deltas = []
+    all_mlp_deltas = []
+    decomposition_ok = True
+
+    for seq_ids in all_seqs:
+        hs = extract_hidden_states(model, seq_ids)
+        l0, dl = compute_layer0_and_deltas(hs, n_layers)
+        all_layer0.extend(l0)
+        all_deltas.extend(dl)
+
+        if decomposition_ok:
+            ad, md = extract_component_deltas(model, seq_ids, n_layers, hidden_dim)
+            if ad is not None and md is not None:
+                all_attn_deltas.extend(ad)
+                all_mlp_deltas.extend(md)
+            else:
+                decomposition_ok = False
+
+    if not decomposition_ok:
+        return all_layer0, all_deltas, None, None
+
+    return all_layer0, all_deltas, all_attn_deltas, all_mlp_deltas
 
 
 # ============================================================
@@ -407,10 +565,12 @@ def interpolate_deltas(weights, all_deltas_per_point, n_layers, hidden_dim):
 
 
 def create_grid_probes(centroid, pc1, pc2, proj1, proj2, existing_proj,
-                       all_deltas_per_point, n_layers, hidden_dim, n_side=10, pad_frac=0.3):
+                       all_deltas_per_point, n_layers, hidden_dim, n_side=10, pad_frac=0.3,
+                       all_attn_deltas=None, all_mlp_deltas=None):
     """
     Create grid intersection probes in PCA space.
-    Returns (grid_layer0, grid_deltas).
+    Returns (grid_layer0, grid_deltas, grid_attn_deltas, grid_mlp_deltas).
+    grid_attn_deltas and grid_mlp_deltas may be None if decomposition is unavailable.
     """
     mn1, mx1, r1 = compute_grid_range(proj1, pad_frac)
     mn2, mx2, r2 = compute_grid_range(proj2, pad_frac)
@@ -420,6 +580,8 @@ def create_grid_probes(centroid, pc1, pc2, proj1, proj2, existing_proj,
 
     grid_layer0 = []
     grid_deltas = []
+    grid_attn_deltas = [] if all_attn_deltas is not None else None
+    grid_mlp_deltas = [] if all_mlp_deltas is not None else None
 
     for v1, v2 in make_grid_coords(g1, g2):
         emb = interpolate_grid_embedding(v1, v2, centroid, pc1, pc2)
@@ -429,7 +591,14 @@ def create_grid_probes(centroid, pc1, pc2, proj1, proj2, existing_proj,
         point_deltas = interpolate_deltas(weights, all_deltas_per_point, n_layers, hidden_dim)
         grid_deltas.append(point_deltas)
 
-    return grid_layer0, grid_deltas
+        if all_attn_deltas is not None:
+            attn_point_deltas = interpolate_deltas(weights, all_attn_deltas, n_layers, hidden_dim)
+            grid_attn_deltas.append(attn_point_deltas)
+        if all_mlp_deltas is not None:
+            mlp_point_deltas = interpolate_deltas(weights, all_mlp_deltas, n_layers, hidden_dim)
+            grid_mlp_deltas.append(mlp_point_deltas)
+
+    return grid_layer0, grid_deltas, grid_attn_deltas, grid_mlp_deltas
 
 
 # ============================================================
@@ -454,7 +623,8 @@ def build_deltas_array(all_deltas_per_point, n_layers, n_points):
 
 def build_output_data(all_labels, all_is_real, n_layers, n_total, n_real,
                       hidden_dim, fixed_pos, deltas, model_name, text, neighbors,
-                      next_token_preds=None, vocab_neighbors=None):
+                      next_token_preds=None, vocab_neighbors=None,
+                      attn_deltas=None, mlp_deltas=None, strain_stats=None):
     """Assemble the final JSON-serializable dict."""
     data = {
         "tokens": all_labels,
@@ -474,7 +644,78 @@ def build_output_data(all_labels, all_is_real, n_layers, n_total, n_real,
         data["next_token"] = next_token_preds
     if vocab_neighbors is not None:
         data["vocab_neighbors"] = vocab_neighbors
+    if attn_deltas is not None:
+        data["attn_deltas"] = attn_deltas
+    if mlp_deltas is not None:
+        data["mlp_deltas"] = mlp_deltas
+    if strain_stats is not None:
+        data["strain_stats"] = strain_stats
     return data
+
+
+# ============================================================
+# 10b. STRAIN STATISTICS COMPUTATION
+# ============================================================
+
+def compute_strain_stats(all_layer0, all_deltas_per_point, n_layers, n_real, hidden_dim):
+    """
+    Compute per-layer strain statistics using pairs of real tokens.
+    For each layer, we compute the strain (deformed_dist / original_dist)
+    for all pairs of real tokens, then aggregate.
+
+    Returns a list of dicts, one per layer:
+      {mean, max, min, variance, frac_expanding, frac_contracting, frac_isometric}
+    """
+    if n_real < 2:
+        return [{"mean": 1.0, "max": 1.0, "min": 1.0, "variance": 0.0,
+                 "frac_expanding": 0.0, "frac_contracting": 0.0, "frac_isometric": 1.0}
+                for _ in range(n_layers)]
+
+    # Precompute original pairwise distances (using all dimensions)
+    # But since we project to 2D for visualization, we use a representative
+    # approach: compute strain across all dimension pairs would be expensive.
+    # Instead, compute the full high-dimensional strain.
+    layer0_vecs = np.stack(all_layer0[:n_real], axis=0)  # (n_real, hidden_dim)
+
+    stats = []
+    for lay in range(n_layers):
+        # Compute deformed positions: p + delta
+        deltas = np.stack([all_deltas_per_point[p][lay] for p in range(n_real)], axis=0)
+        deformed = layer0_vecs + deltas  # (n_real, hidden_dim)
+
+        # Compute all pairwise distances
+        strains = []
+        for i in range(n_real):
+            for j in range(i + 1, n_real):
+                orig_dist = np.linalg.norm(layer0_vecs[i] - layer0_vecs[j])
+                def_dist = np.linalg.norm(deformed[i] - deformed[j])
+                if orig_dist > 1e-12:
+                    strains.append(def_dist / orig_dist)
+
+        strains = np.array(strains) if len(strains) > 0 else np.array([1.0])
+
+        mean_s = float(np.mean(strains))
+        max_s = float(np.max(strains))
+        min_s = float(np.min(strains))
+        var_s = float(np.var(strains))
+        n_total_pairs = len(strains)
+        frac_expanding = float(np.sum(strains > 1.05) / n_total_pairs)
+        frac_contracting = float(np.sum(strains < 0.95) / n_total_pairs)
+        frac_isometric = float(np.sum((strains >= 0.95) & (strains <= 1.05)) / n_total_pairs)
+
+        stats.append({
+            "mean": round(mean_s, 4),
+            "max": round(max_s, 4),
+            "min": round(min_s, 4),
+            "variance": round(var_s, 6),
+            "frac_expanding": round(frac_expanding, 4),
+            "frac_contracting": round(frac_contracting, 4),
+            "frac_isometric": round(frac_isometric, 4),
+            "n_pairs": n_total_pairs,
+        })
+
+    return stats
+
 
 # ============================================================
 # 11. MAIN PROCESSING PIPELINE
@@ -504,10 +745,17 @@ def process_text(text, model_name=None):
     all_labels = list(tokens_clean) + probe_labels
     all_is_real = [True] * n_real + probe_is_real
 
-    print(f"[Model] Running {len(all_seqs)} sequences through model...")
+    print(f"[Model] Running {len(all_seqs)} sequences through model (with component decomposition)...")
 
-    # Extract hidden states
-    all_layer0, all_deltas_per_point = run_all_sequences(MODEL, all_seqs, n_layers)
+    # Extract hidden states WITH component decomposition
+    all_layer0, all_deltas_per_point, all_attn_deltas, all_mlp_deltas = \
+        run_all_sequences_with_components(MODEL, all_seqs, n_layers, hidden_dim)
+
+    decomposition_available = all_attn_deltas is not None and all_mlp_deltas is not None
+    if decomposition_available:
+        print(f"[Model] Component decomposition: OK (attention + MLP deltas captured)")
+    else:
+        print(f"[Model] Component decomposition: UNAVAILABLE for this architecture")
 
     n_total = len(all_layer0)
     n_synth = n_total - n_real
@@ -532,10 +780,12 @@ def process_text(text, model_name=None):
     centroid, centered, pc1, pc2, proj1, proj2 = compute_pca_basis(layer0_mat, hidden_dim)
     existing_proj = np.stack([proj1, proj2], axis=1)
 
-    grid_layer0, grid_deltas = create_grid_probes(
+    grid_layer0, grid_deltas, grid_attn_deltas, grid_mlp_deltas = create_grid_probes(
         centroid, pc1, pc2, proj1, proj2, existing_proj,
         all_deltas_per_point, n_layers, hidden_dim,
         n_side=10, pad_frac=0.3,
+        all_attn_deltas=all_attn_deltas,
+        all_mlp_deltas=all_mlp_deltas,
     )
 
     n_grid = len(grid_layer0)
@@ -545,20 +795,40 @@ def process_text(text, model_name=None):
     for gi in range(n_grid):
         all_layer0.append(grid_layer0[gi])
         all_deltas_per_point.append(grid_deltas[gi])
+        if decomposition_available:
+            all_attn_deltas.append(grid_attn_deltas[gi])
+            all_mlp_deltas.append(grid_mlp_deltas[gi])
         all_labels.append("\u00b7")
         all_is_real.append(False)
 
     n_total_final = len(all_layer0)
 
+    # Compute strain statistics (on real tokens only, before grid appended)
+    print("[Model] Computing strain statistics...")
+    strain_stats = compute_strain_stats(all_layer0, all_deltas_per_point, n_layers, n_real, hidden_dim)
+    # Find most active layer
+    most_active_layer = max(range(n_layers), key=lambda l: strain_stats[l]["variance"])
+    print(f"[Model] Most active layer (by strain variance): {most_active_layer}")
+
     # Build output
     fixed_pos = build_fixed_pos(all_layer0)
     deltas = build_deltas_array(all_deltas_per_point, n_layers, n_total_final)
+
+    # Build component delta arrays if available
+    attn_deltas_json = None
+    mlp_deltas_json = None
+    if decomposition_available:
+        attn_deltas_json = build_deltas_array(all_attn_deltas, n_layers, n_total_final)
+        mlp_deltas_json = build_deltas_array(all_mlp_deltas, n_layers, n_total_final)
 
     data = build_output_data(
         all_labels, all_is_real, n_layers, n_total_final, n_real,
         hidden_dim, fixed_pos, deltas, MODEL_NAME, text, neighbors,
         next_token_preds=next_token_preds,
         vocab_neighbors=vocab_neighbors,
+        attn_deltas=attn_deltas_json,
+        mlp_deltas=mlp_deltas_json,
+        strain_stats=strain_stats,
     )
 
     json_str = json.dumps(data)
@@ -567,7 +837,7 @@ def process_text(text, model_name=None):
 
 
 # ============================================================
-# 12. HTML PAGE WITH 2D/3D TOGGLE
+# 12. HTML PAGE WITH 2D/3D TOGGLE + DECOMPOSITION + STRAIN STATS
 # ============================================================
 
 HTML_PAGE = r"""<!DOCTYPE html>
@@ -621,6 +891,15 @@ canvas{background:#0d1117}
 .view-toggle button{flex:1;padding:5px 8px;border:1px solid #0f3460;background:#1a1a2e;color:#a0a0c0;cursor:pointer;font-size:11px;font-weight:bold;border-radius:4px;transition:all 0.2s}
 .view-toggle button.active{background:#e94560;color:#fff;border-color:#e94560}
 .view-toggle button:hover:not(.active){background:#0f3460;color:#fff}
+#strain-stats-panel{background:#0f3460;padding:6px;border-radius:4px;font-size:9px;
+  line-height:1.3;max-height:280px;overflow-y:auto;display:none}
+#strain-stats-panel table{width:100%;border-collapse:collapse}
+#strain-stats-panel th{color:#53a8b6;text-align:left;padding:2px 3px;border-bottom:1px solid #1a1a2e;font-size:8px;position:sticky;top:0;background:#0f3460}
+#strain-stats-panel td{padding:2px 3px;border-bottom:1px solid rgba(255,255,255,0.05)}
+#strain-stats-panel tr.current-layer{background:rgba(233,69,96,0.2)}
+#strain-stats-panel tr.most-active{background:rgba(83,168,182,0.15)}
+#strain-stats-panel tr:hover{background:rgba(255,255,255,0.05)}
+.strain-bar{display:inline-block;height:6px;border-radius:2px;vertical-align:middle}
 </style></head><body>
 <div id="side">
 <h2>Metric Space Explorer</h2>
@@ -677,6 +956,15 @@ Tokens: <span id="i-tok">-</span>
 <option value="embedding">Raw Embedding Space</option>
 </select>
 </div>
+<div class="cr"><label>Decomposition:</label>
+<select id="sel-decomp">
+<option value="full">Full Residual</option>
+<option value="attn">Attention Only</option>
+<option value="mlp">MLP Only</option>
+</select>
+</div>
+<h3>Strain Statistics</h3>
+<div id="strain-stats-panel"></div>
 <h3>Dimensions</h3>
 <div class="cr"><label>Dim X:</label><input type="range" id="sl-dx" min="0" max="767" value="0" step="1"><span class="v" id="v-dx">0</span></div>
 <div class="cr"><label>Dim Y:</label><input type="range" id="sl-dy" min="0" max="767" value="1" step="1"><span class="v" id="v-dy">1</span></div>
@@ -733,6 +1021,23 @@ function setViewMode(mode){
     draw();
 }
 
+/** Return the active deltas array based on decomposition selector */
+function getActiveDeltas(){
+    if(!D) return null;
+    var decomp = document.getElementById('sel-decomp').value;
+    if(decomp === 'attn' && D.attn_deltas) return D.attn_deltas;
+    if(decomp === 'mlp' && D.mlp_deltas) return D.mlp_deltas;
+    return D.deltas;
+}
+
+/** Get a label for the current decomposition mode */
+function getDecompLabel(){
+    var decomp = document.getElementById('sel-decomp').value;
+    if(decomp === 'attn' && D && D.attn_deltas) return 'Attn';
+    if(decomp === 'mlp' && D && D.mlp_deltas) return 'MLP';
+    return 'Full';
+}
+
 function runText(){
     var txt=document.getElementById('txt-in').value.trim();
     if(!txt)return;
@@ -752,6 +1057,70 @@ function runText(){
     });
 }
 
+function updateStrainStatsPanel(){
+    var panel = document.getElementById('strain-stats-panel');
+    if(!D || !D.strain_stats || D.strain_stats.length === 0){
+        panel.style.display = 'none';
+        return;
+    }
+    panel.style.display = 'block';
+    var stats = D.strain_stats;
+    var currentLayer = +document.getElementById('sl-layer').value;
+
+    // Find most active layer by variance
+    var mostActiveLayer = 0;
+    var maxVar = 0;
+    for(var i = 0; i < stats.length; i++){
+        if(stats[i].variance > maxVar){
+            maxVar = stats[i].variance;
+            mostActiveLayer = i;
+        }
+    }
+
+    // Find global max strain for bar scaling
+    var globalMaxStrain = 0;
+    for(var i = 0; i < stats.length; i++){
+        if(stats[i].max > globalMaxStrain) globalMaxStrain = stats[i].max;
+    }
+    if(globalMaxStrain < 1.01) globalMaxStrain = 2.0;
+
+    var html = '<table>';
+    html += '<tr><th>L</th><th>Mean</th><th>Max</th><th>Var</th><th>Exp%</th><th>Con%</th><th>Iso%</th><th>Distribution</th></tr>';
+    for(var i = 0; i < stats.length; i++){
+        var s = stats[i];
+        var rowClass = '';
+        if(i === currentLayer && i === mostActiveLayer) rowClass = 'current-layer most-active';
+        else if(i === currentLayer) rowClass = 'current-layer';
+        else if(i === mostActiveLayer) rowClass = 'most-active';
+
+        // Mini bar showing mean strain relative to 1.0
+        var barWidth = Math.min(60, Math.max(2, Math.abs(s.mean - 1.0) / (globalMaxStrain - 1.0) * 60));
+        var barColor = s.mean > 1.0 ? '#e94560' : '#0077b6';
+        var barHtml = '<span class="strain-bar" style="width:'+barWidth+'px;background:'+barColor+'"></span>';
+
+        // Markers
+        var marker = '';
+        if(i === currentLayer) marker += ' ◄';
+        if(i === mostActiveLayer) marker += ' ★';
+
+        html += '<tr class="'+rowClass+'" onclick="document.getElementById(\'sl-layer\').value='+i+';document.getElementById(\'sl-layer\').dispatchEvent(new Event(\'input\'))" style="cursor:pointer">';
+        html += '<td style="color:#e94560;font-weight:bold">'+i+marker+'</td>';
+        html += '<td>'+s.mean.toFixed(3)+'</td>';
+        html += '<td style="color:'+(s.max > 1.5 ? '#e94560' : '#a0a0c0')+'">'+s.max.toFixed(3)+'</td>';
+        html += '<td>'+s.variance.toFixed(4)+'</td>';
+        html += '<td style="color:#e94560">'+(s.frac_expanding*100).toFixed(0)+'</td>';
+        html += '<td style="color:#0077b6">'+(s.frac_contracting*100).toFixed(0)+'</td>';
+        html += '<td style="color:#888">'+(s.frac_isometric*100).toFixed(0)+'</td>';
+        html += '<td>'+barHtml+'</td>';
+        html += '</tr>';
+    }
+    html += '</table>';
+    html += '<div style="margin-top:4px;color:#888;font-size:8px">';
+    html += '◄ = current layer | ★ = most active (highest variance) | Click row to jump to layer';
+    html += '</div>';
+    panel.innerHTML = html;
+}
+
 function onData(){
     document.getElementById('sl-layer').max=D.n_layers-1;
     document.getElementById('sl-dx').max=D.hidden_dim-1;
@@ -765,6 +1134,21 @@ function onData(){
     document.getElementById('i-dim').textContent=D.hidden_dim;
     document.getElementById('i-tok').textContent=D.tokens.slice(0,D.n_real).join(' ');
     document.getElementById('sel-model').value=D.model_name;
+
+    // Update decomposition selector availability
+    var decompSel = document.getElementById('sel-decomp');
+    if(D.attn_deltas && D.mlp_deltas){
+        decompSel.disabled = false;
+        decompSel.title = 'Component decomposition available';
+    } else {
+        decompSel.disabled = true;
+        decompSel.value = 'full';
+        decompSel.title = 'Component decomposition not available for this model architecture';
+    }
+
+    // Update strain stats panel
+    updateStrainStatsPanel();
+
     autoParams();
     draw();
     document.getElementById('status').textContent='Ready — '+D.n_real+' tokens, '+D.n_synth+' probes | Model: '+D.model_name;
@@ -804,10 +1188,12 @@ function autoParams(){
     slSig.max=Math.max(20,range*2).toFixed(1);
     slSig.value=sig.toFixed(2);
     document.getElementById('v-sig').textContent=sig.toFixed(2);
+    var activeDeltas = getActiveDeltas();
+    if(!activeDeltas) activeDeltas = D.deltas;
     var norms=[];
     for(var l=0;l<D.n_layers;l++){
         for(var p=0;p<nP;p++){
-            var ddx=D.deltas[l][p][dx],ddy=D.deltas[l][p][dy];
+            var ddx=activeDeltas[l][p][dx],ddy=activeDeltas[l][p][dy];
             norms.push(Math.sqrt(ddx*ddx+ddy*ddy));
         }
     }
@@ -873,10 +1259,8 @@ function clickNeighbor(idx, isReal){
 
 // 3D rotation helpers
 function rotatePoint3D(x, y, z){
-    // Rotate around Y axis
     var cosY=Math.cos(rotY), sinY=Math.sin(rotY);
     var x1=x*cosY+z*sinY, z1=-x*sinY+z*cosY;
-    // Rotate around X axis
     var cosX=Math.cos(rotX), sinX=Math.sin(rotX);
     var y1=y*cosX-z1*sinX, z2=y*sinX+z1*cosX;
     return [x1, y1, z2];
@@ -888,7 +1272,6 @@ function project3D(x, y, z, W, H){
     return [W/2+r[0]*scale, H/2+r[1]*scale, r[2], scale];
 }
 
-// Mouse drag for 3D rotation
 var cv3d=document.getElementById('cv');
 
 cv3d.addEventListener('mousedown', function(e){
@@ -899,7 +1282,6 @@ cv3d.addEventListener('mousedown', function(e){
             dragLastY=e.clientY;
             return;
         }
-        // Allow shift+click pan AND middle-click pan in 3D too
         if(e.button===1 || (e.button===0 && e.shiftKey)){
             e.preventDefault();
             panActive=true;
@@ -908,7 +1290,6 @@ cv3d.addEventListener('mousedown', function(e){
         }
         return;
     }
-    // 2D mode: middle-click or shift+left-click for pan
     if(e.button===1 || (e.button===0 && e.shiftKey)){
         e.preventDefault();
         panActive=true;
@@ -942,7 +1323,6 @@ window.addEventListener('mouseup', function(e){
     panActive=false;
 });
 
-// Canvas click for token selection (2D mode only, or 3D with projected coords)
 document.getElementById('cv').addEventListener('click', function(e){
     if(!D)return;
     if(dragActive)return;
@@ -950,7 +1330,6 @@ document.getElementById('cv').addEventListener('click', function(e){
     var rect=cv.getBoundingClientRect();
     var rawMx=e.clientX-rect.left, rawMy=e.clientY-rect.top;
 
-    // Transform mouse coordinates back through zoom/pan (for 2D mode)
     var mx, my;
     if(viewMode==='2d'){
         mx = (rawMx - panX) / zoomLevel;
@@ -988,7 +1367,6 @@ document.getElementById('cv').addEventListener('click', function(e){
             if(dd<bestDist){bestDist=dd;bestIdx=ti}
         }
     } else {
-        // 3D click detection using projected coordinates
         var fx3=new Float64Array(nP),fy3=new Float64Array(nP),fz3=new Float64Array(nP);
         for(var i=0;i<nP;i++){fx3[i]=D.fixed_pos[i][dx];fy3[i]=D.fixed_pos[i][dy];fz3[i]=D.fixed_pos[i][dz]}
         var mnx3=Infinity,mxx3=-Infinity,mny3=Infinity,mxy3=-Infinity,mnz3=Infinity,mxz3=-Infinity;
@@ -1045,6 +1423,7 @@ for(var i=0;i<SLS.length;i++)(function(c){
     s.addEventListener('input',function(){
         v.textContent=parseFloat(s.value).toFixed(dec);
         if(c[0]==='sl-dx'||c[0]==='sl-dy'||c[0]==='sl-dz')autoParams();
+        if(c[0]==='sl-layer') updateStrainStatsPanel();
         draw();
     });
 })(SLS[i]);
@@ -1054,6 +1433,10 @@ for(var i=0;i<SLS.length;i++)(function(c){
 });
 
 document.getElementById('sel-mode').addEventListener('change',draw);
+document.getElementById('sel-decomp').addEventListener('change',function(){
+    autoParams();
+    draw();
+});
 document.addEventListener('keydown',onKey);
 document.getElementById('txt-in').addEventListener('keydown',function(e){if(e.key==='Enter')runText()});
 
@@ -1109,6 +1492,7 @@ function rstAll(){
     document.getElementById('sl-dy').value='1';
     document.getElementById('sl-dz').value='2';
     document.getElementById('sl-gr').value='30';
+    document.getElementById('sel-decomp').value='full';
     rotX=-0.4;rotY=0.6;rotZ=0;
     zoomLevel=1.0;panX=0;panY=0;
     selectedTokens.clear();updateSelectedUI();
@@ -1141,13 +1525,15 @@ function draw2D(){
     var W=cv.width,H=cv.height;
     c.clearRect(0,0,W,H);
 
-    // Apply zoom/pan transform
     c.save();
     c.translate(panX, panY);
     c.scale(zoomLevel, zoomLevel);
 
     var nP=D.n_points,nR=D.n_real,dx=p.dx,dy=p.dy;
     var isEmb=p.mode==='embedding';
+
+    // Use the active deltas based on decomposition selector
+    var activeDeltas = getActiveDeltas();
 
     var fx=new Float64Array(nP),fy=new Float64Array(nP);
     for(var i=0;i<nP;i++){fx[i]=D.fixed_pos[i][dx];fy[i]=D.fixed_pos[i][dy]}
@@ -1157,9 +1543,9 @@ function draw2D(){
         var layer=p.layer,amp=p.amp;
         for(var j=0;j<nP;j++){
             var sx2=0,sy2=0;
-            if(p.mode==='single'){sx2=D.deltas[layer][j][dx];sy2=D.deltas[layer][j][dy]}
-            else if(p.mode==='cumfwd'){for(var l=0;l<=layer;l++){sx2+=D.deltas[l][j][dx];sy2+=D.deltas[l][j][dy]}}
-            else{for(var l2=layer;l2<D.n_layers;l2++){sx2+=D.deltas[l2][j][dx];sy2+=D.deltas[l2][j][dy]}}
+            if(p.mode==='single'){sx2=activeDeltas[layer][j][dx];sy2=activeDeltas[layer][j][dy]}
+            else if(p.mode==='cumfwd'){for(var l=0;l<=layer;l++){sx2+=activeDeltas[l][j][dx];sy2+=activeDeltas[l][j][dy]}}
+            else{for(var l2=layer;l2<D.n_layers;l2++){sx2+=activeDeltas[l2][j][dx];sy2+=activeDeltas[l2][j][dy]}}
             edx[j]=sx2*amp;edy[j]=sy2*amp;
         }
     }
@@ -1363,15 +1749,15 @@ function draw2D(){
         }
     }
 
-    // Restore transform before drawing HUD (so HUD stays fixed on screen)
     c.restore();
 
-    // HUD text — drawn outside the transform so it doesn't scale/pan
+    // HUD text
+    var decompLabel = getDecompLabel();
     c.font='11px monospace';c.fillStyle='rgba(255,255,255,0.45)';
     if(isEmb){
         c.fillText('EMBEDDING SPACE [2D]  Dims:'+dx+','+dy,42,18);
     } else {
-        c.fillText('Layer '+p.layer+'/'+(D.n_layers-1)+'  t='+p.t.toFixed(2)+'  amp='+p.amp.toFixed(1)+'  Dims:'+dx+','+dy+'  Mode:'+p.mode+'  [2D]',42,18);
+        c.fillText('Layer '+p.layer+'/'+(D.n_layers-1)+'  t='+p.t.toFixed(2)+'  amp='+p.amp.toFixed(1)+'  Dims:'+dx+','+dy+'  Mode:'+p.mode+'  Decomp:'+decompLabel+'  [2D]',42,18);
     }
     c.font='10px monospace';c.fillStyle='rgba(255,255,255,0.35)';
     c.fillText('Zoom: '+zoomLevel.toFixed(2)+'x  (Scroll=zoom, Shift+drag=pan, 0=reset)',42,H-10);
@@ -1386,6 +1772,9 @@ function draw3D(){
     var nP=D.n_points,nR=D.n_real,dx=p.dx,dy=p.dy,dz=p.dz;
     var isEmb=p.mode==='embedding';
 
+    // Use the active deltas based on decomposition selector
+    var activeDeltas = getActiveDeltas();
+
     var fx=new Float64Array(nP),fy=new Float64Array(nP),fz=new Float64Array(nP);
     for(var i=0;i<nP;i++){
         fx[i]=D.fixed_pos[i][dx];
@@ -1399,11 +1788,11 @@ function draw3D(){
         for(var j=0;j<nP;j++){
             var sx3=0,sy3=0,sz3=0;
             if(p.mode==='single'){
-                sx3=D.deltas[layer][j][dx];sy3=D.deltas[layer][j][dy];sz3=D.deltas[layer][j][dz];
+                sx3=activeDeltas[layer][j][dx];sy3=activeDeltas[layer][j][dy];sz3=activeDeltas[layer][j][dz];
             } else if(p.mode==='cumfwd'){
-                for(var l=0;l<=layer;l++){sx3+=D.deltas[l][j][dx];sy3+=D.deltas[l][j][dy];sz3+=D.deltas[l][j][dz]}
+                for(var l=0;l<=layer;l++){sx3+=activeDeltas[l][j][dx];sy3+=activeDeltas[l][j][dy];sz3+=activeDeltas[l][j][dz]}
             } else {
-                for(var l2=layer;l2<D.n_layers;l2++){sx3+=D.deltas[l2][j][dx];sy3+=D.deltas[l2][j][dy];sz3+=D.deltas[l2][j][dz]}
+                for(var l2=layer;l2<D.n_layers;l2++){sx3+=activeDeltas[l2][j][dx];sy3+=activeDeltas[l2][j][dy];sz3+=activeDeltas[l2][j][dz]}
             }
             edx3[j]=sx3*amp;edy3[j]=sy3*amp;edz3[j]=sz3*amp;
         }
@@ -1425,12 +1814,10 @@ function draw3D(){
     var vy0=cy3-mr3*(.5+pd3), vy1=cy3+mr3*(.5+pd3);
     var vz0=cz3-mr3*(.5+pd3), vz1=cz3+mr3*(.5+pd3);
 
-    // Zoom-aware 3D projection: scale sc3 by zoomLevel, offset by panX/panY
     var effSc3 = sc3 * zoomLevel;
     var cx2d = W/2 + panX;
     var cy2d = H/2 + panY;
 
-    // Override project3D locally to use zoom/pan
     function proj3D(x, y, z){
         var r=rotatePoint3D(x, y, z);
         var scale=focalLength/(focalLength+r[2]);
@@ -1497,7 +1884,6 @@ function draw3D(){
         edges3d.push({a:a,b:b,strain:s,dir:'z'});
     }
 
-    // Project all grid vertices using zoom-aware projection
     var projV=[];
     for(var vi=0;vi<nV3;vi++){
         var px=(gX3[vi]-cx3)*effSc3, py=(gY3[vi]-cy3)*effSc3, pz=(gZ3[vi]-cz3)*effSc3;
@@ -1683,14 +2069,14 @@ function draw3D(){
                 c.beginPath();c.arc(np2[0],np2[1],nr,0,Math.PI*2);
                 c.fillStyle=nb.is_real?'rgba(0,255,200,0.8)':'rgba(0,255,200,0.35)';
                 c.fill();
-                if(p.nblabel){                    c.font='9px monospace';c.fillStyle='rgba(0,255,200,0.9)';
+                if(p.nblabel){
+                    c.font='9px monospace';c.fillStyle='rgba(0,255,200,0.9)';
                     c.fillText(nb.label+' (d='+nb.dist.toFixed(1)+')',np2[0]+8,np2[1]-4);
                 }
             }
         });
     }
 
-    // Draw real tokens (sorted back-to-front)
     if(p.tok){
         var tc=['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71',
             '#e74c3c','#3498db','#9b59b6','#1abc9c','#e67e22',
@@ -1722,7 +2108,6 @@ function draw3D(){
             c.fillStyle=isSel?'#0f0':'#fff';c.fillText(lb,rp.sx+12,rp.sy-10);
         }
 
-        // Sequence line in embedding mode
         if(isEmb&&nR>1){
             c.strokeStyle='rgba(233,69,96,0.3)';c.lineWidth=1.5;c.setLineDash([4,4]);
             c.beginPath();
@@ -1739,11 +2124,12 @@ function draw3D(){
     }
 
     // HUD text
+    var decompLabel = getDecompLabel();
     c.font='11px monospace';c.fillStyle='rgba(255,255,255,0.45)';
     if(isEmb){
         c.fillText('EMBEDDING SPACE [3D]  Dims:'+dx+','+dy+','+dz+'  Drag to rotate',42,18);
     } else {
-        c.fillText('Layer '+p.layer+'/'+(D.n_layers-1)+'  t='+p.t.toFixed(2)+'  amp='+p.amp.toFixed(1)+'  Dims:'+dx+','+dy+','+dz+'  [3D]  Drag to rotate',42,18);
+        c.fillText('Layer '+p.layer+'/'+(D.n_layers-1)+'  t='+p.t.toFixed(2)+'  amp='+p.amp.toFixed(1)+'  Dims:'+dx+','+dy+','+dz+'  Decomp:'+decompLabel+'  [3D]  Drag to rotate',42,18);
     }
     c.font='10px monospace';c.fillStyle='rgba(255,255,255,0.35)';
     c.fillText('Zoom: '+zoomLevel.toFixed(2)+'x  (Scroll=zoom, Shift+drag=pan, 0=reset)',42,H-10);
@@ -1761,18 +2147,14 @@ cv3d.addEventListener('wheel', function(e) {
     zoomLevel = Math.max(0.1, Math.min(50, zoomLevel * zoomFactor));
 
     if(viewMode==='2d'){
-        // 2D: adjust pan so zoom centers on mouse cursor
         panX = mx - (mx - panX) * (zoomLevel / oldZoom);
         panY = my - (my - panY) * (zoomLevel / oldZoom);
     } else {
-        // 3D: adjust pan to keep the point under the cursor stable
         var W = cv3d.width, H = cv3d.height;
         var cx2dOld = W/2 + panX;
         var cy2dOld = H/2 + panY;
-        // The mouse offset from center, in projected space
         var dmx = mx - cx2dOld;
         var dmy = my - cy2dOld;
-        // Scale that offset by the zoom ratio to keep it pinned
         panX += dmx * (1 - zoomLevel / oldZoom);
         panY += dmy * (1 - zoomLevel / oldZoom);
     }
@@ -1780,18 +2162,6 @@ cv3d.addEventListener('wheel', function(e) {
     draw();
 }, { passive: false });
 
-// Middle-click or Shift+click pan
-window.addEventListener('mousemove', function(e) {
-    if (!panActive) return;
-    panX += e.clientX - panLastX;
-    panY += e.clientY - panLastY;
-    panLastX = e.clientX;
-    panLastY = e.clientY;
-    draw();
-});
-window.addEventListener('mouseup', function(e) {
-    if (e.button === 1 || e.button === 0) panActive = false;
-});
 </script></body></html>"""
 
 
