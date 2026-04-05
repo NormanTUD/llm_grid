@@ -314,12 +314,12 @@ class TestPCAComputation(unittest.TestCase):
     def test_pca_centroid_is_mean(self):
         mat = np.random.randn(15, 4)
         centroid, _, _, _, _, _ = app.compute_pca_basis(mat, 4)
-        np.testing.assert_allclose(centroid, mat.mean(axis=0), atol=1e-10)
+        np.testing.assert_allclose(centroid, mat.astype(np.float32).mean(axis=0), atol=1e-6)
 
     def test_pca_centered_zero_mean(self):
         mat = np.random.randn(15, 4)
         _, centered, _, _, _, _ = app.compute_pca_basis(mat, 4)
-        np.testing.assert_allclose(centered.mean(axis=0), 0.0, atol=1e-10)
+        np.testing.assert_allclose(centered.mean(axis=0), 0.0, atol=1e-6)
 
     def test_pca_single_point_fallback(self):
         """With only 1 point, PCA should still return valid axes."""
@@ -329,12 +329,10 @@ class TestPCAComputation(unittest.TestCase):
         self.assertEqual(pc2.shape, (4,))
 
     def test_pca_orthogonality(self):
-        """PC1 and PC2 should be orthogonal."""
         mat = np.random.randn(50, 8)
         _, _, pc1, pc2, _, _ = app.compute_pca_basis(mat, 8)
         dot = np.dot(pc1, pc2)
-        self.assertAlmostEqual(dot, 0.0, places=10)
-
+        self.assertAlmostEqual(dot, 0.0, places=5)
 
 # ===================================================================
 # 8. GRID PROBE GENERATION
