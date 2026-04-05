@@ -202,21 +202,15 @@ def extract_hidden_states(model, input_ids):
 
 
 def compute_layer0_and_deltas(hidden_states, n_layers):
-    """
-    From hidden_states for one sequence, extract per-token:
-      - layer-0 embedding (numpy)
-      - list of per-layer deltas (numpy)
-    Returns (list_of_layer0_vecs, list_of_delta_lists).
-    """
     hs = hidden_states
     seq_len = hs[0].shape[1]
     layer0_vecs = []
     delta_lists = []
     for s in range(seq_len):
-        layer0_vecs.append(hs[0][0][s].cpu().numpy())
+        layer0_vecs.append(hs[0][0][s].cpu().float().numpy())  # .float() → float32
         deltas = []
         for lay in range(n_layers):
-            deltas.append((hs[lay + 1][0][s] - hs[lay][0][s]).cpu().numpy())
+            deltas.append((hs[lay + 1][0][s] - hs[lay][0][s]).cpu().float().numpy())
         delta_lists.append(deltas)
     return layer0_vecs, delta_lists
 
@@ -504,6 +498,9 @@ def compute_pca_basis(layer0_mat, hidden_dim):
     Compute centroid, centered data, and top-2 PCA directions.
     Returns (centroid, centered, pc1, pc2, proj1, proj2).
     """
+    # Ensure float32 or float64 for linalg compatibility
+    layer0_mat = layer0_mat.astype(np.float32)
+    
     centroid = np.mean(layer0_mat, axis=0)
     centered = layer0_mat - centroid
     n_total = layer0_mat.shape[0]
@@ -520,7 +517,6 @@ def compute_pca_basis(layer0_mat, hidden_dim):
     proj1 = centered @ pc1
     proj2 = centered @ pc2
     return centroid, centered, pc1, pc2, proj1, proj2
-
 
 # ============================================================
 # 9. GRID INTERSECTION PROBES
