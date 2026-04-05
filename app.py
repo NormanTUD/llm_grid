@@ -43,7 +43,6 @@ def ensure_safe_env():
     past_date = compute_exclude_newer_date(8)
     os.environ["UV_EXCLUDE_NEWER"] = past_date
 
-    print(f"[uv-shield] Force packages from: {past_date}")
     restart_with_uv(sys.argv[0], sys.argv[1:], os.environ)
 
 
@@ -637,7 +636,6 @@ canvas{background:#0d1117}
 <option value="EleutherAI/pythia-160m">Pythia 160M</option>
 <option value="EleutherAI/pythia-410m">Pythia 410M</option>
 <option value="facebook/opt-125m">OPT 125M</option>
-<option value="facebook/opt-350m">OPT 350M</option>
 </select>
 </div>
 <div id="text-area">
