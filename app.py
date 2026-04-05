@@ -4,6 +4,7 @@
 #   "torch",
 #   "transformers",
 #   "tiktoken",
+#   "sentencepiece",
 #   "numpy",
 # ]
 # ///
