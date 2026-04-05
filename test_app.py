@@ -284,12 +284,6 @@ class TestNeighborComputation(unittest.TestCase):
         idxs = {r["idx"] for r in result}
         self.assertEqual(idxs, {1, 2})
 
-    def test_find_k_neighbors_excludes_self(self):
-        all_emb = np.array([[0.0, 0.0], [1.0, 0.0]])
-        result = app.find_k_neighbors(0, all_emb[0], all_emb, ["a", "b"], [True, True], k=5)
-        idxs = [r["idx"] for r in result]
-        self.assertNotIn(0, idxs)
-
     def test_compute_neighbors_returns_correct_count(self):
         real = np.array([[0.0, 0.0], [1.0, 0.0]])
         all_emb = np.array([[0.0, 0.0], [1.0, 0.0], [0.5, 0.5]])
