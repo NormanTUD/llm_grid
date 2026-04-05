@@ -233,13 +233,13 @@ class TestHiddenStateExtraction(unittest.TestCase):
             self.assertEqual(v.shape, (8,))
 
     def test_deltas_are_differences(self):
-        """Delta[l] should equal hidden_states[l+1] - hidden_states[l]."""
+        """Delta[lay] should equal hidden_states[lay+1] - hidden_states[lay]."""
         hs = self._fake_hidden_states(n_layers=2, seq_len=2, dim=4)
         l0, dl = app.compute_layer0_and_deltas(hs, n_layers=2)
         for s in range(2):
-            for l in range(2):
-                expected = (hs[l + 1][0][s] - hs[l][0][s]).cpu().numpy()
-                np.testing.assert_allclose(dl[s][l], expected, atol=1e-6)
+            for lay in range(2):
+                expected = (hs[lay + 1][0][s] - hs[lay][0][s]).cpu().numpy()
+                np.testing.assert_allclose(dl[s][lay], expected, atol=1e-6)
 
     def test_run_all_sequences(self):
         """run_all_sequences should aggregate across multiple sequences."""
