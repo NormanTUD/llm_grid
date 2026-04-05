@@ -38,8 +38,10 @@ where`v(p)`is an RBF-interpolated vector field derived from the per-token residu
 
 **None** — the script bootstraps itself. Just run it with any Python 3.7+:
 
+If you don't have `uv` installed, run `curl -LsSf https://astral.sh/uv/install.sh | sh`.
+
 ```bash
-python3 app.py
+uv run app.py
 ```
 
 On first run it will:

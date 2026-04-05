@@ -1,42 +1,41 @@
 #!/usr/bin/env python3
-"""
-Metric Space Explorer für Transformer Residual Streams
-=======================================================
-Usage: python3 app.py [--model gpt2] [--port 8765]
+# /// script
+# dependencies = [
+#   "torch",
+#   "transformers",
+#   "numpy",
+# ]
+# ///
 
-Supported models: gpt2, gpt2-medium, gpt2-large, gpt2-xl,
-                  bert-base-uncased, bert-large-uncased,
-                  distilbert-base-uncased, roberta-base,
-                  EleutherAI/pythia-160m, EleutherAI/pythia-410m,
-                  facebook/opt-125m, facebook/opt-350m
-"""
+import os
+import sys
+import subprocess
+from datetime import datetime, timedelta
 
-import os, sys, subprocess, argparse
-
-VENV_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".venv")
-if sys.platform == "win32":
-    VENV_PYTHON = os.path.join(VENV_DIR, "Scripts", "python.exe")
-    VENV_PIP = os.path.join(VENV_DIR, "Scripts", "pip.exe")
-else:
-    VENV_PYTHON = os.path.join(VENV_DIR, "bin", "python")
-    VENV_PIP = os.path.join(VENV_DIR, "bin", "pip")
-
-def is_in_venv():
-    return sys.prefix != sys.base_prefix
-
-def bootstrap():
-    if is_in_venv():
+def ensure_safe_env():
+    """
+    Stellt sicher, dass uv nur Pakete nutzt, die mindestens 8 Tage alt sind.
+    """
+    # Wenn wir bereits im "re-run" sind oder die Variable gesetzt ist, abbrechen
+    if os.environ.get("UV_EXCLUDE_NEWER"):
         return
-    print("[Bootstrap] Setting up...")
-    if not os.path.exists(VENV_PYTHON):
-        subprocess.check_call([sys.executable, "-m", "venv", VENV_DIR])
-    subprocess.check_call([VENV_PIP, "install", "--upgrade", "pip"],
-                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.check_call([VENV_PIP, "install", "torch", "transformers", "numpy"])
-    print("[Bootstrap] Re-launching in venv...")
-    os.execv(VENV_PYTHON, [VENV_PYTHON] + sys.argv)
 
-bootstrap()
+    # Berechne Datum: Heute minus 8 Tage
+    past_date = (datetime.utcnow() - timedelta(days=8)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    os.environ["UV_EXCLUDE_NEWER"] = past_date
+
+    # Falls wir nicht bereits durch 'uv run' laufen, erzwingen wir es hier
+    # Das sorgt dafür, dass uv die dependencies oben liest und die Sperre beachtet
+    if not sys.executable.endswith("python"): # Grober Check auf venv/uv-Intervention
+        pass 
+
+    print(f"[uv-shield] Erzwinge Paketstand vom: {past_date}")
+    
+    # Neustart des Skripts mit uv run, um die Inline-Dependencies und die Sperre zu nutzen
+    os.execvpe("uv", ["uv", "run", "--quiet", sys.argv[0]] + sys.argv[1:], os.environ)
+
+# Diese Funktion muss VOR den großen Imports stehen
+ensure_safe_env()
 
 import json, threading, webbrowser, time
 import numpy as np
