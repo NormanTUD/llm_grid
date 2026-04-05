@@ -500,7 +500,8 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:'Segoe UI',sans-serif;display:
 .cr label{min-width:90px;text-align:right;color:#a0a0c0}
 .cr input[type=range]{flex:1;accent-color:#e94560}
 .cr .v{min-width:50px;color:#e94560;font-weight:bold;font-size:10px}
-.cr select{flex:1;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;padding:2px;font-size:10px}
+.cr select{flex:1;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;
+  padding:2px;font-size:10px;min-width:0}
 .cb{display:flex;align-items:center;gap:5px;font-size:11px;color:#a0a0c0}
 .cb input{accent-color:#e94560}
 #info{background:#0f3460;padding:6px;border-radius:4px;font-size:10px;line-height:1.4}
