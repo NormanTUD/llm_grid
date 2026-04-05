@@ -577,6 +577,7 @@ Tokens: <span id="i-tok">-</span>
 <option value="cumbwd">⏪ Layers L→End (Cumulative) — remaining deformation after this layer</option>
 <option value="embedding">📐 Raw Embedding Space — no deformation, just token positions</option>
 </select>
+</div>
 <h3>Dimensions</h3>
 <div class="cr"><label>Dim X:</label><input type="range" id="sl-dx" min="0" max="767" value="0" step="1"><span class="v" id="v-dx">0</span></div>
 <div class="cr"><label>Dim Y:</label><input type="range" id="sl-dy" min="0" max="767" value="1" step="1"><span class="v" id="v-dy">1</span></div>
