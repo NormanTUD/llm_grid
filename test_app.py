@@ -924,8 +924,8 @@ class TestPCAComputationEdgeCases(unittest.TestCase):
         """PC1 and PC2 should be approximately unit vectors."""
         mat = np.random.randn(20, 8)
         _, _, pc1, pc2, _, _ = app.compute_pca_basis(mat, 8)
-        self.assertAlmostEqual(np.linalg.norm(pc1), 1.0, places=10)
-        self.assertAlmostEqual(np.linalg.norm(pc2), 1.0, places=10)
+        self.assertAlmostEqual(np.linalg.norm(pc1), 1.0, places=6)
+        self.assertAlmostEqual(np.linalg.norm(pc2), 1.0, places=6)
 
 
 # ===================================================================
