@@ -19,10 +19,8 @@ Covers:
 
 import json
 import os
-import sys
 import unittest
-from unittest.mock import patch, MagicMock, PropertyMock
-from io import BytesIO
+from unittest.mock import patch, MagicMock
 from http.server import HTTPServer
 import threading
 import urllib.request
@@ -236,7 +234,6 @@ class TestHiddenStateExtraction(unittest.TestCase):
 
     def test_deltas_are_differences(self):
         """Delta[l] should equal hidden_states[l+1] - hidden_states[l]."""
-        import torch
         hs = self._fake_hidden_states(n_layers=2, seq_len=2, dim=4)
         l0, dl = app.compute_layer0_and_deltas(hs, n_layers=2)
         for s in range(2):
