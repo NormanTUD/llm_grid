@@ -753,9 +753,9 @@ def process_text(text, model_name=None):
 
     decomposition_available = all_attn_deltas is not None and all_mlp_deltas is not None
     if decomposition_available:
-        print(f"[Model] Component decomposition: OK (attention + MLP deltas captured)")
+        print("[Model] Component decomposition: OK (attention + MLP deltas captured)")
     else:
-        print(f"[Model] Component decomposition: UNAVAILABLE for this architecture")
+        print("[Model] Component decomposition: UNAVAILABLE for this architecture")
 
     n_total = len(all_layer0)
     n_synth = n_total - n_real
