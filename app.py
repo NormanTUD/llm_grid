@@ -890,14 +890,21 @@ function project3D(x, y, z, W, H){
 
 // Mouse drag for 3D rotation
 var cv3d=document.getElementById('cv');
-// Replace BOTH the existing 3D drag mousedown AND the pan mousedown with this single handler:
+
 cv3d.addEventListener('mousedown', function(e){
     if(viewMode==='3d'){
-        // 3D rotation drag (left click, no shift)
         if(e.button===0 && !e.shiftKey){
             dragActive=true;
             dragLastX=e.clientX;
             dragLastY=e.clientY;
+            return;
+        }
+        // Allow shift+click pan AND middle-click pan in 3D too
+        if(e.button===1 || (e.button===0 && e.shiftKey)){
+            e.preventDefault();
+            panActive=true;
+            panLastX=e.clientX;
+            panLastY=e.clientY;
         }
         return;
     }
@@ -1379,7 +1386,6 @@ function draw3D(){
     var nP=D.n_points,nR=D.n_real,dx=p.dx,dy=p.dy,dz=p.dz;
     var isEmb=p.mode==='embedding';
 
-    // Extract 3 dims for all points
     var fx=new Float64Array(nP),fy=new Float64Array(nP),fz=new Float64Array(nP);
     for(var i=0;i<nP;i++){
         fx[i]=D.fixed_pos[i][dx];
@@ -1387,7 +1393,6 @@ function draw3D(){
         fz[i]=D.fixed_pos[i][dz];
     }
 
-    // Compute deformation deltas for all 3 dims
     var edx3=new Float64Array(nP),edy3=new Float64Array(nP),edz3=new Float64Array(nP);
     if(!isEmb){
         var layer=p.layer,amp=p.amp;
@@ -1404,7 +1409,6 @@ function draw3D(){
         }
     }
 
-    // Compute bounding box
     var mnx=Infinity,mxx=-Infinity,mny=Infinity,mxy=-Infinity,mnz=Infinity,mxz=-Infinity;
     for(var i2=0;i2<nP;i2++){
         if(fx[i2]<mnx)mnx=fx[i2];if(fx[i2]>mxx)mxx=fx[i2];
@@ -1416,21 +1420,28 @@ function draw3D(){
     var cx3=(mnx+mxx)/2,cy3=(mny+mxy)/2,cz3=(mnz+mxz)/2;
     var sc3=Math.min(W,H)*0.3/mr3;
 
-    // Padding for grid extent
     var pd3=0.12;
     var vx0=cx3-mr3*(.5+pd3), vx1=cx3+mr3*(.5+pd3);
     var vy0=cy3-mr3*(.5+pd3), vy1=cy3+mr3*(.5+pd3);
     var vz0=cz3-mr3*(.5+pd3), vz1=cz3+mr3*(.5+pd3);
 
-    // ---- 3D GRID ----
-    // Use a reduced grid resolution for 3D (cube of N³ is expensive)
+    // Zoom-aware 3D projection: scale sc3 by zoomLevel, offset by panX/panY
+    var effSc3 = sc3 * zoomLevel;
+    var cx2d = W/2 + panX;
+    var cy2d = H/2 + panY;
+
+    // Override project3D locally to use zoom/pan
+    function proj3D(x, y, z){
+        var r=rotatePoint3D(x, y, z);
+        var scale=focalLength/(focalLength+r[2]);
+        return [cx2d+r[0]*scale, cy2d+r[1]*scale, r[2], scale];
+    }
+
     var N3=Math.min(Math.max(6, Math.round(p.gr/4)), 20);
     var nV3=(N3+1)*(N3+1)*(N3+1);
 
-    // Grid vertex indexing: idx = iz*(N3+1)*(N3+1) + iy*(N3+1) + ix
     function gIdx(ix,iy,iz){return iz*(N3+1)*(N3+1)+iy*(N3+1)+ix}
 
-    // Original grid positions
     var oX3=new Float64Array(nV3),oY3=new Float64Array(nV3),oZ3=new Float64Array(nV3);
     for(var iz=0;iz<=N3;iz++)for(var iy=0;iy<=N3;iy++)for(var ix=0;ix<=N3;ix++){
         var gi=gIdx(ix,iy,iz);
@@ -1439,7 +1450,6 @@ function draw3D(){
         oZ3[gi]=vz0+(iz/N3)*(vz1-vz0);
     }
 
-    // Deformed grid positions
     var gX3=new Float64Array(nV3),gY3=new Float64Array(nV3),gZ3=new Float64Array(nV3);
     var sig=p.sig, s2i3=1/(2*sig*sig), t=p.t;
 
@@ -1461,38 +1471,25 @@ function draw3D(){
         }
     }
 
-    // Compute strain for each edge (X, Y, Z directions)
-    // We'll store strain per edge for coloring
-    function edgeStrain(a,b,oa,ob,oc,od,oe,of2){
-        var origD=Math.sqrt((oa-ob)*(oa-ob)+(oc-od)*(oc-od)+(oe-of2)*(oe-of2));
-        var defD=Math.sqrt((a-b)*(a-b));
-        // Actually compute full 3D distances
-        return origD>1e-12?defD/origD:1;
-    }
     function strain3(ax,ay,az,bx,by,bz,oax,oay,oaz,obx,oby,obz){
         var od=Math.sqrt((obx-oax)*(obx-oax)+(oby-oay)*(oby-oay)+(obz-oaz)*(obz-oaz));
         var dd=Math.sqrt((bx-ax)*(bx-ax)+(by-ay)*(by-ay)+(bz-az)*(bz-az));
         return od>1e-12?dd/od:1;
     }
 
-    // Collect all grid edges for drawing, with strain
     var edges3d=[];
-
-    // X-direction edges
     for(var iz=0;iz<=N3;iz++)for(var iy=0;iy<=N3;iy++)for(var ix=0;ix<N3;ix++){
         var a=gIdx(ix,iy,iz), b=gIdx(ix+1,iy,iz);
         var s=strain3(gX3[a],gY3[a],gZ3[a],gX3[b],gY3[b],gZ3[b],
                        oX3[a],oY3[a],oZ3[a],oX3[b],oY3[b],oZ3[b]);
         edges3d.push({a:a,b:b,strain:s,dir:'x'});
     }
-    // Y-direction edges
     for(var iz=0;iz<=N3;iz++)for(var iy=0;iy<N3;iy++)for(var ix=0;ix<=N3;ix++){
         var a=gIdx(ix,iy,iz), b=gIdx(ix,iy+1,iz);
         var s=strain3(gX3[a],gY3[a],gZ3[a],gX3[b],gY3[b],gZ3[b],
                        oX3[a],oY3[a],oZ3[a],oX3[b],oY3[b],oZ3[b]);
         edges3d.push({a:a,b:b,strain:s,dir:'y'});
     }
-    // Z-direction edges
     for(var iz=0;iz<N3;iz++)for(var iy=0;iy<=N3;iy++)for(var ix=0;ix<=N3;ix++){
         var a=gIdx(ix,iy,iz), b=gIdx(ix,iy,iz+1);
         var s=strain3(gX3[a],gY3[a],gZ3[a],gX3[b],gY3[b],gZ3[b],
@@ -1500,30 +1497,27 @@ function draw3D(){
         edges3d.push({a:a,b:b,strain:s,dir:'z'});
     }
 
-    // Project all grid vertices
+    // Project all grid vertices using zoom-aware projection
     var projV=[];
     for(var vi=0;vi<nV3;vi++){
-        var px=(gX3[vi]-cx3)*sc3, py=(gY3[vi]-cy3)*sc3, pz=(gZ3[vi]-cz3)*sc3;
-        projV.push(project3D(px,py,pz,W,H));
+        var px=(gX3[vi]-cx3)*effSc3, py=(gY3[vi]-cy3)*effSc3, pz=(gZ3[vi]-cz3)*effSc3;
+        projV.push(proj3D(px,py,pz));
     }
     var projO=[];
     for(var vi=0;vi<nV3;vi++){
-        var px=(oX3[vi]-cx3)*sc3, py=(oY3[vi]-cy3)*sc3, pz=(oZ3[vi]-cz3)*sc3;
-        projO.push(project3D(px,py,pz,W,H));
+        var px=(oX3[vi]-cx3)*effSc3, py=(oY3[vi]-cy3)*effSc3, pz=(oZ3[vi]-cz3)*effSc3;
+        projO.push(proj3D(px,py,pz));
     }
 
-    // Sort edges by average depth (back to front)
     for(var ei=0;ei<edges3d.length;ei++){
         var e=edges3d[ei];
         e.avgZ=(projV[e.a][2]+projV[e.b][2])/2;
     }
     edges3d.sort(function(a,b){return b.avgZ-a.avgZ});
 
-    // Draw reference grid
     if(p.ref){
         c.strokeStyle=isEmb?'rgba(255,255,255,0.1)':'rgba(255,255,255,0.04)';
         c.lineWidth=0.4;
-        // Only draw outer shell edges for reference to reduce clutter
         for(var ei=0;ei<edges3d.length;ei++){
             var e=edges3d[ei];
             var pa=projO[e.a], pb=projO[e.b];
@@ -1531,13 +1525,11 @@ function draw3D(){
         }
     }
 
-    // Draw deformed grid
     if(p.grid&&!isEmb){
         c.lineWidth=0.9;
         for(var ei=0;ei<edges3d.length;ei++){
             var e=edges3d[ei];
             var pa=projV[e.a], pb=projV[e.b];
-            // Depth-based alpha
             var depthAlpha=Math.max(0.1, Math.min(0.85, 0.6-e.avgZ*0.001));
             if(p.sc){
                 var ec=s2c(e.strain);
@@ -1549,25 +1541,20 @@ function draw3D(){
         }
     }
 
-    // Draw strain heatmap on faces (outer shell only for performance)
     if(p.heat&&!isEmb){
-        // Draw faces on the 6 outer shells of the cube
         var faces=[];
         function addFace(a,b,cc2,d,s1,s2s,s3s,s4){
             var avgS=(s1+s2s+s3s+s4)/4;
             var avgZ2=(projV[a][2]+projV[b][2]+projV[cc2][2]+projV[d][2])/4;
             faces.push({verts:[a,b,cc2,d],strain:avgS,z:avgZ2});
         }
-        // X-faces (ix=0 and ix=N3)
         for(var fiz=0;fiz<N3;fiz++)for(var fiy=0;fiy<N3;fiy++){
-            // ix=0 face
             var a=gIdx(0,fiy,fiz),b=gIdx(0,fiy+1,fiz),cc2=gIdx(0,fiy+1,fiz+1),d=gIdx(0,fiy,fiz+1);
             var s1=strain3(gX3[a],gY3[a],gZ3[a],gX3[b],gY3[b],gZ3[b],oX3[a],oY3[a],oZ3[a],oX3[b],oY3[b],oZ3[b]);
             var s2s=strain3(gX3[b],gY3[b],gZ3[b],gX3[cc2],gY3[cc2],gZ3[cc2],oX3[b],oY3[b],oZ3[b],oX3[cc2],oY3[cc2],oZ3[cc2]);
             var s3s=strain3(gX3[cc2],gY3[cc2],gZ3[cc2],gX3[d],gY3[d],gZ3[d],oX3[cc2],oY3[cc2],oZ3[cc2],oX3[d],oY3[d],oZ3[d]);
             var s4=strain3(gX3[d],gY3[d],gZ3[d],gX3[a],gY3[a],gZ3[a],oX3[d],oY3[d],oZ3[d],oX3[a],oY3[a],oZ3[a]);
             addFace(a,b,cc2,d,s1,s2s,s3s,s4);
-            // ix=N3 face
             a=gIdx(N3,fiy,fiz);b=gIdx(N3,fiy+1,fiz);cc2=gIdx(N3,fiy+1,fiz+1);d=gIdx(N3,fiy,fiz+1);
             s1=strain3(gX3[a],gY3[a],gZ3[a],gX3[b],gY3[b],gZ3[b],oX3[a],oY3[a],oZ3[a],oX3[b],oY3[b],oZ3[b]);
             s2s=strain3(gX3[b],gY3[b],gZ3[b],gX3[cc2],gY3[cc2],gZ3[cc2],oX3[b],oY3[b],oZ3[b],oX3[cc2],oY3[cc2],oZ3[cc2]);
@@ -1575,7 +1562,6 @@ function draw3D(){
             s4=strain3(gX3[d],gY3[d],gZ3[d],gX3[a],gY3[a],gZ3[a],oX3[d],oY3[d],oZ3[d],oX3[a],oY3[a],oZ3[a]);
             addFace(a,b,cc2,d,s1,s2s,s3s,s4);
         }
-        // Y-faces (iy=0 and iy=N3)
         for(var fiz=0;fiz<N3;fiz++)for(var fix=0;fix<N3;fix++){
             var a=gIdx(fix,0,fiz),b=gIdx(fix+1,0,fiz),cc2=gIdx(fix+1,0,fiz+1),d=gIdx(fix,0,fiz+1);
             var s1=strain3(gX3[a],gY3[a],gZ3[a],gX3[b],gY3[b],gZ3[b],oX3[a],oY3[a],oZ3[a],oX3[b],oY3[b],oZ3[b]);
@@ -1590,7 +1576,6 @@ function draw3D(){
             s4=strain3(gX3[d],gY3[d],gZ3[d],gX3[a],gY3[a],gZ3[a],oX3[d],oY3[d],oZ3[d],oX3[a],oY3[a],oZ3[a]);
             addFace(a,b,cc2,d,s1,s2s,s3s,s4);
         }
-        // Z-faces (iz=0 and iz=N3)
         for(var fiy=0;fiy<N3;fiy++)for(var fix=0;fix<N3;fix++){
             var a=gIdx(fix,fiy,0),b=gIdx(fix+1,fiy,0),cc2=gIdx(fix+1,fiy+1,0),d=gIdx(fix,fiy+1,0);
             var s1=strain3(gX3[a],gY3[a],gZ3[a],gX3[b],gY3[b],gZ3[b],oX3[a],oY3[a],oZ3[a],oX3[b],oY3[b],oZ3[b]);
@@ -1605,7 +1590,6 @@ function draw3D(){
             s4=strain3(gX3[d],gY3[d],gZ3[d],gX3[a],gY3[a],gZ3[a],oX3[d],oY3[d],oZ3[d],oX3[a],oY3[a],oZ3[a]);
             addFace(a,b,cc2,d,s1,s2s,s3s,s4);
         }
-        // Sort faces back to front
         faces.sort(function(a,b){return b.z-a.z});
         for(var fi=0;fi<faces.length;fi++){
             var f=faces[fi];
@@ -1619,7 +1603,6 @@ function draw3D(){
         }
     }
 
-    // Draw vector arrows
     if(p.vec&&!isEmb){
         var step3=Math.max(1,Math.floor(N3/4));
         c.lineWidth=1.2;
@@ -1638,8 +1621,8 @@ function draw3D(){
         }
     }
 
-    // Draw 3D axes
-    var axLen=mr3*0.5*sc3;
+    // 3D axes
+    var axLen=mr3*0.5*effSc3;
     var axes=[
         {v:[1,0,0],label:'Dim '+dx,color:'#e94560'},
         {v:[0,1,0],label:'Dim '+dy,color:'#53a8b6'},
@@ -1648,8 +1631,8 @@ function draw3D(){
     c.lineWidth=1.5;
     for(var ai=0;ai<3;ai++){
         var ax=axes[ai];
-        var o3=project3D(0,0,0,W,H);
-        var e3=project3D(ax.v[0]*axLen,ax.v[1]*axLen,ax.v[2]*axLen,W,H);
+        var o3=proj3D(0,0,0);
+        var e3=proj3D(ax.v[0]*axLen,ax.v[1]*axLen,ax.v[2]*axLen);
         c.strokeStyle=ax.color;c.globalAlpha=0.5;
         c.beginPath();c.moveTo(o3[0],o3[1]);c.lineTo(e3[0],e3[1]);c.stroke();
         c.globalAlpha=1;
@@ -1657,17 +1640,16 @@ function draw3D(){
         c.fillText(ax.label,e3[0]+4,e3[1]-4);
     }
 
-    // Build sortable point list for painter's algorithm
+    // Points
     var points3d=[];
     for(var pi=0;pi<nP;pi++){
-        var px3=(fx[pi]-cx3)*sc3, py3=(fy[pi]-cy3)*sc3, pz3=(fz[pi]-cz3)*sc3;
-        var proj=project3D(px3,py3,pz3,W,H);
+        var px3=(fx[pi]-cx3)*effSc3, py3=(fy[pi]-cy3)*effSc3, pz3=(fz[pi]-cz3)*effSc3;
+        var proj=proj3D(px3,py3,pz3);
         points3d.push({idx:pi,sx:proj[0],sy:proj[1],z:proj[2],scale:proj[3],
             wx:px3,wy:py3,wz:pz3});
     }
     points3d.sort(function(a,b){return b.z-a.z});
 
-    // Draw probe points
     if(p.syn){
         for(var si=0;si<points3d.length;si++){
             var sp=points3d[si];
@@ -1678,20 +1660,19 @@ function draw3D(){
         }
     }
 
-    // Draw neighbor lines
     if(p.nb && D.neighbors && selectedTokens.size>0){
         var kn=p.kn;
         selectedTokens.forEach(function(ti){
             if(ti>=D.neighbors.length)return;
             var nbs=D.neighbors[ti].slice(0,kn);
-            var tpx=(fx[ti]-cx3)*sc3,tpy=(fy[ti]-cy3)*sc3,tpz=(fz[ti]-cz3)*sc3;
-            var tp=project3D(tpx,tpy,tpz,W,H);
+            var tpx=(fx[ti]-cx3)*effSc3,tpy=(fy[ti]-cy3)*effSc3,tpz=(fz[ti]-cz3)*effSc3;
+            var tp=proj3D(tpx,tpy,tpz);
             for(var ni=0;ni<nbs.length;ni++){
                 var nb=nbs[ni];
                 var nidx=nb.idx;
                 if(nidx>=nP)continue;
-                var npx=(fx[nidx]-cx3)*sc3,npy=(fy[nidx]-cy3)*sc3,npz=(fz[nidx]-cz3)*sc3;
-                var np2=project3D(npx,npy,npz,W,H);
+                var npx=(fx[nidx]-cx3)*effSc3,npy=(fy[nidx]-cy3)*effSc3,npz=(fz[nidx]-cz3)*effSc3;
+                var np2=proj3D(npx,npy,npz);
                 var alpha=Math.max(0.15,1.0-ni*0.08);
                 c.strokeStyle='rgba(0,255,200,'+alpha.toFixed(2)+')';
                 c.lineWidth=Math.max(0.5,2.5-ni*0.2);
@@ -1702,8 +1683,7 @@ function draw3D(){
                 c.beginPath();c.arc(np2[0],np2[1],nr,0,Math.PI*2);
                 c.fillStyle=nb.is_real?'rgba(0,255,200,0.8)':'rgba(0,255,200,0.35)';
                 c.fill();
-                if(p.nblabel){
-                    c.font='9px monospace';c.fillStyle='rgba(0,255,200,0.9)';
+                if(p.nblabel){                    c.font='9px monospace';c.fillStyle='rgba(0,255,200,0.9)';
                     c.fillText(nb.label+' (d='+nb.dist.toFixed(1)+')',np2[0]+8,np2[1]-4);
                 }
             }
@@ -1746,12 +1726,12 @@ function draw3D(){
         if(isEmb&&nR>1){
             c.strokeStyle='rgba(233,69,96,0.3)';c.lineWidth=1.5;c.setLineDash([4,4]);
             c.beginPath();
-            var fp0=(fx[0]-cx3)*sc3,fp0y=(fy[0]-cy3)*sc3,fp0z=(fz[0]-cz3)*sc3;
-            var pp0=project3D(fp0,fp0y,fp0z,W,H);
+            var fp0=(fx[0]-cx3)*effSc3,fp0y=(fy[0]-cy3)*effSc3,fp0z=(fz[0]-cz3)*effSc3;
+            var pp0=proj3D(fp0,fp0y,fp0z);
             c.moveTo(pp0[0],pp0[1]);
             for(var ti4=1;ti4<nR;ti4++){
-                var fpx=(fx[ti4]-cx3)*sc3,fpy=(fy[ti4]-cy3)*sc3,fpz=(fz[ti4]-cz3)*sc3;
-                var pp=project3D(fpx,fpy,fpz,W,H);
+                var fpx=(fx[ti4]-cx3)*effSc3,fpy=(fy[ti4]-cy3)*effSc3,fpz=(fz[ti4]-cz3)*effSc3;
+                var pp=proj3D(fpx,fpy,fpz);
                 c.lineTo(pp[0],pp[1]);
             }
             c.stroke();c.setLineDash([]);
@@ -1765,6 +1745,8 @@ function draw3D(){
     } else {
         c.fillText('Layer '+p.layer+'/'+(D.n_layers-1)+'  t='+p.t.toFixed(2)+'  amp='+p.amp.toFixed(1)+'  Dims:'+dx+','+dy+','+dz+'  [3D]  Drag to rotate',42,18);
     }
+    c.font='10px monospace';c.fillStyle='rgba(255,255,255,0.35)';
+    c.fillText('Zoom: '+zoomLevel.toFixed(2)+'x  (Scroll=zoom, Shift+drag=pan, 0=reset)',42,H-10);
 }
 
 // Scroll-wheel zoom
@@ -1774,14 +1756,26 @@ cv3d.addEventListener('wheel', function(e) {
     var mx = e.clientX - rect.left;
     var my = e.clientY - rect.top;
 
-    // Zoom toward/away from mouse cursor
     var oldZoom = zoomLevel;
     var zoomFactor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
     zoomLevel = Math.max(0.1, Math.min(50, zoomLevel * zoomFactor));
 
-    // Adjust pan so zoom centers on mouse position
-    panX = mx - (mx - panX) * (zoomLevel / oldZoom);
-    panY = my - (my - panY) * (zoomLevel / oldZoom);
+    if(viewMode==='2d'){
+        // 2D: adjust pan so zoom centers on mouse cursor
+        panX = mx - (mx - panX) * (zoomLevel / oldZoom);
+        panY = my - (my - panY) * (zoomLevel / oldZoom);
+    } else {
+        // 3D: adjust pan to keep the point under the cursor stable
+        var W = cv3d.width, H = cv3d.height;
+        var cx2dOld = W/2 + panX;
+        var cy2dOld = H/2 + panY;
+        // The mouse offset from center, in projected space
+        var dmx = mx - cx2dOld;
+        var dmy = my - cy2dOld;
+        // Scale that offset by the zoom ratio to keep it pinned
+        panX += dmx * (1 - zoomLevel / oldZoom);
+        panY += dmy * (1 - zoomLevel / oldZoom);
+    }
 
     draw();
 }, { passive: false });
