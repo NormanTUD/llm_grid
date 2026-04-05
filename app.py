@@ -50,12 +50,12 @@ def ensure_safe_env():
 # This must run BEFORE heavy imports
 ensure_safe_env()
 
-import webbrowser
-import time
-import numpy as np
-import torch
-from transformers import AutoTokenizer, AutoModel
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import webbrowser # noqa: E402
+import time # noqa: E402
+import numpy as np # noqa: E402
+import torch # noqa: E402
+from transformers import AutoTokenizer, AutoModel # noqa: E402
+from http.server import HTTPServer, BaseHTTPRequestHandler # noqa: E402
 
 # ============================================================
 # 2. MODEL DETECTION & CONFIG HELPERS
