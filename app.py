@@ -526,7 +526,7 @@ def compute_pca_basis(layer0_mat, hidden_dim):
     """
     # Ensure float32 or float64 for linalg compatibility
     layer0_mat = layer0_mat.astype(np.float32)
-    
+
     centroid = np.mean(layer0_mat, axis=0)
     centered = layer0_mat - centroid
     n_total = layer0_mat.shape[0]
