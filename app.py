@@ -572,11 +572,11 @@ Tokens: <span id="i-tok">-</span>
 <div class="cr"><label>Amplify:</label><input type="range" id="sl-amp" min="0.1" max="500" value="1" step="0.1"><span class="v" id="v-amp">1.0</span></div>
 <div class="cr"><label>Mode:</label>
 <select id="sel-mode">
-<option value="single">Single Layer</option>
-<option value="cumfwd">Cumulative Fwd</option>
-<option value="cumbwd">Cumulative Bwd</option>
-<option value="embedding">Embedding Space</option>
-</select></div>
+<option value="single">🔍 This Layer Only — show deformation from one layer</option>
+<option value="cumfwd">⏩ Layers 0→L (Cumulative) — total deformation up to this layer</option>
+<option value="cumbwd">⏪ Layers L→End (Cumulative) — remaining deformation after this layer</option>
+<option value="embedding">📐 Raw Embedding Space — no deformation, just token positions</option>
+</select>
 <h3>Dimensions</h3>
 <div class="cr"><label>Dim X:</label><input type="range" id="sl-dx" min="0" max="767" value="0" step="1"><span class="v" id="v-dx">0</span></div>
 <div class="cr"><label>Dim Y:</label><input type="range" id="sl-dy" min="0" max="767" value="1" step="1"><span class="v" id="v-dy">1</span></div>
@@ -1205,4 +1205,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
