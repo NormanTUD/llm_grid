@@ -41,6 +41,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          pip install pytest
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install transformers numpy
 
@@ -101,6 +102,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          pip install pytest
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install transformers numpy
 
@@ -178,3 +180,4 @@ jobs:
             exit 1
           fi
           echo "All checks passed ✅"
+
