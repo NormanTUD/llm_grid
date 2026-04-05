@@ -47,7 +47,10 @@ def ensure_safe_env():
 # This must run BEFORE heavy imports
 ensure_safe_env()
 
-import json, threading, webbrowser, time
+import json
+import threading
+import webbrowser
+import time
 import numpy as np
 import torch
 from transformers import AutoTokenizer, AutoModel
