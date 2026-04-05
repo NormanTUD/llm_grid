@@ -487,7 +487,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#1a1a2e;color:#e0e0e0;font-family:'Segoe UI',sans-serif;display:flex;height:100vh;overflow:hidden}
-#side{width:370px;min-width:370px;background:#16213e;padding:12px;overflow-y:auto;border-right:2px solid #0f3460;display:flex;flex-direction:column;gap:6px}
+#side{width:370px;min-width:370px;background:#16213e;padding:12px;
+  overflow-y:auto;border-right:2px solid #0f3460;
+  display:flex;flex-direction:column;gap:6px}
+#neighbor-panel{background:#0f3460;padding:6px;border-radius:4px;font-size:10px;
+  line-height:1.5;max-height:300px;overflow-y:auto;display:none}
+#selected-tokens{display:flex;flex-wrap:wrap;gap:3px;margin-top:4px;
+  min-height:20px;max-height:120px;overflow-y:auto}
 #side h2{color:#e94560;font-size:14px;margin-bottom:4px}
 #side h3{color:#53a8b6;font-size:11px;margin-top:5px;border-bottom:1px solid #0f3460;padding-bottom:2px}
 .cr{display:flex;align-items:center;gap:5px;font-size:11px}
