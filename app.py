@@ -807,7 +807,7 @@ def process_text(text, model_name=None):
     print("[Model] Computing strain statistics...")
     strain_stats = compute_strain_stats(all_layer0, all_deltas_per_point, n_layers, n_real, hidden_dim)
     # Find most active layer
-    most_active_layer = max(range(n_layers), key=lambda l: strain_stats[l]["variance"])
+    most_active_layer = max(range(n_layers), key=lambda lay: strain_stats[lay]["variance"])
     print(f"[Model] Most active layer (by strain variance): {most_active_layer}")
 
     # Build output
