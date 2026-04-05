@@ -3,6 +3,7 @@
 # dependencies = [
 #   "torch",
 #   "transformers",
+#   "tiktoken",
 #   "numpy",
 # ]
 # ///
