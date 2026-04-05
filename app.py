@@ -5,6 +5,7 @@
 #   "transformers",
 #   "tiktoken",
 #   "sentencepiece",
+#   "protobuf",
 #   "numpy",
 # ]
 # ///
