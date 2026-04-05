@@ -1,0 +1,180 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ──────────────────────────────────────────────
+  # 1. Fast unit tests (no model download)
+  # ──────────────────────────────────────────────
+  unit-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('**/requirements*.txt', 'app.py') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-${{ matrix.python-version }}-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install transformers numpy
+
+      - name: Prevent ensure_safe_env from re-execing
+        run: echo "UV_EXCLUDE_NEWER=2099-01-01T00:00:00Z" >> "$GITHUB_ENV"
+
+      - name: Run unit tests
+        run: |
+          python -m pytest test_app.py \
+            -v \
+            --tb=short \
+            --junitxml=results/junit-${{ matrix.python-version }}.xml \
+            -k "not TestFullPipeline"
+        env:
+          UV_EXCLUDE_NEWER: "2099-01-01T00:00:00Z"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-py${{ matrix.python-version }}
+          path: results/
+          retention-days: 30
+
+  # ──────────────────────────────────────────────
+  # 2. Slow integration tests (downloads GPT-2)
+  # ──────────────────────────────────────────────
+  integration-tests:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-3.11-${{ hashFiles('**/requirements*.txt', 'app.py') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-3.11-
+
+      - name: Cache HuggingFace models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: ${{ runner.os }}-hf-gpt2-v1
+          restore-keys: |
+            ${{ runner.os }}-hf-gpt2-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install transformers numpy
+
+      - name: Prevent ensure_safe_env from re-execing
+        run: echo "UV_EXCLUDE_NEWER=2099-01-01T00:00:00Z" >> "$GITHUB_ENV"
+
+      - name: Run integration tests (with GPT-2)
+        run: |
+          python -m pytest test_app.py \
+            -v \
+            --tb=short \
+            --junitxml=results/junit-integration.xml \
+            -k "TestFullPipeline"
+        timeout-minutes: 15
+        env:
+          RUN_SLOW_TESTS: "1"
+          UV_EXCLUDE_NEWER: "2099-01-01T00:00:00Z"
+
+      - name: Upload integration test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-integration
+          path: results/
+          retention-days: 30
+
+  # ──────────────────────────────────────────────
+  # 3. Linting & static analysis
+  # ──────────────────────────────────────────────
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install linting tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+
+      - name: Run ruff linter
+        run: |
+          ruff check app.py test_app.py --select=E,F,W --ignore=E501,E402,F841
+
+      - name: Run ruff formatter check
+        run: |
+          ruff format --check app.py test_app.py || echo "::warning::Formatting differences found (non-blocking)"
+        continue-on-error: true
+
+  # ──────────────────────────────────────────────
+  # 4. Summary gate — all required checks pass
+  # ──────────────────────────────────────────────
+  all-checks:
+    runs-on: ubuntu-latest
+    needs: [unit-tests, lint]
+    if: always()
+
+    steps:
+      - name: Verify all required jobs passed
+        run: |
+          echo "Unit tests: ${{ needs.unit-tests.result }}"
+          echo "Lint:       ${{ needs.lint.result }}"
+          if [[ "${{ needs.unit-tests.result }}" != "success" ]]; then
+            echo "::error::Unit tests failed"
+            exit 1
+          fi
+          if [[ "${{ needs.lint.result }}" != "success" ]]; then
+            echo "::error::Linting failed"
+            exit 1
+          fi
+          echo "All checks passed ✅"
