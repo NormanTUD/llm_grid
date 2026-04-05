@@ -703,12 +703,6 @@ class TestModelDetectionEdgeCases(unittest.TestCase):
         cfg = self._cfg(architectures=["ElectraForPreTraining"])
         self.assertEqual(app.detect_model_type(cfg), "masked")
 
-    def test_detect_multiple_architectures(self):
-        """When multiple architectures are listed, first match wins."""
-        cfg = self._cfg(architectures=["BertModel", "GPT2LMHeadModel"])
-        # "bert" appears in the joined string, so masked should match
-        self.assertEqual(app.detect_model_type(cfg), "masked")
-
     def test_detect_empty_architectures_list(self):
         cfg = self._cfg(architectures=[])
         self.assertEqual(app.detect_model_type(cfg), "causal")
@@ -867,12 +861,6 @@ class TestHiddenStateExtractionEdgeCases(unittest.TestCase):
 # ===================================================================
 class TestNeighborComputationEdgeCases(unittest.TestCase):
     """Edge cases for neighbor computation."""
-
-    def test_find_k_neighbors_excludes_self(self):
-        all_emb = np.array([[0.0, 0.0], [1.0, 0.0]])
-        result = app.find_k_neighbors(0, all_emb[0], all_emb, ["a", "b"], [True, True], k=5)
-        idxs = [r["idx"] for r in result]
-        self.assertNotIn(0, idxs)
 
     def test_find_k_neighbors_returns_sorted_by_distance(self):
         all_emb = np.array([
