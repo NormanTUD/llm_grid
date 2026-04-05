@@ -49,12 +49,15 @@ def ensure_safe_env():
 # This must run BEFORE heavy imports
 ensure_safe_env()
 
-import webbrowser # noqa: E402
-import time # noqa: E402
-import numpy as np # noqa: E402
-import torch # noqa: E402
-from transformers import AutoTokenizer, AutoModel # noqa: E402
-from http.server import HTTPServer, BaseHTTPRequestHandler # noqa: E402
+try:
+    import webbrowser # noqa: E402
+    import time # noqa: E402
+    import numpy as np # noqa: E402
+    import torch # noqa: E402
+    from transformers import AutoTokenizer, AutoModel # noqa: E402
+    from http.server import HTTPServer, BaseHTTPRequestHandler # noqa: E402
+except KeyboardInterrupt:
+    pass
 
 # ============================================================
 # 2. MODEL DETECTION & CONFIG HELPERS
@@ -916,7 +919,6 @@ canvas{background:#0d1117}
 <option value="roberta-base">RoBERTa Base</option>
 <option value="EleutherAI/pythia-160m">Pythia 160M</option>
 <option value="EleutherAI/pythia-410m">Pythia 410M</option>
-<option value="facebook/opt-125m">OPT 125M</option>
 </select>
 </div>
 <div id="text-area">
