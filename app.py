@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, UTC
 # 1. ENVIRONMENT SAFETY
 # ============================================================
 
-def compute_exclude_newer_date(days_back=8):     
+def compute_exclude_newer_date(days_back=8):
     """Return a UTC timestamp string for `days_back` days ago."""
     return (datetime.now(UTC) - timedelta(days=days_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
