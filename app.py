@@ -849,7 +849,7 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:'Segoe UI',sans-serif;display:
   overflow-y:auto;border-right:2px solid #0f3460;
   display:flex;flex-direction:column;gap:6px}
 #neighbor-panel{background:#0f3460;padding:6px;border-radius:4px;font-size:10px;
-  line-height:1.5;max-height:300px;overflow-y:auto;display:none}
+  line-height:1.5;max-height:300px;overflow-y:auto;display:none;flex-shrink: 0;}
 #selected-tokens{display:flex;flex-wrap:wrap;gap:3px;margin-top:4px;
   min-height:20px;max-height:120px;overflow-y:auto}
 #side h2{color:#e94560;font-size:14px;margin-bottom:4px}
@@ -892,7 +892,7 @@ canvas{background:#0d1117}
 .view-toggle button.active{background:#e94560;color:#fff;border-color:#e94560}
 .view-toggle button:hover:not(.active){background:#0f3460;color:#fff}
 #strain-stats-panel{background:#0f3460;padding:6px;border-radius:4px;font-size:9px;
-  line-height:1.3;max-height:280px;overflow-y:auto;display:none}
+  line-height:1.3;max-height:280px;overflow-y:auto;display:none;flex-shrink: 0;}
 #strain-stats-panel table{width:100%;border-collapse:collapse}
 #strain-stats-panel th{color:#53a8b6;text-align:left;padding:2px 3px;border-bottom:1px solid #1a1a2e;font-size:8px;position:sticky;top:0;background:#0f3460}
 #strain-stats-panel td{padding:2px 3px;border-bottom:1px solid rgba(255,255,255,0.05)}
