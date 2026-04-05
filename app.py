@@ -109,7 +109,7 @@ def load_model(model_name):
     MODEL = AutoModel.from_pretrained(model_name, output_hidden_states=True)
     MODEL.eval()
     MODEL_CONFIG = MODEL.config
-    
+
     # Also load the LM head version for next-token prediction
     mtype = detect_model_type(MODEL_CONFIG)
     LM_MODEL = None
