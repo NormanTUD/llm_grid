@@ -941,6 +941,12 @@ canvas{background:#0d1117}
 <option value="roberta-base">RoBERTa Base</option>
 <option value="EleutherAI/pythia-160m">Pythia 160M</option>
 <option value="EleutherAI/pythia-410m">Pythia 410M</option>
+<option value="EleutherAI/pythia-1.4b">Pythia 1.4B</option>
+<option value="EleutherAI/pythia-2.8b">Pythia 2.8B</option>
+<option value="facebook/opt-1.3b">OPT 1.3B</option>
+<option value="microsoft/phi-2">Phi-2 (2.7B)</option>
+<option value="google/gemma-2b">Gemma 2B</option>
+<option value="microsoft/deberta-v3-large">DeBERTa-v3 Large</option>
 </select>
 </div>
 <div id="text-area">
