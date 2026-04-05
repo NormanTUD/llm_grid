@@ -10,7 +10,6 @@
 import argparse
 import os
 import sys
-import subprocess
 from datetime import datetime, timedelta
 
 
@@ -51,7 +50,7 @@ ensure_safe_env()
 import json, threading, webbrowser, time
 import numpy as np
 import torch
-from transformers import AutoTokenizer, AutoModel, AutoConfig
+from transformers import AutoTokenizer, AutoModel
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
@@ -278,8 +277,10 @@ def compute_pca_basis(layer0_mat, hidden_dim):
         U, S, Vt = np.linalg.svd(centered, full_matrices=False)
         pc1, pc2 = Vt[0], Vt[1]
     else:
-        pc1 = np.zeros(hidden_dim); pc1[0] = 1.0
-        pc2 = np.zeros(hidden_dim); pc2[1] = 1.0
+        pc1 = np.zeros(hidden_dim)
+        pc1[0] = 1.0
+        pc2 = np.zeros(hidden_dim)
+        pc2[1] = 1.0
 
     proj1 = centered @ pc1
     proj2 = centered @ pc2
