@@ -13,29 +13,39 @@ import sys
 import subprocess
 from datetime import datetime, timedelta
 
+
+# ============================================================
+# 1. ENVIRONMENT SAFETY
+# ============================================================
+
+def compute_exclude_newer_date(days_back=8):
+    """Return a UTC timestamp string for `days_back` days ago."""
+    return (datetime.utcnow() - timedelta(days=days_back)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def should_set_exclude_newer():
+    """Check whether UV_EXCLUDE_NEWER is already set."""
+    return not os.environ.get("UV_EXCLUDE_NEWER")
+
+
+def restart_with_uv(script_path, args, env):
+    """Re-exec the current script under `uv run`."""
+    os.execvpe("uv", ["uv", "run", "--quiet", script_path] + args, env)
+
+
 def ensure_safe_env():
-    """
-    Stellt sicher, dass uv nur Pakete nutzt, die mindestens 8 Tage alt sind.
-    """
-    # Wenn wir bereits im "re-run" sind oder die Variable gesetzt ist, abbrechen
-    if os.environ.get("UV_EXCLUDE_NEWER"):
+    """Ensure uv only uses packages at least 8 days old."""
+    if not should_set_exclude_newer():
         return
 
-    # Berechne Datum: Heute minus 8 Tage
-    past_date = (datetime.utcnow() - timedelta(days=8)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    past_date = compute_exclude_newer_date(8)
     os.environ["UV_EXCLUDE_NEWER"] = past_date
 
-    # Falls wir nicht bereits durch 'uv run' laufen, erzwingen wir es hier
-    # Das sorgt dafür, dass uv die dependencies oben liest und die Sperre beachtet
-    if not sys.executable.endswith("python"): # Grober Check auf venv/uv-Intervention
-        pass 
+    print(f"[uv-shield] Force packages from: {past_date}")
+    restart_with_uv(sys.argv[0], sys.argv[1:], os.environ)
 
-    print(f"[uv-shield] Erzwinge Paketstand vom: {past_date}")
-    
-    # Neustart des Skripts mit uv run, um die Inline-Dependencies und die Sperre zu nutzen
-    os.execvpe("uv", ["uv", "run", "--quiet", sys.argv[0]] + sys.argv[1:], os.environ)
 
-# Diese Funktion muss VOR den großen Imports stehen
+# This must run BEFORE heavy imports
 ensure_safe_env()
 
 import json, threading, webbrowser, time
@@ -45,43 +55,54 @@ from transformers import AutoTokenizer, AutoModel, AutoConfig
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
-MODEL_NAME = "gpt2"
-TOKENIZER = None
-MODEL = None
-MODEL_CONFIG = None
 
-# ---------- Model registry ----------
-# Each entry: { "type": "causal" | "masked", "n_layer_key": ..., "n_embd_key": ... }
-# We auto-detect most of this from config, but keep a type hint for architecture.
+# ============================================================
+# 2. MODEL DETECTION & CONFIG HELPERS
+# ============================================================
 
 def detect_model_type(config):
-    """Detect whether a model is causal (decoder) or masked (encoder)."""
+    """Detect whether a model is 'causal' (decoder) or 'masked' (encoder)."""
     arch = getattr(config, "architectures", []) or []
     arch_str = " ".join(arch).lower()
     if any(k in arch_str for k in ["causal", "gpt", "opt", "pythia", "neox"]):
         return "causal"
     if any(k in arch_str for k in ["masked", "bert", "roberta", "electra"]):
         return "masked"
-    # Fallback: check if config has is_decoder
     if getattr(config, "is_decoder", False):
         return "causal"
-    return "causal"  # default
+    return "causal"
+
 
 def get_n_layers(config):
+    """Extract the number of layers from a model config."""
     for attr in ["n_layer", "num_hidden_layers", "num_layers"]:
         v = getattr(config, attr, None)
         if v is not None:
             return v
     return 12
 
+
 def get_hidden_dim(config):
+    """Extract the hidden dimension from a model config."""
     for attr in ["n_embd", "hidden_size", "d_model"]:
         v = getattr(config, attr, None)
         if v is not None:
             return v
     return 768
 
+
+# ============================================================
+# 3. MODEL LOADING (stateful — thin wrapper)
+# ============================================================
+
+MODEL_NAME = "gpt2"
+TOKENIZER = None
+MODEL = None
+MODEL_CONFIG = None
+
+
 def load_model(model_name):
+    """Load a HuggingFace model and tokenizer into globals."""
     global TOKENIZER, MODEL, MODEL_NAME, MODEL_CONFIG
     MODEL_NAME = model_name
     print(f"[Model] Loading {model_name}...")
@@ -95,27 +116,34 @@ def load_model(model_name):
     print(f"[Model] Loaded. Type={mtype}, Layers={n_layers}, dim={hidden_dim}")
 
 
-def process_text(text, model_name=None):
-    global TOKENIZER, MODEL, MODEL_NAME, MODEL_CONFIG
+# ============================================================
+# 4. TOKENIZATION
+# ============================================================
 
-    # Switch model if requested
-    if model_name and model_name != MODEL_NAME:
-        load_model(model_name)
+def tokenize_text(tokenizer, text):
+    """Tokenize text and return (input_ids tensor, clean token strings)."""
+    inputs = tokenizer(text, return_tensors="pt")
+    input_ids = inputs["input_ids"]
+    tokens_clean = decode_token_ids(tokenizer, input_ids[0])
+    return input_ids, tokens_clean
 
-    hidden_dim = get_hidden_dim(MODEL_CONFIG)
-    n_layers = get_n_layers(MODEL_CONFIG)
 
-    # Tokenize real input
-    inputs = TOKENIZER(text, return_tensors="pt")
-    n_real = inputs["input_ids"].shape[1]
-    tokens_clean = []
-    for tid in inputs["input_ids"][0]:
-        t = TOKENIZER.decode([tid]).replace("\u0120", " ").replace("\u010a", "\\n")
-        tokens_clean.append(t)
-    print(f"[Model] Tokens ({n_real}): {tokens_clean}")
+def decode_token_ids(tokenizer, token_ids):
+    """Decode a 1-D tensor of token IDs into cleaned strings."""
+    tokens = []
+    for tid in token_ids:
+        t = tokenizer.decode([tid]).replace("\u0120", " ").replace("\u010a", "\\n")
+        tokens.append(t)
+    return tokens
 
-    # Probe sentences — diverse vocabulary to cover the embedding space
-    probe_texts = [
+
+# ============================================================
+# 5. PROBE SENTENCES
+# ============================================================
+
+def get_probe_texts():
+    """Return a list of diverse probe sentences for embedding coverage."""
+    return [
         "zero one two three four five six seven eight nine ten eleven twelve",
         "the a an and or but if then else while for each every some",
         "red blue green yellow purple orange black white pink gray brown",
@@ -138,67 +166,113 @@ def process_text(text, model_name=None):
         "hello goodbye please thanks sorry yes no maybe okay sure right wrong",
     ]
 
-    # Run all sequences through the model
-    all_seqs = [inputs["input_ids"]]
-    all_labels = list(tokens_clean)
-    all_is_real = [True] * n_real
 
+def tokenize_probes(tokenizer, probe_texts):
+    """Tokenize all probe texts. Returns list of input_id tensors, labels, is_real flags."""
+    all_seqs = []
+    all_labels = []
+    all_is_real = []
     for ptxt in probe_texts:
-        pi = TOKENIZER(ptxt, return_tensors="pt")
+        pi = tokenizer(ptxt, return_tensors="pt")
         all_seqs.append(pi["input_ids"])
         for tid in pi["input_ids"][0]:
-            t = TOKENIZER.decode([tid]).replace("\u0120", " ").replace("\u010a", "\\n")
+            t = tokenizer.decode([tid]).replace("\u0120", " ").replace("\u010a", "\\n")
             all_labels.append(t)
         all_is_real.extend([False] * pi["input_ids"].shape[1])
+    return all_seqs, all_labels, all_is_real
 
-    print(f"[Model] Running {len(all_seqs)} sequences through model...")
 
+# ============================================================
+# 6. HIDDEN STATE EXTRACTION
+# ============================================================
+
+def extract_hidden_states(model, input_ids):
+    """Run a single sequence through the model, return hidden_states tuple."""
+    with torch.no_grad():
+        out = model(input_ids)
+    return out.hidden_states
+
+
+def compute_layer0_and_deltas(hidden_states, n_layers):
+    """
+    From hidden_states for one sequence, extract per-token:
+      - layer-0 embedding (numpy)
+      - list of per-layer deltas (numpy)
+    Returns (list_of_layer0_vecs, list_of_delta_lists).
+    """
+    hs = hidden_states
+    seq_len = hs[0].shape[1]
+    layer0_vecs = []
+    delta_lists = []
+    for s in range(seq_len):
+        layer0_vecs.append(hs[0][0][s].cpu().numpy())
+        deltas = []
+        for l in range(n_layers):
+            deltas.append((hs[l + 1][0][s] - hs[l][0][s]).cpu().numpy())
+        delta_lists.append(deltas)
+    return layer0_vecs, delta_lists
+
+
+def run_all_sequences(model, all_seqs, n_layers):
+    """
+    Run every sequence through the model and collect layer0 + deltas.
+    Returns (all_layer0, all_deltas_per_point).
+    """
     all_layer0 = []
-    all_deltas_per_point = []
-
+    all_deltas = []
     for seq_ids in all_seqs:
-        with torch.no_grad():
-            out = MODEL(seq_ids)
-        hs = out.hidden_states
-        seq_len = hs[0].shape[1]
-        for s in range(seq_len):
-            all_layer0.append(hs[0][0][s].cpu().numpy())
-            pd = []
-            for l in range(n_layers):
-                pd.append((hs[l+1][0][s] - hs[l][0][s]).cpu().numpy())
-            all_deltas_per_point.append(pd)
+        hs = extract_hidden_states(model, seq_ids)
+        l0, dl = compute_layer0_and_deltas(hs, n_layers)
+        all_layer0.extend(l0)
+        all_deltas.extend(dl)
+    return all_layer0, all_deltas
 
-    n_total = len(all_layer0)
-    n_synth = n_total - n_real
-    print(f"[Model] {n_total} points ({n_real} real + {n_synth} probes)")
 
-    # ----- Compute neighbor info for real tokens -----
-    # For each real token, find K nearest neighbors among ALL tokens (real + probe)
-    K_NEIGHBORS = 10
-    real_embeddings = np.stack(all_layer0[:n_real], axis=0)  # [n_real, dim]
-    all_embeddings = np.stack(all_layer0, axis=0)  # [n_total, dim]
+# ============================================================
+# 7. NEIGHBOR COMPUTATION
+# ============================================================
 
-    neighbors = []  # list of lists: for each real token, list of {idx, label, dist}
+def compute_neighbors(real_embeddings, all_embeddings, all_labels, all_is_real, k=10):
+    """
+    For each real token, find K nearest neighbors among all tokens.
+    Returns list of neighbor-lists (one per real token).
+    """
+    n_real = real_embeddings.shape[0]
+    neighbors = []
     for ri in range(n_real):
-        dists = np.linalg.norm(all_embeddings - real_embeddings[ri], axis=1)
-        # Exclude self
-        dists[ri] = np.inf
-        nearest_idx = np.argsort(dists)[:K_NEIGHBORS]
-        nlist = []
-        for ni in nearest_idx:
-            nlist.append({
-                "idx": int(ni),
-                "label": all_labels[ni],
-                "dist": float(dists[ni]),
-                "is_real": all_is_real[ni]
-            })
+        nlist = find_k_neighbors(ri, real_embeddings[ri], all_embeddings, all_labels, all_is_real, k)
         neighbors.append(nlist)
+    return neighbors
 
-    # Now create additional synthetic probes at grid intersections
-    print("[Model] Creating grid intersection probes...")
-    layer0_mat = np.stack(all_layer0, axis=0)
+
+def find_k_neighbors(self_idx, query_vec, all_embeddings, all_labels, all_is_real, k):
+    """Find k nearest neighbors for a single query vector, excluding self_idx."""
+    dists = np.linalg.norm(all_embeddings - query_vec, axis=1)
+    dists[self_idx] = np.inf
+    nearest_idx = np.argsort(dists)[:k]
+    result = []
+    for ni in nearest_idx:
+        result.append({
+            "idx": int(ni),
+            "label": all_labels[ni],
+            "dist": float(dists[ni]),
+            "is_real": all_is_real[ni],
+        })
+    return result
+
+
+# ============================================================
+# 8. PCA COMPUTATION
+# ============================================================
+
+def compute_pca_basis(layer0_mat, hidden_dim):
+    """
+    Compute centroid, centered data, and top-2 PCA directions.
+    Returns (centroid, centered, pc1, pc2, proj1, proj2).
+    """
     centroid = np.mean(layer0_mat, axis=0)
     centered = layer0_mat - centroid
+    n_total = layer0_mat.shape[0]
 
     if n_total >= 2:
         U, S, Vt = np.linalg.svd(centered, full_matrices=False)
@@ -209,40 +283,177 @@ def process_text(text, model_name=None):
 
     proj1 = centered @ pc1
     proj2 = centered @ pc2
+    return centroid, centered, pc1, pc2, proj1, proj2
 
-    # Create grid in PCA space
-    n_side = 10
-    pad_frac = 0.3
-    mn1, mx1 = float(proj1.min()), float(proj1.max())
-    mn2, mx2 = float(proj2.min()), float(proj2.max())
-    r1 = mx1 - mn1 if mx1 - mn1 > 1e-6 else 1.0
-    r2 = mx2 - mn2 if mx2 - mn2 > 1e-6 else 1.0
-    g1 = np.linspace(mn1 - pad_frac*r1, mx1 + pad_frac*r1, n_side)
-    g2 = np.linspace(mn2 - pad_frac*r2, mx2 + pad_frac*r2, n_side)
+
+# ============================================================
+# 9. GRID INTERSECTION PROBES
+# ============================================================
+
+def compute_grid_range(proj, pad_frac=0.3):
+    """Compute padded min/max for a 1-D projection array."""
+    mn, mx = float(proj.min()), float(proj.max())
+    r = mx - mn if mx - mn > 1e-6 else 1.0
+    return mn - pad_frac * r, mx + pad_frac * r, r
+
+
+def make_grid_coords(g1, g2):
+    """Return list of (v1, v2) pairs for a 2-D grid."""
+    coords = []
+    for v1 in g1:
+        for v2 in g2:
+            coords.append((v1, v2))
+    return coords
+
+
+def interpolate_grid_embedding(v1, v2, centroid, pc1, pc2):
+    """Reconstruct a high-dim embedding from PCA coordinates."""
+    return centroid + v1 * pc1 + v2 * pc2
+
+
+def compute_grid_weights(v1, v2, existing_proj, sigma_nn):
+    """Compute RBF weights for a grid point relative to existing projections."""
+    dists = (existing_proj[:, 0] - v1) ** 2 + (existing_proj[:, 1] - v2) ** 2
+    weights = np.exp(-dists / (2 * sigma_nn ** 2))
+    weights /= weights.sum() + 1e-15
+    return weights
+
+
+def interpolate_deltas(weights, all_deltas_per_point, n_layers, hidden_dim):
+    """Weighted-average the deltas from all points for one grid point."""
+    n_total = len(all_deltas_per_point)
+    point_deltas = []
+    for l in range(n_layers):
+        d = np.zeros(hidden_dim)
+        for pi in range(n_total):
+            d += weights[pi] * all_deltas_per_point[pi][l]
+        point_deltas.append(d)
+    return point_deltas
+
+
+def create_grid_probes(centroid, pc1, pc2, proj1, proj2, existing_proj,
+                       all_deltas_per_point, n_layers, hidden_dim, n_side=10, pad_frac=0.3):
+    """
+    Create grid intersection probes in PCA space.
+    Returns (grid_layer0, grid_deltas).
+    """
+    mn1, mx1, r1 = compute_grid_range(proj1, pad_frac)
+    mn2, mx2, r2 = compute_grid_range(proj2, pad_frac)
+    g1 = np.linspace(mn1, mx1, n_side)
+    g2 = np.linspace(mn2, mx2, n_side)
+    sigma_nn = r1 * 0.2
 
     grid_layer0 = []
     grid_deltas = []
+
+    for v1, v2 in make_grid_coords(g1, g2):
+        emb = interpolate_grid_embedding(v1, v2, centroid, pc1, pc2)
+        grid_layer0.append(emb)
+
+        weights = compute_grid_weights(v1, v2, existing_proj, sigma_nn)
+        point_deltas = interpolate_deltas(weights, all_deltas_per_point, n_layers, hidden_dim)
+        grid_deltas.append(point_deltas)
+
+    return grid_layer0, grid_deltas
+
+
+# ============================================================
+# 10. OUTPUT ASSEMBLY
+# ============================================================
+
+def build_fixed_pos(all_layer0):
+    """Convert list of numpy arrays to list of lists for JSON."""
+    return [v.tolist() for v in all_layer0]
+
+
+def build_deltas_array(all_deltas_per_point, n_layers, n_points):
+    """Reshape per-point deltas into per-layer arrays for JSON."""
+    deltas = []
+    for l in range(n_layers):
+        layer_d = []
+        for p in range(n_points):
+            layer_d.append(all_deltas_per_point[p][l].tolist())
+        deltas.append(layer_d)
+    return deltas
+
+
+def build_output_data(all_labels, all_is_real, n_layers, n_total, n_real,
+                      hidden_dim, fixed_pos, deltas, model_name, text, neighbors):
+    """Assemble the final JSON-serializable dict."""
+    return {
+        "tokens": all_labels,
+        "is_real": all_is_real,
+        "n_layers": n_layers,
+        "n_points": n_total,
+        "n_real": n_real,
+        "n_synth": n_total - n_real,
+        "hidden_dim": hidden_dim,
+        "fixed_pos": fixed_pos,
+        "deltas": deltas,
+        "model_name": model_name,
+        "text": text,
+        "neighbors": neighbors,
+    }
+
+
+# ============================================================
+# 11. MAIN PROCESSING PIPELINE
+# ============================================================
+
+def process_text(text, model_name=None):
+    global TOKENIZER, MODEL, MODEL_NAME, MODEL_CONFIG
+
+    # Switch model if requested
+    if model_name and model_name != MODEL_NAME:
+        load_model(model_name)
+
+    hidden_dim = get_hidden_dim(MODEL_CONFIG)
+    n_layers = get_n_layers(MODEL_CONFIG)
+
+    # Tokenize real input
+    real_ids, tokens_clean = tokenize_text(TOKENIZER, text)
+    n_real = real_ids.shape[1]
+    print(f"[Model] Tokens ({n_real}): {tokens_clean}")
+
+    # Tokenize probes
+    probe_texts = get_probe_texts()
+    probe_seqs, probe_labels, probe_is_real = tokenize_probes(TOKENIZER, probe_texts)
+
+    # Combine sequences
+    all_seqs = [real_ids] + probe_seqs
+    all_labels = list(tokens_clean) + probe_labels
+    all_is_real = [True] * n_real + probe_is_real
+
+    print(f"[Model] Running {len(all_seqs)} sequences through model...")
+
+    # Extract hidden states
+    all_layer0, all_deltas_per_point = run_all_sequences(MODEL, all_seqs, n_layers)
+
+    n_total = len(all_layer0)
+    n_synth = n_total - n_real
+    print(f"[Model] {n_total} points ({n_real} real + {n_synth} probes)")
+
+    # Compute neighbors
+    real_embeddings = np.stack(all_layer0[:n_real], axis=0)
+    all_embeddings = np.stack(all_layer0, axis=0)
+    neighbors = compute_neighbors(real_embeddings, all_embeddings, all_labels, all_is_real, k=10)
+
+    # PCA + grid probes
+    print("[Model] Creating grid intersection probes...")
+    layer0_mat = np.stack(all_layer0, axis=0)
+    centroid, centered, pc1, pc2, proj1, proj2 = compute_pca_basis(layer0_mat, hidden_dim)
     existing_proj = np.stack([proj1, proj2], axis=1)
 
-    for v1 in g1:
-        for v2 in g2:
-            emb = centroid + v1 * pc1 + v2 * pc2
-            grid_layer0.append(emb)
-            dists = (existing_proj[:, 0] - v1)**2 + (existing_proj[:, 1] - v2)**2
-            sigma_nn = r1 * 0.2
-            weights = np.exp(-dists / (2 * sigma_nn**2))
-            weights /= weights.sum() + 1e-15
-            point_deltas = []
-            for l in range(n_layers):
-                d = np.zeros(hidden_dim)
-                for pi in range(n_total):
-                    d += weights[pi] * all_deltas_per_point[pi][l]
-                point_deltas.append(d)
-            grid_deltas.append(point_deltas)
+    grid_layer0, grid_deltas = create_grid_probes(
+        centroid, pc1, pc2, proj1, proj2, existing_proj,
+        all_deltas_per_point, n_layers, hidden_dim,
+        n_side=10, pad_frac=0.3,
+    )
 
     n_grid = len(grid_layer0)
     print(f"[Model] Added {n_grid} grid intersection probes")
 
+    # Append grid probes
     for gi in range(n_grid):
         all_layer0.append(grid_layer0[gi])
         all_deltas_per_point.append(grid_deltas[gi])
@@ -250,37 +461,23 @@ def process_text(text, model_name=None):
         all_is_real.append(False)
 
     n_total_final = len(all_layer0)
-    n_synth_final = n_total_final - n_real
 
-    # Build output arrays
-    fixed_pos = [all_layer0[i].tolist() for i in range(n_total_final)]
-
-    deltas = []
-    for l in range(n_layers):
-        layer_d = []
-        for p in range(n_total_final):
-            layer_d.append(all_deltas_per_point[p][l].tolist())
-        deltas.append(layer_d)
-
-    data = {
-        "tokens": all_labels,
-        "is_real": all_is_real,
-        "n_layers": n_layers,
-        "n_points": n_total_final,
-        "n_real": n_real,
-        "n_synth": n_synth_final,
-        "hidden_dim": hidden_dim,
-        "fixed_pos": fixed_pos,
-        "deltas": deltas,
-        "model_name": MODEL_NAME,
-        "text": text,
-        "neighbors": neighbors,  # NEW: neighbor info for each real token
-    }
+    # Build output
+    fixed_pos = build_fixed_pos(all_layer0)
+    deltas = build_deltas_array(all_deltas_per_point, n_layers, n_total_final)
+    data = build_output_data(
+        all_labels, all_is_real, n_layers, n_total_final, n_real,
+        hidden_dim, fixed_pos, deltas, MODEL_NAME, text, neighbors,
+    )
 
     json_str = json.dumps(data)
     print(f"[Model] JSON: {len(json_str)/1024/1024:.1f} MB")
     return json_str
 
+
+# ============================================================
+# 12. HTML (unchanged — kept as constant)
+# ============================================================
 
 HTML_PAGE = r"""<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><title>Metric Space Explorer</title>
@@ -405,7 +602,7 @@ Tokens: <span id="i-tok">-</span>
 </div>
 <script>
 var D=null,AP=null;
-var selectedTokens=new Set(); // indices of selected real tokens
+var selectedTokens=new Set();
 
 function runText(){
     var txt=document.getElementById('txt-in').value.trim();
@@ -437,7 +634,6 @@ function onData(){
     document.getElementById('i-lay').textContent=D.n_layers;
     document.getElementById('i-dim').textContent=D.hidden_dim;
     document.getElementById('i-tok').textContent=D.tokens.slice(0,D.n_real).join(' ');
-    // Set model selector to match
     document.getElementById('sel-model').value=D.model_name;
     autoParams();
     draw();
@@ -475,7 +671,6 @@ function autoParams(){
     document.getElementById('v-amp').textContent=amp.toFixed(1);
 }
 
-// --- Selection & Neighbor UI ---
 function updateSelectedUI(){
     var cont=document.getElementById('selected-tokens');
     cont.innerHTML='';
@@ -487,7 +682,7 @@ function updateSelectedUI(){
     selectedTokens.forEach(function(ti){
         var el=document.createElement('span');
         el.className='sel-tok';
-        el.innerHTML='['+ti+'] '+D.tokens[ti]+' <span class="x">×</span>';
+        el.innerHTML='['+ti+'] '+D.tokens[ti]+' <span class="x">\u00d7</span>';
         el.onclick=function(){selectedTokens.delete(ti);updateSelectedUI();draw()};
         cont.appendChild(el);
     });
@@ -499,8 +694,7 @@ function updateNeighborPanel(){
     var list=document.getElementById('nb-list');
     var title=document.getElementById('nb-title');
     if(!D||!D.neighbors||selectedTokens.size===0){
-        panel.style.display='none';
-        return;
+        panel.style.display='none';return;
     }
     panel.style.display='block';
     var kn=+document.getElementById('sl-kn').value;
@@ -512,8 +706,8 @@ function updateNeighborPanel(){
         for(var ni=0;ni<nbs.length;ni++){
             var nb=nbs[ni];
             var cls=nb.is_real?'nb-item is-real':'nb-item';
-            html+='<div class="'+cls+'" data-idx="'+nb.idx+'" onclick="clickNeighbor('+nb.idx+','+nb.is_real+')">';
-            html+=(nb.is_real?'★ ':'')+nb.label+'<span class="nb-dist">d='+nb.dist.toFixed(2)+'</span></div>';
+            html+='<div class="'+cls+'" onclick="clickNeighbor('+nb.idx+','+nb.is_real+')">';
+            html+=(nb.is_real?'\u2605 ':'')+nb.label+'<span class="nb-dist">d='+nb.dist.toFixed(2)+'</span></div>';
         }
         html+='</div>';
     });
@@ -522,7 +716,6 @@ function updateNeighborPanel(){
 }
 
 function clickNeighbor(idx, isReal){
-    // If it's a real token, select it too
     if(isReal && idx < D.n_real){
         selectedTokens.add(idx);
         updateSelectedUI();
@@ -530,7 +723,6 @@ function clickNeighbor(idx, isReal){
     draw();
 }
 
-// --- Canvas click handler for selecting tokens ---
 document.getElementById('cv').addEventListener('click', function(e){
     if(!D)return;
     var cv=document.getElementById('cv');
@@ -540,8 +732,6 @@ document.getElementById('cv').addEventListener('click', function(e){
     var dy=+document.getElementById('sl-dy').value;
     var nP=D.n_points, nR=D.n_real;
     var W=cv.width, H=cv.height, M2=42, dW2=W-2*M2, dH2=H-2*M2;
-
-    // Recompute viewport (same as draw)
     var fx=new Float64Array(nP),fy=new Float64Array(nP);
     for(var i=0;i<nP;i++){fx[i]=D.fixed_pos[i][dx];fy[i]=D.fixed_pos[i][dy]}
     var mnx=fx[0],mxx=fx[0],mny=fy[0],mxy=fy[0];
@@ -555,8 +745,6 @@ document.getElementById('cv').addEventListener('click', function(e){
     var vx0=cxv-mr*(.5+pd2),vy0=cyv-mr*(.5+pd2),vw=mr*(1+2*pd2),vh=vw;
     function SX(x){return M2+((x-vx0)/vw)*dW2}
     function SY(y){return M2+((y-vy0)/vh)*dH2}
-
-    // Find closest real token
     var bestDist=Infinity, bestIdx=-1;
     for(var ti=0;ti<nR;ti++){
         var sx=SX(fx[ti]), sy=SY(fy[ti]);
@@ -564,17 +752,12 @@ document.getElementById('cv').addEventListener('click', function(e){
         if(dd<bestDist){bestDist=dd;bestIdx=ti}
     }
     if(bestIdx>=0 && bestDist<25){
-        if(selectedTokens.has(bestIdx)){
-            selectedTokens.delete(bestIdx);
-        } else {
-            selectedTokens.add(bestIdx);
-        }
-        updateSelectedUI();
-        draw();
+        if(selectedTokens.has(bestIdx)) selectedTokens.delete(bestIdx);
+        else selectedTokens.add(bestIdx);
+        updateSelectedUI();draw();
     }
 });
 
-// Listen for neighbor controls
 ['sl-kn'].forEach(function(id){
     var s=document.getElementById(id);
     s.addEventListener('input',function(){
@@ -693,11 +876,9 @@ function draw(){
     var nP=D.n_points,nR=D.n_real,dx=p.dx,dy=p.dy;
     var isEmb=p.mode==='embedding';
 
-    // Fixed positions
     var fx=new Float64Array(nP),fy=new Float64Array(nP);
     for(var i=0;i<nP;i++){fx[i]=D.fixed_pos[i][dx];fy[i]=D.fixed_pos[i][dy]}
 
-    // Effective deltas
     var edx=new Float64Array(nP),edy=new Float64Array(nP);
     if(!isEmb){
         var layer=p.layer,amp=p.amp;
@@ -710,7 +891,6 @@ function draw(){
         }
     }
 
-    // Viewport from fixed positions
     var mnx=fx[0],mxx=fx[0],mny=fy[0],mxy=fy[0];
     for(var i2=1;i2<nP;i2++){
         if(fx[i2]<mnx)mnx=fx[i2];if(fx[i2]>mxx)mxx=fx[i2];
@@ -726,7 +906,6 @@ function draw(){
     function SX(x){return M+((x-vx0)/vw)*dW}
     function SY(y){return M+((y-vy0)/vh)*dH}
 
-    // Grid
     var N=p.gr,nV=(N+1)*(N+1);
     var oX=new Float64Array(nV),oY=new Float64Array(nV);
     var gX=new Float64Array(nV),gY=new Float64Array(nV);
@@ -735,7 +914,6 @@ function draw(){
         oX[gi]=vx0+(gx/N)*vw;oY[gi]=vy0+(gy/N)*vh;
     }
 
-    // T(p) = p + t*v(p)
     var sig=p.sig,s2i=1/(2*sig*sig),t=p.t;
     if(isEmb){
         for(var gi2=0;gi2<nV;gi2++){gX[gi2]=oX[gi2];gY[gi2]=oY[gi2]}
@@ -753,7 +931,6 @@ function draw(){
         }
     }
 
-    // Strain
     var sH=new Float64Array(N*(N+1)),sVa=new Float64Array((N+1)*N);
     for(var ey=0;ey<=N;ey++)for(var ex=0;ex<N;ex++){
         var a=ey*(N+1)+ex,b=a+1;
@@ -768,9 +945,6 @@ function draw(){
         sVa[ey2*(N+1)+ex2]=od2>1e-12?dd2/od2:1;
     }
 
-    // ==== DRAWING ====
-
-    // Heatmap
     if(p.heat&&!isEmb){
         for(var hy=0;hy<N;hy++)for(var hx=0;hx<N;hx++){
             var avg=(sH[hy*N+hx]+sH[(hy+1)*N+hx]+sVa[hy*(N+1)+hx]+sVa[hy*(N+1)+hx+1])/4;
@@ -784,7 +958,6 @@ function draw(){
         }
     }
 
-    // Reference grid
     if(p.ref){
         c.strokeStyle=isEmb?'rgba(255,255,255,0.15)':'rgba(255,255,255,0.07)';c.lineWidth=0.5;
         for(var ry2=0;ry2<=N;ry2++){
@@ -799,7 +972,6 @@ function draw(){
         }
     }
 
-    // Deformed grid
     if(p.grid&&!isEmb){
         c.lineWidth=1.2;
         for(var dhy=0;dhy<=N;dhy++)for(var dhx=0;dhx<N;dhx++){
@@ -818,7 +990,6 @@ function draw(){
         }
     }
 
-    // Vector arrows
     if(p.vec&&!isEmb){
         var step=Math.max(1,Math.floor(N/12));c.lineWidth=1.5;
         for(var viy=0;viy<=N;viy+=step)for(var vix=0;vix<=N;vix+=step){
@@ -835,7 +1006,6 @@ function draw(){
         }
     }
 
-    // Synth probes
     if(p.syn){
         for(var pi=nR;pi<nP;pi++){
             c.beginPath();c.arc(SX(fx[pi]),SY(fy[pi]),2.5,0,Math.PI*2);
@@ -843,7 +1013,6 @@ function draw(){
         }
     }
 
-    // --- Neighbor lines for selected tokens ---
     if(p.nb && D.neighbors && selectedTokens.size>0){
         var kn=p.kn;
         selectedTokens.forEach(function(ti){
@@ -855,18 +1024,15 @@ function draw(){
                 var nidx=nb.idx;
                 if(nidx>=nP)continue;
                 var nx=SX(fx[nidx]),ny=SY(fy[nidx]);
-                // Line from selected token to neighbor
                 var alpha=Math.max(0.15, 1.0 - ni*0.08);
                 c.strokeStyle='rgba(0,255,200,'+alpha.toFixed(2)+')';
                 c.lineWidth=Math.max(0.5, 2.5 - ni*0.2);
                 c.setLineDash([3,3]);
                 c.beginPath();c.moveTo(tx,ty);c.lineTo(nx,ny);c.stroke();
                 c.setLineDash([]);
-                // Neighbor dot
                 c.beginPath();c.arc(nx,ny,5,0,Math.PI*2);
                 c.fillStyle=nb.is_real?'rgba(0,255,200,0.8)':'rgba(0,255,200,0.35)';
                 c.fill();c.strokeStyle='rgba(0,255,200,0.6)';c.lineWidth=1;c.stroke();
-                // Neighbor label
                 if(p.nblabel){
                     c.font='9px monospace';c.fillStyle='rgba(0,255,200,0.9)';
                     c.fillText(nb.label+' (d='+nb.dist.toFixed(1)+')',nx+8,ny-4);
@@ -875,7 +1041,6 @@ function draw(){
         });
     }
 
-    // Real tokens — FIXED, NEVER MOVE
     if(p.tok){
         var tc=['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71',
             '#e74c3c','#3498db','#9b59b6','#1abc9c','#e67e22',
@@ -884,26 +1049,21 @@ function draw(){
         for(var ti=0;ti<nR;ti++){
             var tx2=SX(fx[ti]),ty2=SY(fy[ti]),col=tc[ti%tc.length];
             var isSel=selectedTokens.has(ti);
-            // Selection glow
             if(isSel){
                 var grad2=c.createRadialGradient(tx2,ty2,0,tx2,ty2,30);
                 grad2.addColorStop(0,'rgba(0,255,0,0.25)');grad2.addColorStop(1,'rgba(0,255,0,0)');
                 c.beginPath();c.arc(tx2,ty2,30,0,Math.PI*2);c.fillStyle=grad2;c.fill();
             }
-            // Neighborhood glow
             var grad=c.createRadialGradient(tx2,ty2,0,tx2,ty2,20);
             grad.addColorStop(0,'rgba(255,255,255,0.08)');grad.addColorStop(1,'rgba(255,255,255,0)');
             c.beginPath();c.arc(tx2,ty2,20,0,Math.PI*2);c.fillStyle=grad;c.fill();
-            // Dot
             c.beginPath();c.arc(tx2,ty2,isSel?9:7,0,Math.PI*2);
             c.fillStyle=col;c.fill();
             c.strokeStyle=isSel?'#0f0':'#fff';c.lineWidth=isSel?3:2;c.stroke();
-            // Label
             c.font='bold 11px monospace';c.lineWidth=3;c.strokeStyle='rgba(0,0,0,0.9)';
             var lb='['+ti+'] '+D.tokens[ti];
             c.strokeText(lb,tx2+12,ty2-10);c.fillStyle=isSel?'#0f0':'#fff';c.fillText(lb,tx2+12,ty2-10);
         }
-        // Embedding mode: connect sequential tokens
         if(isEmb&&nR>1){
             c.strokeStyle='rgba(233,69,96,0.3)';c.lineWidth=1.5;c.setLineDash([4,4]);
             c.beginPath();c.moveTo(SX(fx[0]),SY(fy[0]));
@@ -912,7 +1072,6 @@ function draw(){
         }
     }
 
-    // Info
     c.font='11px monospace';c.fillStyle='rgba(255,255,255,0.45)';
     if(isEmb){
         c.fillText('EMBEDDING SPACE  Dims:'+dx+','+dy,M,18);
@@ -928,61 +1087,113 @@ function draw(){
 </script></body></html>"""
 
 
+# ============================================================
+# 13. HTTP SERVER (thin wrappers)
+# ============================================================
+
+def handle_get_index():
+    """Return the HTML page as bytes."""
+    return HTML_PAGE.encode("utf-8")
+
+
+def handle_post_run(body_bytes):
+    """Parse a /run POST request and return JSON response bytes."""
+    req = json.loads(body_bytes)
+    text = req.get("text", "").strip()
+    model_name = req.get("model", "").strip() or None
+    if not text:
+        raise ValueError("Empty text")
+    print(f"\n[Server] Processing: {text[:60]}... (model: {model_name or MODEL_NAME})...")
+    json_str = process_text(text, model_name)
+    return json_str.encode("utf-8")
+
+
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self,*a):pass
+    def log_message(self, *a):
+        pass
+
     def do_GET(self):
-        path=urlparse(self.path).path
-        if path in ("/","/index.html"):
+        path = urlparse(self.path).path
+        if path in ("/", "/index.html"):
             self.send_response(200)
-            self.send_header("Content-Type","text/html; charset=utf-8")
+            self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            self.wfile.write(HTML_PAGE.encode("utf-8"))
+            self.wfile.write(handle_get_index())
         else:
-            self.send_response(404);self.end_headers()
+            self.send_response(404)
+            self.end_headers()
+
     def do_POST(self):
-        path=urlparse(self.path).path
-        if path=="/run":
-            length=int(self.headers.get('Content-Length',0))
-            body=self.rfile.read(length)
+        path = urlparse(self.path).path
+        if path == "/run":
+            length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(length)
             try:
-                req=json.loads(body)
-                text=req.get("text","").strip()
-                model_name=req.get("model","").strip() or None
-                if not text:raise ValueError("Empty text")
-                print(f"\n[Server] Processing: {text[:60]}... (model: {model_name or MODEL_NAME})...")
-                json_str=process_text(text, model_name)
+                response_bytes = handle_post_run(body)
                 self.send_response(200)
-                self.send_header("Content-Type","application/json")
+                self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                self.wfile.write(json_str.encode("utf-8"))
+                self.wfile.write(response_bytes)
             except Exception as e:
-                import traceback;traceback.print_exc()
+                import traceback
+                traceback.print_exc()
                 self.send_response(500)
-                self.send_header("Content-Type","application/json")
+                self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                self.wfile.write(json.dumps({"error":str(e)}).encode("utf-8"))
+                self.wfile.write(json.dumps({"error": str(e)}).encode("utf-8"))
         else:
-            self.send_response(404);self.end_headers()
+            self.send_response(404)
+            self.end_headers()
+
+
+# ============================================================
+# 14. BROWSER OPENER
+# ============================================================
+
+def open_browser_delayed(port, delay=1.0):
+    """Open the browser after a short delay."""
+    time.sleep(delay)
+    webbrowser.open(f"http://127.0.0.1:{port}")
+
+
+# ============================================================
+# 15. ARGUMENT PARSING
+# ============================================================
+
+def parse_args(argv=None):
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(description="Metric Space Explorer")
+    parser.add_argument("--model", type=str, default="gpt2",
+                        help="Initial model to load (any HuggingFace model name)")
+    parser.add_argument("--port", type=int, default=8765)
+    return parser.parse_args(argv)
+
+
+# ============================================================
+# 16. MAIN ENTRY POINT
+# ============================================================
+
+def start_server(host, port):
+    """Create and return an HTTPServer instance."""
+    return HTTPServer((host, port), Handler)
 
 
 def main():
-    parser=argparse.ArgumentParser(description="Metric Space Explorer")
-    parser.add_argument("--model",type=str,default="gpt2",
-        help="Initial model to load (any HuggingFace model name)")
-    parser.add_argument("--port",type=int,default=8765)
-    args=parser.parse_args()
+    args = parse_args()
 
     load_model(args.model)
 
-    def open_browser():
-        time.sleep(1.0);webbrowser.open(f"http://127.0.0.1:{args.port}")
-    threading.Thread(target=open_browser,daemon=True).start()
+    threading.Thread(
+        target=open_browser_delayed,
+        args=(args.port,),
+        daemon=True,
+    ).start()
 
-    server=HTTPServer(("127.0.0.1",args.port),Handler)
+    server = start_server("127.0.0.1", args.port)
     print(f"\n[Server] http://127.0.0.1:{args.port}")
     print("[Server] Ctrl+C to stop\n")
     server.serve_forever()
 
-if __name__=="__main__":
-    main()
 
+if __name__ == "__main__":
+    main()
