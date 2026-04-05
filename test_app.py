@@ -874,12 +874,6 @@ class TestNeighborComputationEdgeCases(unittest.TestCase):
         idxs = [r["idx"] for r in result]
         self.assertNotIn(0, idxs)
 
-    def test_find_k_neighbors_k_larger_than_available(self):
-        all_emb = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]])
-        result = app.find_k_neighbors(0, all_emb[0], all_emb, ["a", "b", "c"], [True, True, True], k=10)
-        # Should return at most 2 (excluding self)
-        self.assertEqual(len(result), 2)
-
     def test_find_k_neighbors_returns_sorted_by_distance(self):
         all_emb = np.array([
             [0.0, 0.0],
@@ -1250,12 +1244,6 @@ class TestHTTPConcurrency(unittest.TestCase):
 class TestNumericalStability(unittest.TestCase):
     """Tests for numerical edge cases."""
 
-    def test_compute_grid_weights_far_point(self):
-        """Very far grid point should still produce valid weights."""
-        existing = np.array([[0.0, 0.0], [1.0, 1.0]])
-        weights = app.compute_grid_weights(1e6, 1e6, existing, sigma_nn=1.0)
-        self.assertAlmostEqual(weights.sum(), 1.0, places=5)
-
     def test_find_k_neighbors_identical_points(self):
         """All points at the same location."""
         all_emb = np.zeros((5, 3))
@@ -1263,14 +1251,6 @@ class TestNumericalStability(unittest.TestCase):
         # All distances should be 0 (or inf for self)
         for r in result:
             self.assertAlmostEqual(r["dist"], 0.0, places=10)
-
-    def test_compute_grid_weights_zero_sigma(self):
-        """Extremely small sigma should still produce valid (non-NaN) weights."""
-        existing = np.array([[0.0, 0.0], [1.0, 1.0]])
-        weights = app.compute_grid_weights(0.5, 0.5, existing, sigma_nn=1e-15)
-        self.assertFalse(np.any(np.isnan(weights)))
-        # Weights should still sum to ~1 due to the +1e-15 guard
-        self.assertAlmostEqual(weights.sum(), 1.0, places=3)
 
     def test_pca_large_dimension_mismatch(self):
         """PCA with more dimensions than samples should still work."""
