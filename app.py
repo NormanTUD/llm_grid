@@ -103,19 +103,23 @@ MODEL_CONFIG = None
 
 
 def load_model(model_name):
-    """Load a HuggingFace model and tokenizer into globals."""
-    global TOKENIZER, MODEL, MODEL_NAME, MODEL_CONFIG
+    global TOKENIZER, MODEL, LM_MODEL, MODEL_NAME, MODEL_CONFIG
     MODEL_NAME = model_name
-    print(f"[Model] Loading {model_name}...")
     TOKENIZER = AutoTokenizer.from_pretrained(model_name)
     MODEL = AutoModel.from_pretrained(model_name, output_hidden_states=True)
     MODEL.eval()
     MODEL_CONFIG = MODEL.config
-    n_layers = get_n_layers(MODEL_CONFIG)
-    hidden_dim = get_hidden_dim(MODEL_CONFIG)
+    
+    # Also load the LM head version for next-token prediction
     mtype = detect_model_type(MODEL_CONFIG)
-    print(f"[Model] Loaded. Type={mtype}, Layers={n_layers}, dim={hidden_dim}")
-
+    LM_MODEL = None
+    if mtype == "causal":
+        try:
+            from transformers import AutoModelForCausalLM
+            LM_MODEL = AutoModelForCausalLM.from_pretrained(model_name)
+            LM_MODEL.eval()
+        except Exception as e:
+            print(f"[Model] Could not load LM head: {e}")
 
 # ============================================================
 # 4. TOKENIZATION
@@ -266,16 +270,15 @@ def find_k_neighbors(self_idx, query_vec, all_embeddings, all_labels, all_is_rea
 # ============================================================
 
 def predict_next_token(tokenizer, model, input_ids, model_config, k=5):
-    """Predict top-k next tokens using the model's LM head if available."""
+    """Predict top-k next tokens using the pre-loaded LM model if available."""
+    global LM_MODEL
     try:
-        from transformers import AutoModelForCausalLM
-        # Try to get logits from a causal LM
-        lm_model = AutoModelForCausalLM.from_pretrained(
-            MODEL_NAME, output_hidden_states=False
-        )
-        lm_model.eval()
+        if LM_MODEL is None:
+            print("[Model] No LM head model loaded — skipping next-token prediction")
+            return []
+
         with torch.no_grad():
-            outputs = lm_model(input_ids)
+            outputs = LM_MODEL(input_ids)
             logits = outputs.logits[0, -1, :]  # last token's logits
             probs = torch.softmax(logits, dim=-1)
             topk = torch.topk(probs, k)
@@ -551,9 +554,12 @@ def process_text(text, model_name=None):
     # Build output
     fixed_pos = build_fixed_pos(all_layer0)
     deltas = build_deltas_array(all_deltas_per_point, n_layers, n_total_final)
+
     data = build_output_data(
         all_labels, all_is_real, n_layers, n_total_final, n_real,
         hidden_dim, fixed_pos, deltas, MODEL_NAME, text, neighbors,
+        next_token_preds=next_token_preds,
+        vocab_neighbors=vocab_neighbors,
     )
 
     json_str = json.dumps(data)
