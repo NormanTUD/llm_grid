@@ -261,6 +261,76 @@ def find_k_neighbors(self_idx, query_vec, all_embeddings, all_labels, all_is_rea
         })
     return result
 
+# ============================================================
+# 7b. NEXT TOKEN PREDICTION & VOCABULARY NEIGHBORS
+# ============================================================
+
+def predict_next_token(tokenizer, model, input_ids, model_config, k=5):
+    """Predict top-k next tokens using the model's LM head if available."""
+    try:
+        from transformers import AutoModelForCausalLM
+        # Try to get logits from a causal LM
+        lm_model = AutoModelForCausalLM.from_pretrained(
+            MODEL_NAME, output_hidden_states=False
+        )
+        lm_model.eval()
+        with torch.no_grad():
+            outputs = lm_model(input_ids)
+            logits = outputs.logits[0, -1, :]  # last token's logits
+            probs = torch.softmax(logits, dim=-1)
+            topk = torch.topk(probs, k)
+            results = []
+            for i in range(k):
+                tid = topk.indices[i].item()
+                prob = topk.values[i].item()
+                token_str = tokenizer.decode([tid]).replace("\u0120", " ").replace("\u010a", "\\n")
+                results.append({"token": token_str, "prob": round(prob, 4)})
+            return results
+    except Exception as e:
+        print(f"[Model] Next-token prediction failed: {e}")
+        return []
+
+
+def find_vocab_neighbors(tokenizer, model, layer0_vecs, n_real, k=5):
+    """
+    For each real token, find k nearest vocabulary tokens in embedding space.
+    Returns list of lists (one per real token).
+    """
+    try:
+        # Get the embedding matrix
+        if hasattr(model, 'wte'):
+            emb_matrix = model.wte.weight.detach().cpu().numpy()
+        elif hasattr(model, 'embeddings'):
+            emb_matrix = model.embeddings.word_embeddings.weight.detach().cpu().numpy()
+        elif hasattr(model, 'embed_tokens'):
+            emb_matrix = model.embed_tokens.weight.detach().cpu().numpy()
+        else:
+            print("[Model] Could not find embedding matrix for vocab neighbors")
+            return [[] for _ in range(n_real)]
+
+        vocab_size = emb_matrix.shape[0]
+        results = []
+        for ri in range(n_real):
+            vec = layer0_vecs[ri]
+            dists = np.linalg.norm(emb_matrix - vec, axis=1)
+            nearest = np.argsort(dists)[:k + 1]  # +1 to skip self
+            neighbors = []
+            for ni in nearest:
+                token_str = tokenizer.decode([int(ni)]).replace("\u0120", " ").replace("\u010a", "\\n")
+                # Skip if it's the same token (distance ~0)
+                if dists[ni] < 1e-6:
+                    continue
+                neighbors.append({
+                    "token": token_str,
+                    "dist": round(float(dists[ni]), 3)
+                })
+                if len(neighbors) >= k:
+                    break
+            results.append(neighbors)
+        return results
+    except Exception as e:
+        print(f"[Model] Vocab neighbor computation failed: {e}")
+        return [[] for _ in range(n_real)]
 
 # ============================================================
 # 8. PCA COMPUTATION
@@ -381,9 +451,10 @@ def build_deltas_array(all_deltas_per_point, n_layers, n_points):
 
 
 def build_output_data(all_labels, all_is_real, n_layers, n_total, n_real,
-                      hidden_dim, fixed_pos, deltas, model_name, text, neighbors):
+                      hidden_dim, fixed_pos, deltas, model_name, text, neighbors,
+                      next_token_preds=None, vocab_neighbors=None):
     """Assemble the final JSON-serializable dict."""
-    return {
+    data = {
         "tokens": all_labels,
         "is_real": all_is_real,
         "n_layers": n_layers,
@@ -397,7 +468,11 @@ def build_output_data(all_labels, all_is_real, n_layers, n_total, n_real,
         "text": text,
         "neighbors": neighbors,
     }
-
+    if next_token_preds is not None:
+        data["next_token"] = next_token_preds
+    if vocab_neighbors is not None:
+        data["vocab_neighbors"] = vocab_neighbors
+    return data
 
 # ============================================================
 # 11. MAIN PROCESSING PIPELINE
@@ -440,6 +515,14 @@ def process_text(text, model_name=None):
     real_embeddings = np.stack(all_layer0[:n_real], axis=0)
     all_embeddings = np.stack(all_layer0, axis=0)
     neighbors = compute_neighbors(real_embeddings, all_embeddings, all_labels, all_is_real, k=10)
+
+    # Predict next token
+    print("[Model] Predicting next token...")
+    next_token_preds = predict_next_token(TOKENIZER, MODEL, real_ids, MODEL_CONFIG, k=5)
+
+    # Find vocabulary neighbors for each real token
+    print("[Model] Finding vocabulary neighbors...")
+    vocab_neighbors = find_vocab_neighbors(TOKENIZER, MODEL, all_layer0[:n_real], n_real, k=5)
 
     # PCA + grid probes
     print("[Model] Creating grid intersection probes...")
@@ -561,6 +644,10 @@ Points: <span id="i-pts">-</span> (<span id="i-real">-</span> real + <span id="i
 Layers: <span id="i-lay">-</span> | Dim: <span id="i-dim">-</span> |
 Tokens: <span id="i-tok">-</span>
 </div>
+<h3>Predicted Next Token</h3>
+<div id="next-token-panel" style="background:#0f3460;padding:6px;border-radius:4px;font-size:11px;line-height:1.6">
+<span style="color:#555">Run a prompt to see predictions</span>
+</div>
 <h3>Selected Tokens (click canvas to select)</h3>
 <div id="selected-tokens"><span style="color:#555;font-size:10px">Click on a token dot to select it</span></div>
 <div id="neighbor-panel">
@@ -591,6 +678,7 @@ Tokens: <span id="i-tok">-</span>
 <div class="cr"><label>Grid Res:</label><input type="range" id="sl-gr" min="10" max="80" value="30" step="1"><span class="v" id="v-gr">30</span></div>
 <h3>Display</h3>
 <div class="cb"><input type="checkbox" id="cb-grid" checked><label for="cb-grid">Deformed Grid</label></div>
+<div class="cb"><input type="checkbox" id="cb-vocnb" checked><label for="cb-vocnb">Show Nearby Vocab Words (greyed)</label></div>
 <div class="cb"><input type="checkbox" id="cb-heat" checked><label for="cb-heat">Strain Heatmap</label></div>
 <div class="cb"><input type="checkbox" id="cb-ref" checked><label for="cb-ref">Reference Grid</label></div>
 <div class="cb"><input type="checkbox" id="cb-tok" checked><label for="cb-tok">Real Tokens</label></div>
@@ -649,6 +737,26 @@ function onData(){
     autoParams();
     draw();
     document.getElementById('status').textContent='Ready — '+D.n_real+' tokens, '+D.n_synth+' probes | Model: '+D.model_name;
+
+// Show next token predictions
+var ntp = document.getElementById('next-token-panel');
+if(D.next_token && D.next_token.length > 0){
+    var html = '';
+    for(var i=0; i<D.next_token.length; i++){
+        var nt = D.next_token[i];
+        var barW = Math.max(2, nt.prob * 200);
+        html += '<div style="display:flex;align-items:center;gap:6px">';
+        html += '<span style="color:#e94560;font-weight:bold;min-width:80px;font-family:monospace">' +
+                nt.token + '</span>';
+        html += '<div style="background:#e94560;height:8px;width:'+barW+'px;border-radius:3px;opacity:0.7"></div>';
+        html += '<span style="color:#888;font-size:9px">' + (nt.prob*100).toFixed(1) + '%</span>';
+        html += '</div>';
+    }
+    ntp.innerHTML = html;
+} else {
+    ntp.innerHTML = '<span style="color:#555">No predictions available</span>';
+}
+
 }
 
 function autoParams(){
@@ -803,9 +911,10 @@ for(var i=0;i<SLS.length;i++)(function(c){
     });
 })(SLS[i]);
 
-['cb-grid','cb-heat','cb-ref','cb-tok','cb-syn','cb-sc','cb-vec'].forEach(function(id){
+['cb-grid','cb-heat','cb-ref','cb-tok','cb-syn','cb-sc','cb-vec','cb-vocnb'].forEach(function(id){
     document.getElementById(id).addEventListener('change',draw);
 });
+
 document.getElementById('sel-mode').addEventListener('change',draw);
 document.addEventListener('keydown',onKey);
 document.getElementById('txt-in').addEventListener('keydown',function(e){if(e.key==='Enter')runText()});
@@ -1094,6 +1203,26 @@ function draw(){
         for(var q2=0;q2<sVa.length;q2++){if(sVa[q2]<sMin)sMin=sVa[q2];if(sVa[q2]>sMax)sMax=sVa[q2];sSum+=sVa[q2];sN2++}
         c.fillText('Strain: min='+sMin.toFixed(4)+' avg='+(sSum/sN2).toFixed(4)+' max='+sMax.toFixed(4),M,H-8);
     }
+
+// Draw vocab neighbors (greyed out nearby words)
+if(document.getElementById('cb-vocnb').checked && D.vocab_neighbors && p.tok){
+    c.font='9px monospace';
+    for(var vi=0;vi<nR;vi++){
+        if(!D.vocab_neighbors[vi])continue;
+        var vtx=SX(fx[vi]),vty=SY(fy[vi]);
+        var vnbs=D.vocab_neighbors[vi];
+        for(var vni=0;vni<vnbs.length;vni++){
+            var vnb=vnbs[vni];
+            // Position them in a fan around the token
+            var angle = -Math.PI/2 + (vni/(vnbs.length-1||1)) * Math.PI;
+            var radius = 35 + vni * 8;
+            var vnx = vtx + Math.cos(angle) * radius;
+            var vny = vty + Math.sin(angle) * radius + 20;
+            c.fillStyle='rgba(150,150,170,0.45)';
+            c.fillText(vnb.token, vnx, vny);
+        }
+    }
+}
 }
 </script></body></html>"""
 
