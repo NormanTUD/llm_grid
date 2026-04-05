@@ -264,6 +264,14 @@ def extract_component_deltas(model, input_ids, n_layers, hidden_dim):
 
     So the residual delta = attn_out + mlp_out.
 
+    For BERT/RoBERTa style models, each block computes:
+        attn_out = block.attention(h)          -> (hidden_dim,)
+        intermediate = block.intermediate(...)  -> (intermediate_size,)  e.g. 3072
+        mlp_out = block.output.dense(intermediate) -> (hidden_dim,)
+
+    We hook block.output.dense (the down-projection) for the MLP signal,
+    NOT block.intermediate (which is the up-projection to intermediate_size).
+
     Returns:
         attn_deltas: list of list of numpy arrays [seq_len][n_layers]
         mlp_deltas:  list of list of numpy arrays [seq_len][n_layers]
@@ -301,19 +309,27 @@ def extract_component_deltas(model, input_ids, n_layers, hidden_dim):
         if hasattr(block, 'attn') and hasattr(block, 'mlp'):
             hooks.append(block.attn.register_forward_hook(_make_attn_hook(layer_idx)))
             hooks.append(block.mlp.register_forward_hook(_make_mlp_hook(layer_idx)))
-        # BERT: block.attention, block.intermediate + block.output
+
+        # BERT / RoBERTa: block.attention, block.intermediate, block.output
+        # block.intermediate projects hidden_dim -> intermediate_size (e.g. 768 -> 3072)
+        # block.output.dense projects intermediate_size -> hidden_dim (e.g. 3072 -> 768)
+        # We must hook block.output.dense for the MLP signal to get the correct shape.
         elif hasattr(block, 'attention') and hasattr(block, 'output'):
             hooks.append(block.attention.register_forward_hook(_make_attn_hook(layer_idx)))
-            # For BERT, the "MLP" is intermediate + output, but the output module
-            # also includes the residual. We hook the intermediate for the MLP signal.
-            if hasattr(block, 'intermediate'):
-                hooks.append(block.intermediate.register_forward_hook(_make_mlp_hook(layer_idx)))
+            if hasattr(block, 'intermediate') and hasattr(block.output, 'dense'):
+                # Hook the down-projection (intermediate_size -> hidden_dim)
+                hooks.append(block.output.dense.register_forward_hook(_make_mlp_hook(layer_idx)))
+            elif hasattr(block, 'intermediate'):
+                # Fallback: hook block.output (includes residual + LayerNorm)
+                hooks.append(block.output.register_forward_hook(_make_mlp_hook(layer_idx)))
             else:
                 hooks.append(block.output.register_forward_hook(_make_mlp_hook(layer_idx)))
+
         # DistilBERT: block.attention, block.ffn
         elif hasattr(block, 'attention') and hasattr(block, 'ffn'):
             hooks.append(block.attention.register_forward_hook(_make_attn_hook(layer_idx)))
             hooks.append(block.ffn.register_forward_hook(_make_mlp_hook(layer_idx)))
+
         else:
             # Fallback: can't decompose this architecture
             for h in hooks:
@@ -338,11 +354,21 @@ def extract_component_deltas(model, input_ids, n_layers, hidden_dim):
         mlp_list = []
         for lay in range(n_layers):
             if lay in attn_outputs:
-                attn_list.append(attn_outputs[lay][0][s].cpu().numpy())
+                attn_vec = attn_outputs[lay][0][s].cpu().float().numpy()
+                # Safety check: if shape doesn't match hidden_dim, zero-fill
+                if attn_vec.shape[0] != hidden_dim:
+                    attn_list.append(np.zeros(hidden_dim))
+                else:
+                    attn_list.append(attn_vec)
             else:
                 attn_list.append(np.zeros(hidden_dim))
             if lay in mlp_outputs:
-                mlp_list.append(mlp_outputs[lay][0][s].cpu().numpy())
+                mlp_vec = mlp_outputs[lay][0][s].cpu().float().numpy()
+                # Safety check: if shape doesn't match hidden_dim, zero-fill
+                if mlp_vec.shape[0] != hidden_dim:
+                    mlp_list.append(np.zeros(hidden_dim))
+                else:
+                    mlp_list.append(mlp_vec)
             else:
                 mlp_list.append(np.zeros(hidden_dim))
         attn_deltas_per_token.append(attn_list)
