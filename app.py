@@ -1055,8 +1055,8 @@ Tokens: <span id="i-tok">-</span>
 <div class="cb"><input type="checkbox" id="cb-syn"><label for="cb-syn">Probe Points</label></div>
 <div class="cb"><input type="checkbox" id="cb-sc" checked><label for="cb-sc">Strain Color</label></div>
 <div class="cb"><input type="checkbox" id="cb-vec"><label for="cb-vec">Vector Arrows</label></div>
-<div id="keys"><b>Keys:</b> ←→ Layer | ↑↓ t | A/Z Amp | Space Auto | R Reset | D Dims | 0 Reset Zoom<br>
-<b>Mouse:</b> Scroll=Zoom | Shift+Drag=Pan | Click=Select Token</div>
+<div id="keys"><b>Keys:</b> ←→ Dim X | ↑↓ Dim Y | PgUp/PgDn Dim Z (3D) | [/] Layer | ;/' t | A/Z Amp | Space Auto | R Reset | D Next Dim Pair | 0 Reset Zoom<br>
+<b>Mouse:</b> Scroll=Zoom | Shift+Drag=Pan | Click=Select Token | Drag=Rotate (3D)</div>
 </div>
 <div id="main">
 <canvas id="cv"></canvas>
@@ -1535,16 +1535,75 @@ function gp(){return{
 function onKey(e){
     if(document.activeElement===document.getElementById('txt-in'))return;
     var sl=document.getElementById('sl-layer'),st=document.getElementById('sl-t'),sa=document.getElementById('sl-amp');
-    if(e.key==='ArrowRight'){sl.value=Math.min(+sl.max,+sl.value+1);sl.dispatchEvent(new Event('input'))}
-    else if(e.key==='ArrowLeft'){sl.value=Math.max(0,+sl.value-1);sl.dispatchEvent(new Event('input'))}
-    else if(e.key==='ArrowUp'){e.preventDefault();st.value=Math.min(1,+st.value+.05).toFixed(2);st.dispatchEvent(new Event('input'))}
-    else if(e.key==='ArrowDown'){e.preventDefault();st.value=Math.max(0,+st.value-.05).toFixed(2);st.dispatchEvent(new Event('input'))}
+    var sdx=document.getElementById('sl-dx'), sdy=document.getElementById('sl-dy'), sdz=document.getElementById('sl-dz');
+    var maxDim = D ? D.hidden_dim - 1 : 767;
+
+    if(e.key==='ArrowRight'){
+        // Cycle Dim X forward
+        e.preventDefault();
+        var newX = +sdx.value + 1;
+        if(newX > maxDim) newX = 0;
+        // Skip if it collides with Dim Y
+        if(newX === +sdy.value) newX = (newX + 1) % (maxDim + 1);
+        sdx.value = newX;
+        sdx.dispatchEvent(new Event('input'));
+    }
+    else if(e.key==='ArrowLeft'){
+        // Cycle Dim X backward
+        e.preventDefault();
+        var newX = +sdx.value - 1;
+        if(newX < 0) newX = maxDim;
+        if(newX === +sdy.value) newX = (newX - 1 + maxDim + 1) % (maxDim + 1);
+        sdx.value = newX;
+        sdx.dispatchEvent(new Event('input'));
+    }
+    else if(e.key==='ArrowUp'){
+        // Cycle Dim Y forward
+        e.preventDefault();
+        var newY = +sdy.value + 1;
+        if(newY > maxDim) newY = 0;
+        if(newY === +sdx.value) newY = (newY + 1) % (maxDim + 1);
+        sdy.value = newY;
+        sdy.dispatchEvent(new Event('input'));
+    }
+    else if(e.key==='ArrowDown'){
+        // Cycle Dim Y backward
+        e.preventDefault();
+        var newY = +sdy.value - 1;
+        if(newY < 0) newY = maxDim;
+        if(newY === +sdx.value) newY = (newY - 1 + maxDim + 1) % (maxDim + 1);
+        sdy.value = newY;
+        sdy.dispatchEvent(new Event('input'));
+    }
+    // Move layer controls to [ and ] (or , and .)
+    else if(e.key==='.' || e.key===']'){sl.value=Math.min(+sl.max,+sl.value+1);sl.dispatchEvent(new Event('input'))}
+    else if(e.key===',' || e.key==='['){sl.value=Math.max(0,+sl.value-1);sl.dispatchEvent(new Event('input'))}
+    // Move t controls to ; and '
+    else if(e.key==="'"){st.value=Math.min(1,+st.value+.05).toFixed(2);st.dispatchEvent(new Event('input'))}
+    else if(e.key===';'){st.value=Math.max(0,+st.value-.05).toFixed(2);st.dispatchEvent(new Event('input'))}
     else if(e.key==='a'||e.key==='A'){sa.value=Math.min(500,+sa.value*1.3).toFixed(1);sa.dispatchEvent(new Event('input'))}
     else if(e.key==='z'||e.key==='Z'){sa.value=Math.max(.1,+sa.value/1.3).toFixed(1);sa.dispatchEvent(new Event('input'))}
     else if(e.key===' '){e.preventDefault();togAP()}
     else if(e.key==='r'||e.key==='R'){rstAll()}
     else if(e.key==='d'||e.key==='D'){nxtD()}
     else if(e.key==='0'){zoomLevel=1.0;panX=0;panY=0;draw()}
+    // In 3D mode, PageUp/PageDown cycle Dim Z
+    else if(viewMode==='3d' && e.key==='PageUp'){
+        e.preventDefault();
+        var newZ = +sdz.value + 1;
+        if(newZ > maxDim) newZ = 0;
+        while(newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ + 1) % (maxDim + 1);
+        sdz.value = newZ;
+        sdz.dispatchEvent(new Event('input'));
+    }
+    else if(viewMode==='3d' && e.key==='PageDown'){
+        e.preventDefault();
+        var newZ = +sdz.value - 1;
+        if(newZ < 0) newZ = maxDim;
+        while(newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ - 1 + maxDim + 1) % (maxDim + 1);
+        sdz.value = newZ;
+        sdz.dispatchEvent(new Event('input'));
+    }
 }
 
 function togAP(){
