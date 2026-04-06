@@ -33,13 +33,13 @@ SAE_MODELS = {}  # layer_idx -> trained SAE
 # Known SAE release mappings for popular models
 # SAELens uses release IDs like "gpt2-small-res-jb" etc.
 SAE_RELEASE_MAP = {
-    "gpt2": "gpt2-small-res-jb",
-    "gpt2-small": "gpt2-small-res-jb",
-    "gpt2-medium": "gpt2-medium-res-jb",
-    "gpt2-large": "gpt2-large-res-jb",
+    "gpt2":                          "gpt2-small-res-jb",
+    "gpt2-small":                    "gpt2-small-res-jb",
+    "gpt2-medium":                   "gpt2-medium-res-jb",
+    "gpt2-large":                    "gpt2-large-res-jb",
     "EleutherAI/pythia-70m-deduped": "pythia-70m-deduped-res-sm",
-    "EleutherAI/pythia-160m": "pythia-160m-deduped-res-sm",
-    "EleutherAI/pythia-410m": "pythia-410m-deduped-res-sm",
+    "EleutherAI/pythia-160m":        "pythia-160m-deduped-res-sm",
+    "EleutherAI/pythia-410m":        "pythia-410m-deduped-res-sm",
 }
 
 # Hook point template per architecture
@@ -52,24 +52,24 @@ SAE_HOOK_TEMPLATES = {
 
 def get_sae_release_id(model_name):
     """Map a HuggingFace model name to a SAELens release ID."""
+    # Direct lookup first
     if model_name in SAE_RELEASE_MAP:
         return SAE_RELEASE_MAP[model_name]
-    # Try common patterns
+    # Fuzzy matching
     mn = model_name.lower()
     if "gpt2" in mn:
-        if "medium" in mn:
-            return "gpt2-medium-res-jb"
+        if "xl" in mn:
+            return None  # no public SAE for gpt2-xl yet
         if "large" in mn:
             return "gpt2-large-res-jb"
-        if "xl" in mn:
-            return "gpt2-xl-res-jb"
+        if "medium" in mn:
+            return "gpt2-medium-res-jb"
         return "gpt2-small-res-jb"
     if "pythia" in mn:
         for key in SAE_RELEASE_MAP:
-            if key in model_name:
+            if key.lower() in mn:
                 return SAE_RELEASE_MAP[key]
     return None
-
 
 def get_sae_hook_template(model_name):
     """Get the hook point template string for a model."""
@@ -79,6 +79,9 @@ def get_sae_hook_template(model_name):
     if "pythia" in mn:
         return SAE_HOOK_TEMPLATES["pythia"]
     return SAE_HOOK_TEMPLATES["default"]
+
+
+
 
 def load_saes(model_name, n_layers):
     """Load pre-trained SAEs for each layer. Fails gracefully per-layer."""
@@ -94,18 +97,18 @@ def load_saes(model_name, n_layers):
         print(f"[SAE] No known SAE release for model '{model_name}' — skipping")
         return
 
-    hook_template = get_sae_hook_template(model_name)
     print(f"[SAE] Loading SAEs from release '{release_id}' for {n_layers} layers...")
 
     for layer in range(n_layers):
-        sae_id = hook_template.format(layer=layer)
+        sae_id = f"blocks.{layer}.hook_resid_post"
         try:
+            # SAE.from_pretrained returns (sae, cfg_dict, sparsity)
             sae, cfg_dict, sparsity = SAE.from_pretrained(
                 release=release_id,
                 sae_id=sae_id,
             )
-            SAE_MODELS[layer] = sae
             sae.eval()
+            SAE_MODELS[layer] = sae
             d_sae = sae.cfg.d_sae if hasattr(sae.cfg, 'd_sae') else '?'
             print(f"  [SAE] Layer {layer}: loaded ({d_sae} latents)")
         except Exception as e:
@@ -247,7 +250,6 @@ def load_model(model_name):
     MODEL.eval()
     MODEL_CONFIG = MODEL.config
 
-    # Also load the LM head version for next-token prediction
     mtype = detect_model_type(MODEL_CONFIG)
     LM_MODEL = None
     if mtype == "causal":
@@ -2861,17 +2863,15 @@ def handle_sae_intervene(body_bytes):
 
     if not text:
         return json.dumps({"error": "Empty text"}).encode()
-
     if LM_MODEL is None:
-        return json.dumps({"error": "No LM head model loaded — cannot predict"}).encode()
-
+        return json.dumps({"error": "No LM head model loaded"}).encode()
     if not SAE_AVAILABLE or layer not in SAE_MODELS:
         return json.dumps({"error": f"No SAE for layer {layer}"}).encode()
 
     input_ids, tokens = tokenize_text(TOKENIZER, text)
     sae = SAE_MODELS[layer]
 
-    # First get baseline predictions (no intervention)
+    # Baseline predictions
     with torch.no_grad():
         baseline_out = LM_MODEL(input_ids)
         baseline_logits = baseline_out.logits[0, -1, :]
@@ -2885,7 +2885,7 @@ def handle_sae_intervene(body_bytes):
         token_str = TOKENIZER.decode([tid]).replace("\u0120", " ").replace("\u010a", "\\n")
         baseline_results.append({"token": token_str, "prob": round(prob, 4)})
 
-    # Now run with intervention
+    # Intervention hook
     def intervention_hook(module, input, output):
         h = output[0] if isinstance(output, tuple) else output
         with torch.no_grad():
@@ -2896,8 +2896,7 @@ def handle_sae_intervene(body_bytes):
             return (h_new,) + output[1:]
         return h_new
 
-    # We need to hook the LM_MODEL's transformer blocks, not MODEL's
-    # For GPT-2: LM_MODEL.transformer.h[layer]
+    # Hook the LM model's transformer blocks
     lm_blocks = None
     if hasattr(LM_MODEL, 'transformer'):
         lm_blocks = _get_transformer_blocks(LM_MODEL.transformer)
@@ -2910,7 +2909,6 @@ def handle_sae_intervene(body_bytes):
         return json.dumps({"error": "Cannot hook LM model at this layer"}).encode()
 
     hook = lm_blocks[layer].register_forward_hook(intervention_hook)
-
     try:
         with torch.no_grad():
             outputs = LM_MODEL(input_ids)
@@ -2936,7 +2934,6 @@ def handle_sae_intervene(body_bytes):
         "tokens": tokens,
     }).encode()
 
-
 def handle_sae_info(body_bytes):
     """Return info about which SAE layers are available."""
     info = {
@@ -2945,64 +2942,72 @@ def handle_sae_info(body_bytes):
         "model_name": MODEL_NAME,
         "total_layers": get_n_layers(MODEL_CONFIG) if MODEL_CONFIG else 0,
     }
-    # Add per-layer info
     layer_info = {}
     for layer, sae in SAE_MODELS.items():
         d_sae = sae.cfg.d_sae if hasattr(sae.cfg, 'd_sae') else None
-        layer_info[str(layer)] = {
-            "d_sae": d_sae,
-        }
+        layer_info[str(layer)] = {"d_sae": d_sae}
     info["layer_info"] = layer_info
     return json.dumps(info).encode()
 
 
-def handle_sae_intervene(body_bytes):
+def handle_sae_features(body_bytes):
+    """Return top-K active SAE features for a given token at a given layer."""
     req = json.loads(body_bytes)
-    text = req["text"]
-    layer = req["layer"]
-    feature_id = req["feature_id"]
-    clamp_value = req["clamp_value"]
-    
+    text = req.get("text", "").strip()
+    layer = req.get("layer", 0)
+    token_idx = req.get("token_idx", 0)
+    top_k = req.get("top_k", 20)
+
+    if not text:
+        return json.dumps({"error": "Empty text"}).encode()
+    if not SAE_AVAILABLE or len(SAE_MODELS) == 0:
+        return json.dumps({"error": "No SAEs loaded", "features": []}).encode()
+    if layer not in SAE_MODELS:
+        available = sorted(SAE_MODELS.keys())
+        return json.dumps({
+            "error": f"No SAE for layer {layer}. Available: {available}",
+            "features": []
+        }).encode()
+
     input_ids, tokens = tokenize_text(TOKENIZER, text)
-    
-    # Run with intervention using hooks
+    n_tokens = input_ids.shape[1]
+    if token_idx < 0 or token_idx >= n_tokens:
+        return json.dumps({"error": f"token_idx {token_idx} out of range [0, {n_tokens})"}).encode()
+
+    hs = extract_hidden_states(MODEL, input_ids)
     sae = SAE_MODELS[layer]
-    
-    def intervention_hook(module, input, output):
-        h = output[0] if isinstance(output, tuple) else output
-        with torch.no_grad():
-            latents = sae.encode(h)
-            latents[:, :, feature_id] = clamp_value
-            h_new = sae.decode(latents)
-        if isinstance(output, tuple):
-            return (h_new,) + output[1:]
-        return h_new
-    
-    # Register hook on the appropriate layer
-    blocks = _get_transformer_blocks(MODEL)
-    hook = blocks[layer].register_forward_hook(intervention_hook)
-    
-    try:
-        # Get modified next-token predictions
-        with torch.no_grad():
-            outputs = LM_MODEL(input_ids)
-            logits = outputs.logits[0, -1, :]
-            probs = torch.softmax(logits, dim=-1)
-            topk = torch.topk(probs, 10)
-        
-        results = []
-        for i in range(10):
-            tid = topk.indices[i].item()
-            prob = topk.values[i].item()
-            token_str = TOKENIZER.decode([tid])
-            results.append({"token": token_str, "prob": round(prob, 4)})
-    finally:
-        hook.remove()
-    
+
+    with torch.no_grad():
+        h = hs[layer + 1].squeeze(0)  # (seq_len, hidden_dim)
+        latents = sae.encode(h)       # (seq_len, d_sae)
+
+    token_latents = latents[token_idx].cpu().numpy()
+    top_indices = np.argsort(-np.abs(token_latents))[:top_k]
+
+    features = []
+    for idx in top_indices:
+        act = float(token_latents[idx])
+        if abs(act) < 1e-8 and len(features) >= 5:
+            break
+        features.append({
+            "feature_id": int(idx),
+            "activation": round(act, 6),
+        })
+
+    # Token activations for heatmap (top 10 features)
+    all_token_acts = {}
+    for f in features[:10]:
+        fid = f["feature_id"]
+        acts = latents[:, fid].cpu().numpy().tolist()
+        all_token_acts[str(fid)] = [round(a, 6) for a in acts]
+
     return json.dumps({
-        "modified_predictions": results,
-        "feature_id": feature_id,
-        "clamp_value": clamp_value,
+        "features": features,
+        "token_idx": token_idx,
+        "layer": layer,
+        "tokens": tokens,
+        "n_latents": int(latents.shape[1]),
+        "token_activations": all_token_acts,
     }).encode()
 
 # ============================================================
@@ -3058,63 +3063,29 @@ from sae_lens import SAE  # or your own SAE class
 
 SAE_MODELS = {}  # layer_idx -> trained SAE
 
-def load_saes(model_name, n_layers):
-    """Load pre-trained SAEs for each layer."""
-    global SAE_MODELS
-    SAE_MODELS = {}
-    for layer in range(n_layers):
-        try:
-            sae = SAE.from_pretrained(
-                release=f"{model_name}-res-jb",  # example naming
-                sae_id=f"blocks.{layer}.hook_resid_post",
-            )
-            SAE_MODELS[layer] = sae
-            print(f"[SAE] Loaded SAE for layer {layer}: {sae.cfg.d_sae} latents")
-        except Exception as e:
-            print(f"[SAE] No SAE available for layer {layer}: {e}")
-
 
 def extract_sae_features(hidden_states, n_layers):
-    """
-    For each layer, run the hidden state through the SAE encoder
-    to get sparse latent activations.
-
-    Returns: dict[layer] -> (n_tokens, n_latents) numpy array
-    """
+    """For each layer, encode hidden states into sparse SAE latents."""
     sae_activations = {}
     for layer in range(n_layers):
         if layer not in SAE_MODELS:
             continue
         sae = SAE_MODELS[layer]
-        h = hidden_states[layer + 1]  # layer+1 because index 0 is embedding
+        h = hidden_states[layer + 1]
         with torch.no_grad():
-            # SAE encode: h -> sparse latent
-            latents = sae.encode(h.squeeze(0))  # (seq_len, d_sae)
+            latents = sae.encode(h.squeeze(0))
         sae_activations[layer] = latents.cpu().numpy()
     return sae_activations
 
 def intervene_sae_feature(hidden_states, layer, feature_idx, new_value, sae):
-    """
-    1. Encode the hidden state at `layer` into SAE latents
-    2. Modify latent[feature_idx] to `new_value`
-    3. Decode back to get a modified hidden state
-    4. Substitute it back and re-run remaining layers
-    """
+    """Encode, modify one latent, decode back."""
     h = hidden_states[layer + 1].clone()
-    
     with torch.no_grad():
-        # Encode
         latents = sae.encode(h)
-        
-        # Intervene
         original_val = latents[0, :, feature_idx].clone()
-        latents[0, :, feature_idx] = new_value  # clamp to specific value
-        
-        # Decode back to activation space
+        latents[0, :, feature_idx] = new_value
         h_modified = sae.decode(latents)
-    
     return h_modified, original_val
-
 
 if __name__ == "__main__":
     try:
