@@ -28,7 +28,6 @@ def ensure_uv_installed():
     """Ensure that the 'uv' CLI is installed and available."""
     uv_command = shutil.which("uv")
     if uv_command:
-        print("[Setup] 'uv' is already installed and available.")
         return
 
     print("[Setup] 'uv' not found. Installing 'uv'...")
