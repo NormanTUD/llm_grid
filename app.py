@@ -14,9 +14,42 @@ import argparse
 import os
 import sys
 import json
+import shutil
+import subprocess
 import threading
 from urllib.parse import urlparse
 from datetime import datetime, timedelta, UTC
+
+# ============================================================
+# 0. UV CHECK AND INSTALLATION
+# ============================================================
+
+def ensure_uv_installed():
+    """Ensure that the 'uv' CLI is installed and available."""
+    uv_command = shutil.which("uv")
+    if uv_command:
+        print("[Setup] 'uv' is already installed and available.")
+        return
+
+    print("[Setup] 'uv' not found. Installing 'uv'...")
+    try:
+        # Display the command that will be executed
+        print("[Setup] Command to run:")
+        print("pip install uvicorn")
+
+        # Run the installation command
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "uvicorn"])
+    except subprocess.CalledProcessError as e:
+        print(f"[Error] Failed to install 'uv'. Please install it manually. Error: {e}")
+        sys.exit(1)
+
+    # Verify installation
+    uv_command = shutil.which("uv")
+    if not uv_command:
+        print("[Error] 'uv' installation failed. Please check your environment and try again.")
+        sys.exit(1)
+
+    print("[Setup] 'uv' installation successful.")
 
 
 # ============================================================
@@ -50,15 +83,21 @@ def ensure_safe_env():
 
 
 # This must run BEFORE heavy imports
+ensure_uv_installed()
 ensure_safe_env()
 
+
+# ============================================================
+# 2. HEAVY IMPORTS
+# ============================================================
+
 try:
-    import webbrowser # noqa: E402
-    import time # noqa: E402
-    import numpy as np # noqa: E402
-    import torch # noqa: E402
-    from transformers import AutoTokenizer, AutoModel # noqa: E402
-    from http.server import HTTPServer, BaseHTTPRequestHandler # noqa: E402
+    import webbrowser  # noqa: E402
+    import time  # noqa: E402
+    import numpy as np  # noqa: E402
+    import torch  # noqa: E402
+    from transformers import AutoTokenizer, AutoModel  # noqa: E402
+    from http.server import HTTPServer, BaseHTTPRequestHandler  # noqa: E402
 except KeyboardInterrupt:
     pass
 
