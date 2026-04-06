@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write  # Required to push tags
+  contents: read
 
 jobs:
   # ──────────────────────────────────────────────
@@ -24,8 +24,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Ensure full history is fetched for tagging
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
@@ -79,8 +77,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Ensure full history is fetched for tagging
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -142,8 +138,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Ensure full history is fetched for tagging
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -187,14 +181,3 @@ jobs:
           fi
           echo "All checks passed ✅"
 
-      # Add a tag for the successful version using the runner ID
-      - name: Create and push tag
-        run: |
-          TAG_NAME="run-${{ github.run_id }}"
-          echo "Creating tag: $TAG_NAME"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG_NAME" -m "Tag created for successful checks"
-          git push origin "$TAG_NAME"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
