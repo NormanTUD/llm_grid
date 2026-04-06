@@ -2006,8 +2006,10 @@ class TestGridProbesWithComponents(unittest.TestCase):
 
     def _setup_grid_args(self, n_layers=2, hidden_dim=4, n_points=10, n_side=3):
         centroid = np.zeros(hidden_dim)
-        pc1 = np.zeros(hidden_dim); pc1[0] = 1.0
-        pc2 = np.zeros(hidden_dim); pc2[1] = 1.0
+        pc1 = np.zeros(hidden_dim)
+        pc1[0] = 1.0
+        pc2 = np.zeros(hidden_dim)
+        pc2[1] = 1.0
         proj1 = np.random.randn(n_points)
         proj2 = np.random.randn(n_points)
         existing_proj = np.stack([proj1, proj2], axis=1)
