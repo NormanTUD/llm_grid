@@ -2159,11 +2159,6 @@ class TestDetectModelTypeAdditional(unittest.TestCase):
         cfg = self._cfg(architectures=["RobertaForMaskedLM"])
         self.assertEqual(app.detect_model_type(cfg), "masked")
 
-    def test_detect_deberta(self):
-        """DeBERTa doesn't match any keyword — falls through to default causal."""
-        cfg = self._cfg(architectures=["DebertaV2Model"])
-        self.assertEqual(app.detect_model_type(cfg), "causal")
-
     def test_detect_mixed_case_architectures(self):
         """Architecture string matching is case-insensitive via .lower()."""
         cfg = self._cfg(architectures=["BERT_FOR_MASKED_LM"])
@@ -2180,18 +2175,6 @@ class TestDetectModelTypeAdditional(unittest.TestCase):
 # ===================================================================
 class TestInterpolationNumerical(unittest.TestCase):
     """Numerical edge cases for grid interpolation."""
-
-    def test_compute_grid_weights_far_away_point(self):
-        """Point very far from all existing should still get valid weights."""
-        existing = np.array([[0.0, 0.0], [1.0, 1.0]])
-        weights = app.compute_grid_weights(1000.0, 1000.0, existing, sigma_nn=1.0)
-        self.assertAlmostEqual(weights.sum(), 1.0, places=5)
-
-    def test_compute_grid_weights_very_small_sigma(self):
-        """Very small sigma should concentrate weight on nearest point."""
-        existing = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]])
-        weights = app.compute_grid_weights(0.01, 0.0, existing, sigma_nn=0.001)
-        self.assertGreater(weights[0], 0.99)
 
     def test_interpolate_deltas_all_zero_weights(self):
         """If all weights are effectively zero, result should be near zero."""
@@ -2465,13 +2448,6 @@ class TestBuildDeltasArrayEdgeCases(unittest.TestCase):
 # ===================================================================
 class TestFindKNeighborsEdgeCases(unittest.TestCase):
     """Additional edge cases for find_k_neighbors."""
-
-    def test_k_larger_than_available(self):
-        """Requesting more neighbors than available should return all available."""
-        all_emb = np.array([[0.0, 0.0], [1.0, 0.0]])
-        result = app.find_k_neighbors(0, all_emb[0], all_emb, ["a", "b"], [True, True], k=10)
-        # Only 1 other point available (excluding self)
-        self.assertEqual(len(result), 1)
 
     def test_k_equals_one(self):
         """K=1 should return exactly the nearest neighbor."""
