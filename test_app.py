@@ -2286,7 +2286,6 @@ class TestComponentDecompositionHooks(unittest.TestCase):
 
     def test_distilbert_style_blocks(self):
         """DistilBERT blocks have .attention and .ffn."""
-        import torch
 
         block = MagicMock()
         # Has attention and ffn but NOT 'output' or 'intermediate'
@@ -2313,7 +2312,6 @@ class TestComponentDecompositionHooks(unittest.TestCase):
 
     def test_bert_style_blocks_with_output_dense(self):
         """BERT blocks with attention + intermediate + output.dense."""
-        import torch
 
         block = MagicMock()
         del block.attn
