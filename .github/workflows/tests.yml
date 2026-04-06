@@ -181,3 +181,13 @@ jobs:
           fi
           echo "All checks passed ✅"
 
+      - name: Create and push tag
+        run: |
+          VERSION_TAG="v$(date +'%Y%m%d%H%M%S')"
+          echo "Creating tag: $VERSION_TAG"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$VERSION_TAG" -m "Tag created for successful checks"
+          git push origin "$VERSION_TAG"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
