@@ -1572,7 +1572,1068 @@ class TestMainFunction(unittest.TestCase):
 
         mock_load.assert_called_once_with("gpt2-medium")
 
+# ===================================================================
+# 36. COMPONENT DECOMPOSITION (Section 6b)
+# ===================================================================
+class TestComponentDecomposition(unittest.TestCase):
+    """Tests for extract_component_deltas and run_all_sequences_with_components."""
+
+    def test_extract_component_deltas_gpt2_style(self):
+        """GPT-2 style blocks with .attn and .mlp sub-modules."""
+        import torch
+
+        hidden_dim = 4
+        seq_len = 2
+        n_layers = 2
+
+        # Build fake blocks with attn and mlp
+        blocks = []
+        for _ in range(n_layers):
+            block = MagicMock()
+            block.attn = torch.nn.Linear(hidden_dim, hidden_dim)
+            block.mlp = torch.nn.Linear(hidden_dim, hidden_dim)
+            blocks.append(block)
+
+        model = MagicMock()
+        model.h = blocks  # GPT-2 style
+
+        def fake_forward(input_ids):
+            out = MagicMock()
+            out.hidden_states = tuple(
+                torch.randn(1, seq_len, hidden_dim) for _ in range(n_layers + 1)
+            )
+            return out
+
+        model.return_value = fake_forward(None)
+        model.side_effect = None
+        model.__call__ = MagicMock(return_value=fake_forward(None))
+
+        # _get_transformer_blocks should find blocks
+        result = app._get_transformer_blocks(model)
+        self.assertEqual(len(result), n_layers)
+
+    def test_get_transformer_blocks_gpt2(self):
+        model = MagicMock()
+        model.h = [MagicMock(), MagicMock()]
+        # Remove other attributes to avoid false matches
+        del model.encoder
+        del model.layers
+        del model.decoder
+        result = app._get_transformer_blocks(model)
+        self.assertEqual(len(result), 2)
+
+    def test_get_transformer_blocks_bert(self):
+        model = MagicMock()
+        model.h = None  # hasattr will be True but value is falsy
+        del model.h
+        model.encoder.layer = [MagicMock(), MagicMock(), MagicMock()]
+        del model.layers
+        del model.decoder
+        result = app._get_transformer_blocks(model)
+        self.assertEqual(len(result), 3)
+
+    def test_get_transformer_blocks_empty(self):
+        model = MagicMock()
+        del model.h
+        del model.encoder
+        del model.layers
+        del model.decoder
+        result = app._get_transformer_blocks(model)
+        self.assertEqual(len(result), 0)
+
+    def test_get_transformer_blocks_pythia(self):
+        model = MagicMock()
+        del model.h
+        del model.encoder
+        del model.decoder
+        model.layers = [MagicMock(), MagicMock()]
+        result = app._get_transformer_blocks(model)
+        self.assertEqual(len(result), 2)
+
+    def test_get_transformer_blocks_opt(self):
+        model = MagicMock()
+        del model.h
+        del model.encoder
+        del model.layers
+        model.decoder.layers = [MagicMock()]
+        result = app._get_transformer_blocks(model)
+        self.assertEqual(len(result), 1)
+
+    def test_extract_component_deltas_returns_none_for_no_blocks(self):
+        import torch
+        model = MagicMock()
+        del model.h
+        del model.encoder
+        del model.layers
+        del model.decoder
+        input_ids = torch.tensor([[1, 2]])
+        ad, md = app.extract_component_deltas(model, input_ids, n_layers=2, hidden_dim=4)
+        self.assertIsNone(ad)
+        self.assertIsNone(md)
+
+    def test_extract_component_deltas_layer_mismatch_returns_none(self):
+        """If block count != n_layers, should return None."""
+        import torch
+        model = MagicMock()
+        model.h = [MagicMock()]  # 1 block but n_layers=3
+        del model.encoder
+        del model.layers
+        del model.decoder
+        input_ids = torch.tensor([[1, 2]])
+        ad, md = app.extract_component_deltas(model, input_ids, n_layers=3, hidden_dim=4)
+        self.assertIsNone(ad)
+        self.assertIsNone(md)
+
+    def test_run_all_sequences_with_components_fallback(self):
+        """When decomposition fails, attn/mlp should be None."""
+        import torch
+
+        def fake_model(input_ids):
+            out = MagicMock()
+            out.hidden_states = tuple(
+                torch.randn(1, input_ids.shape[1], 4) for _ in range(3)
+            )
+            return out
+
+        model = MagicMock(side_effect=fake_model)
+        # No transformer blocks => decomposition fails
+        del model.h
+        del model.encoder
+        del model.layers
+        del model.decoder
+
+        seqs = [torch.tensor([[1, 2]])]
+        l0, dl, ad, md = app.run_all_sequences_with_components(model, seqs, n_layers=2, hidden_dim=4)
+        self.assertEqual(len(l0), 2)
+        self.assertEqual(len(dl), 2)
+        self.assertIsNone(ad)
+        self.assertIsNone(md)
+
+    def test_run_all_sequences_with_components_empty(self):
+        model = MagicMock()
+        l0, dl, ad, md = app.run_all_sequences_with_components(model, [], n_layers=2, hidden_dim=4)
+        self.assertEqual(len(l0), 0)
+        self.assertEqual(len(dl), 0)
+        # With no sequences, decomposition_ok stays True but lists are empty
+        # Actually, since no sequences ran, ad/md should be empty lists
+        self.assertIsNotNone(ad)
+        self.assertEqual(len(ad), 0)
+
+
+# ===================================================================
+# 37. STRAIN STATISTICS (Section 10b)
+# ===================================================================
+class TestStrainStatistics(unittest.TestCase):
+    """Tests for compute_strain_stats."""
+
+    def test_strain_stats_single_token(self):
+        """With < 2 real tokens, should return default stats."""
+        all_layer0 = [np.array([1.0, 2.0])]
+        all_deltas = [[np.array([0.1, 0.2])]]
+        stats = app.compute_strain_stats(all_layer0, all_deltas, n_layers=1, n_real=1, hidden_dim=2)
+        self.assertEqual(len(stats), 1)
+        self.assertAlmostEqual(stats[0]["mean"], 1.0)
+        self.assertAlmostEqual(stats[0]["frac_isometric"], 1.0)
+
+    def test_strain_stats_zero_deltas(self):
+        """Zero deltas => strain = 1.0 (isometric) for all pairs."""
+        all_layer0 = [np.array([0.0, 0.0]), np.array([1.0, 0.0]), np.array([0.0, 1.0])]
+        all_deltas = [
+            [np.zeros(2)],
+            [np.zeros(2)],
+            [np.zeros(2)],
+        ]
+        stats = app.compute_strain_stats(all_layer0, all_deltas, n_layers=1, n_real=3, hidden_dim=2)
+        self.assertEqual(len(stats), 1)
+        self.assertAlmostEqual(stats[0]["mean"], 1.0, places=4)
+        self.assertAlmostEqual(stats[0]["variance"], 0.0, places=4)
+        self.assertAlmostEqual(stats[0]["frac_isometric"], 1.0, places=4)
+
+    def test_strain_stats_expansion(self):
+        """Deltas that push points apart should show expansion."""
+        all_layer0 = [np.array([0.0, 0.0]), np.array([1.0, 0.0])]
+        # Push them further apart
+        all_deltas = [
+            [np.array([-1.0, 0.0])],  # point 0 moves left
+            [np.array([1.0, 0.0])],   # point 1 moves right
+        ]
+        stats = app.compute_strain_stats(all_layer0, all_deltas, n_layers=1, n_real=2, hidden_dim=2)
+        self.assertGreater(stats[0]["mean"], 1.0)
+        self.assertGreater(stats[0]["frac_expanding"], 0.0)
+
+    def test_strain_stats_contraction(self):
+        """Deltas that pull points together should show contraction."""
+        all_layer0 = [np.array([0.0, 0.0]), np.array([10.0, 0.0])]
+        # Push them closer together
+        all_deltas = [
+            [np.array([4.0, 0.0])],   # point 0 moves right
+            [np.array([-4.0, 0.0])],  # point 1 moves left
+        ]
+        stats = app.compute_strain_stats(all_layer0, all_deltas, n_layers=1, n_real=2, hidden_dim=2)
+        self.assertLess(stats[0]["mean"], 1.0)
+        self.assertGreater(stats[0]["frac_contracting"], 0.0)
+
+    def test_strain_stats_multiple_layers(self):
+        all_layer0 = [np.array([0.0, 0.0]), np.array([1.0, 0.0])]
+        all_deltas = [
+            [np.zeros(2), np.array([1.0, 0.0])],
+            [np.zeros(2), np.array([2.0, 0.0])],
+        ]
+        stats = app.compute_strain_stats(all_layer0, all_deltas, n_layers=2, n_real=2, hidden_dim=2)
+        self.assertEqual(len(stats), 2)
+        # Layer 1 should have more expansion
+        self.assertGreater(stats[1]["mean"], stats[0]["mean"])
+
+    def test_strain_stats_has_all_keys(self):
+        all_layer0 = [np.array([0.0, 0.0]), np.array([1.0, 1.0])]
+        all_deltas = [[np.array([0.1, 0.1])], [np.array([0.2, 0.2])]]
+        stats = app.compute_strain_stats(all_layer0, all_deltas, n_layers=1, n_real=2, hidden_dim=2)
+        expected_keys = {"mean", "max", "min", "variance", "frac_expanding",
+                         "frac_contracting", "frac_isometric", "n_pairs"}
+        self.assertEqual(set(stats[0].keys()), expected_keys)
+
+    def test_strain_stats_n_pairs(self):
+        """n_pairs should be n_real*(n_real-1)/2."""
+        n_real = 5
+        all_layer0 = [np.random.randn(3) for _ in range(n_real)]
+        all_deltas = [[np.random.randn(3)] for _ in range(n_real)]
+        stats = app.compute_strain_stats(all_layer0, all_deltas, n_layers=1, n_real=n_real, hidden_dim=3)
+        expected_pairs = n_real * (n_real - 1) // 2
+        self.assertEqual(stats[0]["n_pairs"], expected_pairs)
+
+    def test_strain_stats_identical_points(self):
+        """Identical points should be handled gracefully (orig_dist ~ 0)."""
+        all_layer0 = [np.array([1.0, 1.0]), np.array([1.0, 1.0])]
+        all_deltas = [[np.array([0.1, 0.0])], [np.array([0.2, 0.0])]]
+        # Should not crash — pairs with orig_dist < 1e-12 are skipped
+        stats = app.compute_strain_stats(all_layer0, all_deltas, n_layers=1, n_real=2, hidden_dim=2)
+        self.assertEqual(len(stats), 1)
+
+
+# ===================================================================
+# 38. NEXT TOKEN PREDICTION (Section 7b)
+# ===================================================================
+class TestNextTokenPrediction(unittest.TestCase):
+    """Tests for predict_next_token."""
+
+    def test_predict_next_token_no_lm_model(self):
+        """When LM_MODEL is None, should return empty list."""
+        original = app.LM_MODEL
+        app.LM_MODEL = None
+        try:
+            import torch
+            tok = MagicMock()
+            model = MagicMock()
+            config = MagicMock()
+            result = app.predict_next_token(tok, model, torch.tensor([[1, 2]]), config, k=5)
+            self.assertEqual(result, [])
+        finally:
+            app.LM_MODEL = original
+
+    def test_predict_next_token_with_lm_model(self):
+        import torch
+        original = app.LM_MODEL
+
+        mock_lm = MagicMock()
+        logits = torch.randn(1, 3, 100)  # batch=1, seq=3, vocab=100
+        mock_out = MagicMock()
+        mock_out.logits = logits
+        mock_lm.return_value = mock_out
+
+        app.LM_MODEL = mock_lm
+        try:
+            tok = MagicMock()
+            tok.decode = lambda ids: f"tok{ids[0]}"
+            model = MagicMock()
+            config = MagicMock()
+            result = app.predict_next_token(tok, model, torch.tensor([[1, 2, 3]]), config, k=3)
+            self.assertEqual(len(result), 3)
+            for r in result:
+                self.assertIn("token", r)
+                self.assertIn("prob", r)
+                self.assertGreaterEqual(r["prob"], 0.0)
+                self.assertLessEqual(r["prob"], 1.0)
+        finally:
+            app.LM_MODEL = original
+
+    def test_predict_next_token_exception_handling(self):
+        """If LM model raises, should return empty list."""
+        import torch
+        original = app.LM_MODEL
+        mock_lm = MagicMock(side_effect=RuntimeError("boom"))
+        app.LM_MODEL = mock_lm
+        try:
+            tok = MagicMock()
+            result = app.predict_next_token(tok, MagicMock(), torch.tensor([[1]]), MagicMock(), k=5)
+            self.assertEqual(result, [])
+        finally:
+            app.LM_MODEL = original
+
+
+# ===================================================================
+# 39. VOCABULARY NEIGHBORS (Section 7b)
+# ===================================================================
+class TestVocabNeighbors(unittest.TestCase):
+    """Tests for find_vocab_neighbors."""
+
+    def test_find_vocab_neighbors_wte(self):
+        """GPT-2 style model with .wte embedding."""
+        import torch
+        model = MagicMock()
+        emb_weight = torch.randn(100, 4)
+        model.wte.weight = emb_weight
+        del model.embeddings
+        del model.embed_tokens
+
+        tok = MagicMock()
+        tok.decode = lambda ids: f"v{ids[0]}"
+
+        layer0_vecs = [np.random.randn(4) for _ in range(2)]
+        result = app.find_vocab_neighbors(tok, model, layer0_vecs, n_real=2, k=3)
+        self.assertEqual(len(result), 2)
+        for nlist in result:
+            self.assertLessEqual(len(nlist), 3)
+            for nb in nlist:
+                self.assertIn("token", nb)
+                self.assertIn("dist", nb)
+
+    def test_find_vocab_neighbors_bert_embeddings(self):
+        """BERT style model with .embeddings.word_embeddings."""
+        import torch
+        model = MagicMock()
+        del model.wte
+        del model.embed_tokens
+        model.embeddings.word_embeddings.weight = torch.randn(50, 4)
+
+        tok = MagicMock()
+        tok.decode = lambda ids: f"w{ids[0]}"
+
+        layer0_vecs = [np.random.randn(4)]
+        result = app.find_vocab_neighbors(tok, model, layer0_vecs, n_real=1, k=5)
+        self.assertEqual(len(result), 1)
+
+    def test_find_vocab_neighbors_no_embedding_matrix(self):
+        """When no known embedding attribute exists, return empty lists."""
+        model = MagicMock()
+        del model.wte
+        del model.embeddings
+        del model.embed_tokens
+
+        tok = MagicMock()
+        result = app.find_vocab_neighbors(tok, model, [np.zeros(4)], n_real=1, k=5)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0], [])
+
+    def test_find_vocab_neighbors_exception(self):
+        """On exception, should return empty lists gracefully."""
+        model = MagicMock()
+        model.wte.weight.detach.side_effect = RuntimeError("fail")
+
+        tok = MagicMock()
+        result = app.find_vocab_neighbors(tok, model, [np.zeros(4)], n_real=1, k=5)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0], [])
+
+
+# ===================================================================
+# 40. BUILD OUTPUT DATA WITH OPTIONAL FIELDS
+# ===================================================================
+class TestBuildOutputDataOptionalFields(unittest.TestCase):
+    """Tests for optional fields in build_output_data."""
+
+    def _base_args(self):
+        return dict(
+            all_labels=["a"], all_is_real=[True],
+            n_layers=1, n_total=1, n_real=1, hidden_dim=2,
+            fixed_pos=[[0.0, 0.0]], deltas=[[[0.1, 0.2]]],
+            model_name="gpt2", text="a", neighbors=[],
+        )
+
+    def test_no_optional_fields(self):
+        data = app.build_output_data(**self._base_args())
+        self.assertNotIn("next_token", data)
+        self.assertNotIn("vocab_neighbors", data)
+        self.assertNotIn("attn_deltas", data)
+        self.assertNotIn("mlp_deltas", data)
+        self.assertNotIn("strain_stats", data)
+
+    def test_with_next_token(self):
+        args = self._base_args()
+        args["next_token_preds"] = [{"token": "b", "prob": 0.5}]
+        data = app.build_output_data(**args)
+        self.assertIn("next_token", data)
+        self.assertEqual(data["next_token"][0]["token"], "b")
+
+    def test_with_vocab_neighbors(self):
+        args = self._base_args()
+        args["vocab_neighbors"] = [[{"token": "c", "dist": 1.5}]]
+        data = app.build_output_data(**args)
+        self.assertIn("vocab_neighbors", data)
+
+    def test_with_attn_mlp_deltas(self):
+        args = self._base_args()
+        args["attn_deltas"] = [[[0.05, 0.05]]]
+        args["mlp_deltas"] = [[[0.05, 0.15]]]
+        data = app.build_output_data(**args)
+        self.assertIn("attn_deltas", data)
+        self.assertIn("mlp_deltas", data)
+
+    def test_with_strain_stats(self):
+        args = self._base_args()
+        args["strain_stats"] = [{"mean": 1.0, "max": 1.0, "min": 1.0,
+                                  "variance": 0.0, "frac_expanding": 0.0,
+                                  "frac_contracting": 0.0, "frac_isometric": 1.0,
+                                  "n_pairs": 0}]
+        data = app.build_output_data(**args)
+        self.assertIn("strain_stats", data)
+
+    def test_all_optional_fields_json_serializable(self):
+        args = self._base_args()
+        args["next_token_preds"] = [{"token": "x", "prob": 0.9}]
+        args["vocab_neighbors"] = [[{"token": "y", "dist": 2.0}]]
+        args["attn_deltas"] = [[[0.1, 0.2]]]
+        args["mlp_deltas"] = [[[0.3, 0.4]]]
+        args["strain_stats"] = [{"mean": 1.1}]
+        data = app.build_output_data(**args)
+        json.dumps(data)  # Should not raise
+
+
+# ===================================================================
+# 41. GRID PROBES WITH COMPONENT DELTAS
+# ===================================================================
+class TestGridProbesWithComponents(unittest.TestCase):
+    """Tests for create_grid_probes with attn/mlp decomposition."""
+
+    def _setup_grid_args(self, n_layers=2, hidden_dim=4, n_points=10, n_side=3):
+        centroid = np.zeros(hidden_dim)
+        pc1 = np.zeros(hidden_dim); pc1[0] = 1.0
+        pc2 = np.zeros(hidden_dim); pc2[1] = 1.0
+        proj1 = np.random.randn(n_points)
+        proj2 = np.random.randn(n_points)
+        existing_proj = np.stack([proj1, proj2], axis=1)
+        all_deltas = [[np.random.randn(hidden_dim) for _ in range(n_layers)] for _ in range(n_points)]
+        all_attn = [[np.random.randn(hidden_dim) for _ in range(n_layers)] for _ in range(n_points)]
+        all_mlp = [[np.random.randn(hidden_dim) for _ in range(n_layers)] for _ in range(n_points)]
+        return dict(
+            centroid=centroid, pc1=pc1, pc2=pc2, proj1=proj1, proj2=proj2,
+            existing_proj=existing_proj, all_deltas_per_point=all_deltas,
+            n_layers=n_layers, hidden_dim=hidden_dim, n_side=n_side, pad_frac=0.3,
+            all_attn_deltas=all_attn, all_mlp_deltas=all_mlp,
+        )
+
+    def test_grid_probes_with_components(self):
+        args = self._setup_grid_args()
+        gl0, gd, gad, gmd = app.create_grid_probes(**args)
+        n_grid = args["n_side"] ** 2
+        self.assertEqual(len(gl0), n_grid)
+        self.assertEqual(len(gd), n_grid)
+        self.assertIsNotNone(gad)
+        self.assertIsNotNone(gmd)
+        self.assertEqual(len(gad), n_grid)
+        self.assertEqual(len(gmd), n_grid)
+
+    def test_grid_probes_without_components(self):
+        args = self._setup_grid_args()
+        args["all_attn_deltas"] = None
+        args["all_mlp_deltas"] = None
+        gl0, gd, gad, gmd = app.create_grid_probes(**args)
+        self.assertIsNone(gad)
+        self.assertIsNone(gmd)
+
+    def test_grid_probes_component_shape(self):
+        args = self._setup_grid_args(n_layers=3, hidden_dim=6, n_side=4)
+        gl0, gd, gad, gmd = app.create_grid_probes(**args)
+        for i in range(len(gad)):
+            self.assertEqual(len(gad[i]), 3)  # n_layers
+            self.assertEqual(gad[i][0].shape, (6,))  # hidden_dim
+
+
+# ===================================================================
+# 42. PROCESS TEXT WITH MOCKED COMPONENTS
+# ===================================================================
+class TestProcessTextWithComponents(unittest.TestCase):
+    """Test process_text includes component decomposition and strain stats."""
+
+    def setUp(self):
+        import torch
+        self.orig_tokenizer = app.TOKENIZER
+        self.orig_model = app.MODEL
+        self.orig_config = app.MODEL_CONFIG
+        self.orig_name = app.MODEL_NAME
+        self.orig_lm = app.LM_MODEL
+
+        mock_tok = MagicMock()
+        mock_tok.return_value = {"input_ids": torch.tensor([[10, 20]])}
+        mock_tok.decode = lambda ids: {10: "Hi", 20: " there"}.get(ids[0], "?")
+
+        def fake_model_call(input_ids):
+            seq_len = input_ids.shape[1]
+            out = MagicMock()
+            out.hidden_states = tuple(torch.randn(1, seq_len, 4) for _ in range(3))
+            return out
+
+        mock_model = MagicMock(side_effect=fake_model_call)
+        # No transformer blocks => decomposition unavailable
+        del mock_model.h
+        del mock_model.encoder
+        del mock_model.layers
+        del mock_model.decoder
+        del mock_model.wte
+        del mock_model.embeddings
+        del mock_model.embed_tokens
+
+        mock_config = MagicMock()
+        mock_config.architectures = ["GPT2LMHeadModel"]
+        mock_config.is_decoder = True
+        mock_config.n_layer = 2
+        mock_config.num_hidden_layers = None
+        mock_config.num_layers = None
+        mock_config.n_embd = 4
+        mock_config.hidden_size = None
+        mock_config.d_model = None
+
+        app.TOKENIZER = mock_tok
+        app.MODEL = mock_model
+        app.MODEL_CONFIG = mock_config
+        app.MODEL_NAME = "test-model"
+        app.LM_MODEL = None
+
+    def tearDown(self):
+        app.TOKENIZER = self.orig_tokenizer
+        app.MODEL = self.orig_model
+        app.MODEL_CONFIG = self.orig_config
+        app.MODEL_NAME = self.orig_name
+        app.LM_MODEL = self.orig_lm
+
+    def test_process_text_includes_strain_stats(self):
+        result = app.process_text("Hi there")
+        data = json.loads(result)
+        self.assertIn("strain_stats", data)
+        self.assertEqual(len(data["strain_stats"]), 2)  # n_layers
+
+    def test_process_text_no_decomposition(self):
+        """Without transformer blocks, attn/mlp deltas should be absent."""
+        result = app.process_text("Hi there")
+        data = json.loads(result)
+        self.assertNotIn("attn_deltas", data)
+        self.assertNotIn("mlp_deltas", data)
+
+    def test_process_text_includes_vocab_neighbors(self):
+        result = app.process_text("Hi there")
+        data = json.loads(result)
+        self.assertIn("vocab_neighbors", data)
+        self.assertEqual(len(data["vocab_neighbors"]), data["n_real"])
+
+    def test_process_text_includes_next_token(self):
+        """With LM_MODEL=None, next_token should be empty list."""
+        result = app.process_text("Hi there")
+        data = json.loads(result)
+        self.assertIn("next_token", data)
+        self.assertEqual(data["next_token"], [])
+
+
+# ===================================================================
+# 43. DETECT MODEL TYPE ADDITIONAL ARCHITECTURES
+# ===================================================================
+class TestDetectModelTypeAdditional(unittest.TestCase):
+    """Additional architecture detection tests."""
+
+    @staticmethod
+    def _cfg(**kwargs):
+        cfg = MagicMock()
+        cfg.architectures = kwargs.get("architectures", [])
+        cfg.is_decoder = kwargs.get("is_decoder", False)
+        return cfg
+
+    def test_detect_opt_causal(self):
+        cfg = self._cfg(architectures=["OPTModel"])
+        self.assertEqual(app.detect_model_type(cfg), "causal")
+
+    def test_detect_neox(self):
+        cfg = self._cfg(architectures=["GPTNeoXModel"])
+        self.assertEqual(app.detect_model_type(cfg), "causal")
+
+    def test_detect_roberta_masked(self):
+        cfg = self._cfg(architectures=["RobertaForMaskedLM"])
+        self.assertEqual(app.detect_model_type(cfg), "masked")
+
+    def test_detect_deberta(self):
+        """DeBERTa doesn't match any keyword — falls through to default causal."""
+        cfg = self._cfg(architectures=["DebertaV2Model"])
+        self.assertEqual(app.detect_model_type(cfg), "causal")
+
+    def test_detect_mixed_case_architectures(self):
+        """Architecture string matching is case-insensitive via .lower()."""
+        cfg = self._cfg(architectures=["BERT_FOR_MASKED_LM"])
+        self.assertEqual(app.detect_model_type(cfg), "masked")
+
+    def test_detect_multiple_architectures(self):
+        """If multiple architectures listed, first match wins."""
+        cfg = self._cfg(architectures=["SomeModel", "GPT2LMHeadModel"])
+        self.assertEqual(app.detect_model_type(cfg), "causal")
+
+
+# ===================================================================
+# 44. INTERPOLATION NUMERICAL EDGE CASES
+# ===================================================================
+class TestInterpolationNumerical(unittest.TestCase):
+    """Numerical edge cases for grid interpolation."""
+
+    def test_compute_grid_weights_far_away_point(self):
+        """Point very far from all existing should still get valid weights."""
+        existing = np.array([[0.0, 0.0], [1.0, 1.0]])
+        weights = app.compute_grid_weights(1000.0, 1000.0, existing, sigma_nn=1.0)
+        self.assertAlmostEqual(weights.sum(), 1.0, places=5)
+
+    def test_compute_grid_weights_very_small_sigma(self):
+        """Very small sigma should concentrate weight on nearest point."""
+        existing = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]])
+        weights = app.compute_grid_weights(0.01, 0.0, existing, sigma_nn=0.001)
+        self.assertGreater(weights[0], 0.99)
+
+    def test_interpolate_deltas_all_zero_weights(self):
+        """If all weights are effectively zero, result should be near zero."""
+        n_layers = 1
+        hidden_dim = 3
+        all_deltas = [[np.random.randn(hidden_dim) for _ in range(n_layers)]
+                       for _ in range(3)]
+        # Weights that are essentially zero (very far away)
+        weights = np.array([1e-300, 1e-300, 1e-300])
+        # Normalize — will be ~uniform due to equal tiny weights
+        weights /= weights.sum() + 1e-15
+        result = app.interpolate_deltas(weights, all_deltas, n_layers, hidden_dim)
+        self.assertEqual(len(result), n_layers)
+        for r in result:
+            self.assertEqual(r.shape, (hidden_dim,))
+
+    def test_compute_grid_weights_exact_match(self):
+        """Query exactly at an existing point should give weight ~1 for that point."""
+        existing = np.array([[1.0, 2.0], [5.0, 6.0], [9.0, 10.0]])
+        weights = app.compute_grid_weights(1.0, 2.0, existing, sigma_nn=0.01)
+        self.assertGreater(weights[0], 0.999)
+        self.assertAlmostEqual(weights.sum(), 1.0, places=10)
+
+    def test_compute_grid_weights_equidistant(self):
+        """Two equidistant points should get equal weights."""
+        existing = np.array([[-1.0, 0.0], [1.0, 0.0]])
+        weights = app.compute_grid_weights(0.0, 0.0, existing, sigma_nn=1.0)
+        self.assertAlmostEqual(weights[0], weights[1], places=10)
+        self.assertAlmostEqual(weights[0], 0.5, places=10)
+
+    def test_interpolate_grid_embedding_negative_coords(self):
+        """Negative PCA coordinates should work correctly."""
+        centroid = np.array([5.0, 5.0, 5.0])
+        pc1 = np.array([1.0, 0.0, 0.0])
+        pc2 = np.array([0.0, 1.0, 0.0])
+        result = app.interpolate_grid_embedding(-3.0, -2.0, centroid, pc1, pc2)
+        np.testing.assert_allclose(result, [2.0, 3.0, 5.0])
+
+
+# ===================================================================
+# 45. STRAIN STATISTICS EDGE CASES
+# ===================================================================
+class TestStrainStatisticsEdgeCases(unittest.TestCase):
+    """Additional edge cases for compute_strain_stats."""
+
+    def test_strain_stats_large_n_real(self):
+        """Verify n_pairs formula for larger n_real."""
+        n_real = 10
+        hidden_dim = 4
+        n_layers = 1
+        all_layer0 = [np.random.randn(hidden_dim) for _ in range(n_real)]
+        all_deltas = [[np.random.randn(hidden_dim)] for _ in range(n_real)]
+        stats = app.compute_strain_stats(all_layer0, all_deltas, n_layers, n_real, hidden_dim)
+        expected_pairs = n_real * (n_real - 1) // 2
+        self.assertEqual(stats[0]["n_pairs"], expected_pairs)
+
+    def test_strain_stats_pure_translation(self):
+        """Uniform translation should preserve all distances (strain ≈ 1.0)."""
+        n_real = 5
+        hidden_dim = 3
+        n_layers = 1
+        all_layer0 = [np.random.randn(hidden_dim) for _ in range(n_real)]
+        # Same delta for every point = pure translation
+        uniform_delta = np.array([10.0, -5.0, 3.0])
+        all_deltas = [[uniform_delta.copy()] for _ in range(n_real)]
+        stats = app.compute_strain_stats(all_layer0, all_deltas, n_layers, n_real, hidden_dim)
+        self.assertAlmostEqual(stats[0]["mean"], 1.0, places=4)
+        self.assertAlmostEqual(stats[0]["variance"], 0.0, places=6)
+        self.assertAlmostEqual(stats[0]["frac_isometric"], 1.0, places=4)
+
+    def test_strain_stats_scaling(self):
+        """Uniform scaling from origin should produce consistent strain."""
+        n_real = 4
+        hidden_dim = 2
+        n_layers = 1
+        # Points at known positions
+        all_layer0 = [
+            np.array([1.0, 0.0]),
+            np.array([0.0, 1.0]),
+            np.array([-1.0, 0.0]),
+            np.array([0.0, -1.0]),
+        ]
+        # Delta = point itself (doubles the distance from origin)
+        all_deltas = [[all_layer0[i].copy()] for i in range(n_real)]
+        stats = app.compute_strain_stats(all_layer0, all_deltas, n_layers, n_real, hidden_dim)
+        # All pairwise distances should double => strain = 2.0
+        self.assertAlmostEqual(stats[0]["mean"], 2.0, places=3)
+        self.assertAlmostEqual(stats[0]["frac_expanding"], 1.0, places=4)
+
+    def test_strain_stats_returns_rounded_values(self):
+        """Verify that returned values are rounded as documented."""
+        n_real = 3
+        hidden_dim = 2
+        all_layer0 = [np.array([0.0, 0.0]), np.array([1.0, 0.0]), np.array([0.0, 1.0])]
+        all_deltas = [[np.array([0.01, 0.02])] for _ in range(n_real)]
+        stats = app.compute_strain_stats(all_layer0, all_deltas, 1, n_real, hidden_dim)
+        # mean should have at most 4 decimal places
+        mean_str = str(stats[0]["mean"])
+        if '.' in mean_str:
+            decimals = len(mean_str.split('.')[1])
+            self.assertLessEqual(decimals, 4)
+
+
+# ===================================================================
+# 46. COMPONENT DECOMPOSITION HOOK EDGE CASES
+# ===================================================================
+class TestComponentDecompositionHooks(unittest.TestCase):
+    """Test hook registration paths in extract_component_deltas."""
+
+    def test_distilbert_style_blocks(self):
+        """DistilBERT blocks have .attention and .ffn."""
+        import torch
+
+        block = MagicMock()
+        # Has attention and ffn but NOT 'output' or 'intermediate'
+        block.attn = None
+        del block.attn
+        block.mlp = None
+        del block.mlp
+        block.attention = MagicMock()
+        block.attention.register_forward_hook = MagicMock(return_value=MagicMock())
+        block.ffn = MagicMock()
+        block.ffn.register_forward_hook = MagicMock(return_value=MagicMock())
+        # Remove 'output' to trigger the ffn path
+        del block.output
+        del block.intermediate
+
+        model = MagicMock()
+        model.h = [block]
+        del model.encoder
+        del model.layers
+        del model.decoder
+
+        blocks = app._get_transformer_blocks(model)
+        self.assertEqual(len(blocks), 1)
+
+    def test_bert_style_blocks_with_output_dense(self):
+        """BERT blocks with attention + intermediate + output.dense."""
+        import torch
+
+        block = MagicMock()
+        del block.attn
+        del block.mlp
+        del block.ffn
+        block.attention = MagicMock()
+        block.attention.register_forward_hook = MagicMock(return_value=MagicMock())
+        block.intermediate = MagicMock()
+        block.output = MagicMock()
+        block.output.dense = MagicMock()
+        block.output.dense.register_forward_hook = MagicMock(return_value=MagicMock())
+
+        model = MagicMock()
+        del model.h
+        model.encoder.layer = [block]
+        del model.layers
+        del model.decoder
+
+        blocks = app._get_transformer_blocks(model)
+        self.assertEqual(len(blocks), 1)
+
+
+# ===================================================================
+# 47. PROCESS TEXT MODEL SWITCHING
+# ===================================================================
+class TestProcessTextModelSwitching(unittest.TestCase):
+    """Test model switching behavior in process_text."""
+
+    def setUp(self):
+        import torch
+        self.orig_tokenizer = app.TOKENIZER
+        self.orig_model = app.MODEL
+        self.orig_config = app.MODEL_CONFIG
+        self.orig_name = app.MODEL_NAME
+        self.orig_lm = app.LM_MODEL
+
+        mock_tok = MagicMock()
+        mock_tok.return_value = {"input_ids": torch.tensor([[10]])}
+        mock_tok.decode = lambda ids: "Hi"
+
+        def fake_model_call(input_ids):
+            seq_len = input_ids.shape[1]
+            out = MagicMock()
+            out.hidden_states = tuple(torch.randn(1, seq_len, 4) for _ in range(3))
+            return out
+
+        mock_model = MagicMock(side_effect=fake_model_call)
+        del mock_model.h
+        del mock_model.encoder
+        del mock_model.layers
+        del mock_model.decoder
+        del mock_model.wte
+        del mock_model.embeddings
+        del mock_model.embed_tokens
+
+        mock_config = MagicMock()
+        mock_config.architectures = ["GPT2LMHeadModel"]
+        mock_config.is_decoder = True
+        mock_config.n_layer = 2
+        mock_config.num_hidden_layers = None
+        mock_config.num_layers = None
+        mock_config.n_embd = 4
+        mock_config.hidden_size = None
+        mock_config.d_model = None
+
+        app.TOKENIZER = mock_tok
+        app.MODEL = mock_model
+        app.MODEL_CONFIG = mock_config
+        app.MODEL_NAME = "current-model"
+        app.LM_MODEL = None
+
+    def tearDown(self):
+        app.TOKENIZER = self.orig_tokenizer
+        app.MODEL = self.orig_model
+        app.MODEL_CONFIG = self.orig_config
+        app.MODEL_NAME = self.orig_name
+        app.LM_MODEL = self.orig_lm
+
+    def test_none_model_name_no_reload(self):
+        """Passing None as model_name should not trigger load_model."""
+        with patch("app.load_model") as mock_load:
+            app.process_text("Hi", None)
+            mock_load.assert_not_called()
+
+    def test_empty_string_model_name_no_reload(self):
+        """Passing empty string should not trigger load_model (falsy)."""
+        with patch("app.load_model") as mock_load:
+            app.process_text("Hi", "")
+            mock_load.assert_not_called()
+
+    def test_different_model_triggers_reload(self):
+        """Passing a different model name should trigger load_model."""
+        with patch("app.load_model") as mock_load:
+            app.process_text("Hi", "new-model")
+            mock_load.assert_called_once_with("new-model")
+
+
+# ===================================================================
+# 48. BUILD DELTAS ARRAY EDGE CASES
+# ===================================================================
+class TestBuildDeltasArrayEdgeCases(unittest.TestCase):
+    """Additional edge cases for build_deltas_array."""
+
+    def test_build_deltas_array_many_layers(self):
+        """Test with many layers."""
+        n_layers = 24
+        n_points = 2
+        all_deltas = [
+            [np.ones(3) * (lay + 1) for lay in range(n_layers)]
+            for _ in range(n_points)
+        ]
+        result = app.build_deltas_array(all_deltas, n_layers, n_points)
+        self.assertEqual(len(result), n_layers)
+        for lay in range(n_layers):
+            self.assertEqual(len(result[lay]), n_points)
+            # Each delta should be [lay+1, lay+1, lay+1]
+            np.testing.assert_allclose(result[lay][0], [lay + 1] * 3)
+
+    def test_build_deltas_array_zero_deltas(self):
+        """All-zero deltas should produce all-zero output."""
+        n_layers = 2
+        n_points = 3
+        all_deltas = [[np.zeros(4) for _ in range(n_layers)] for _ in range(n_points)]
+        result = app.build_deltas_array(all_deltas, n_layers, n_points)
+        for lay in range(n_layers):
+            for p in range(n_points):
+                self.assertEqual(result[lay][p], [0.0, 0.0, 0.0, 0.0])
+
+
+# ===================================================================
+# 49. FIND K NEIGHBORS EDGE CASES
+# ===================================================================
+class TestFindKNeighborsEdgeCases(unittest.TestCase):
+    """Additional edge cases for find_k_neighbors."""
+
+    def test_k_larger_than_available(self):
+        """Requesting more neighbors than available should return all available."""
+        all_emb = np.array([[0.0, 0.0], [1.0, 0.0]])
+        result = app.find_k_neighbors(0, all_emb[0], all_emb, ["a", "b"], [True, True], k=10)
+        # Only 1 other point available (excluding self)
+        self.assertEqual(len(result), 1)
+
+    def test_k_equals_one(self):
+        """K=1 should return exactly the nearest neighbor."""
+        all_emb = np.array([[0.0, 0.0], [1.0, 0.0], [100.0, 0.0]])
+        result = app.find_k_neighbors(0, all_emb[0], all_emb, ["a", "b", "c"], [True, True, True], k=1)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["idx"], 1)
+        self.assertAlmostEqual(result[0]["dist"], 1.0)
+
+    def test_neighbor_labels_correct(self):
+        """Labels in results should match the input labels."""
+        all_emb = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]])
+        labels = ["alpha", "beta", "gamma"]
+        result = app.find_k_neighbors(0, all_emb[0], all_emb, labels, [True, True, True], k=2)
+        result_labels = {r["label"] for r in result}
+        self.assertEqual(result_labels, {"beta", "gamma"})
+
+
+# ===================================================================
+# 50. HTML PAGE ADDITIONAL CONTENT CHECKS
+# ===================================================================
+class TestHTMLPageAdditionalChecks(unittest.TestCase):
+    """Additional checks for HTML page content."""
+
+    def test_contains_decomposition_selector(self):
+        self.assertIn('id="sel-decomp"', app.HTML_PAGE)
+
+    def test_contains_decomposition_options(self):
+        for opt in ["full", "attn", "mlp"]:
+            self.assertIn(f'value="{opt}"', app.HTML_PAGE)
+
+    def test_contains_strain_stats_panel(self):
+        self.assertIn('id="strain-stats-panel"', app.HTML_PAGE)
+
+    def test_contains_next_token_panel(self):
+        self.assertIn('id="next-token-panel"', app.HTML_PAGE)
+
+    def test_contains_vocab_neighbor_checkbox(self):
+        self.assertIn('id="cb-vocnb"', app.HTML_PAGE)
+
+    def test_contains_3d_view_button(self):
+        self.assertIn('id="btn-3d"', app.HTML_PAGE)
+
+    def test_contains_2d_view_button(self):
+        self.assertIn('id="btn-2d"', app.HTML_PAGE)
+
+    def test_contains_dim_z_slider(self):
+        self.assertIn('id="sl-dz"', app.HTML_PAGE)
+
+    def test_contains_neighbor_label_checkbox(self):
+        self.assertIn('id="cb-nblabel"', app.HTML_PAGE)
+
+    def test_contains_getActiveDeltas_function(self):
+        self.assertIn("function getActiveDeltas()", app.HTML_PAGE)
+
+    def test_contains_updateStrainStatsPanel_function(self):
+        self.assertIn("function updateStrainStatsPanel()", app.HTML_PAGE)
+
+    def test_contains_draw3D_function(self):
+        self.assertIn("function draw3D()", app.HTML_PAGE)
+
+    def test_contains_project3D_function(self):
+        self.assertIn("function project3D(", app.HTML_PAGE)
+
+    def test_contains_rotatePoint3D_function(self):
+        self.assertIn("function rotatePoint3D(", app.HTML_PAGE)
+
+    def test_contains_all_large_model_options(self):
+        for model in ["gpt2-xl", "EleutherAI/pythia-1.4b", "facebook/opt-1.3b", "microsoft/phi-2"]:
+            self.assertIn(f'value="{model}"', app.HTML_PAGE)
+
+    def test_html_page_not_empty(self):
+        self.assertGreater(len(app.HTML_PAGE), 1000)
+
+    def test_html_page_properly_closed(self):
+        self.assertIn("</html>", app.HTML_PAGE)
+        self.assertIn("</script>", app.HTML_PAGE)
+        self.assertIn("</body>", app.HTML_PAGE)
+
+
+# ===================================================================
+# 51. LOAD MODEL WITH LM HEAD
+# ===================================================================
+class TestLoadModelLMHead(unittest.TestCase):
+    """Test that load_model attempts to load the LM head for causal models."""
+
+    @patch("app.AutoModel")
+    @patch("app.AutoTokenizer")
+    def test_load_model_sets_lm_model_for_causal(self, mock_tok_cls, mock_model_cls):
+        mock_model = MagicMock()
+        mock_model.config = MagicMock()
+        mock_model.config.architectures = ["GPT2LMHeadModel"]
+        mock_model.config.is_decoder = True
+        mock_model.config.n_layer = 2
+        mock_model.config.n_embd = 4
+        mock_model.config.num_hidden_layers = None
+        mock_model.config.num_layers = None
+        mock_model.config.hidden_size = None
+        mock_model.config.d_model = None
+        mock_model_cls.from_pretrained.return_value = mock_model
+        mock_tok_cls.from_pretrained.return_value = MagicMock()
+
+        with patch("transformers.AutoModelForCausalLM") as mock_causal_cls:
+            mock_lm = MagicMock()
+            mock_causal_cls.from_pretrained.return_value = mock_lm
+            app.load_model("test-causal")
+            mock_causal_cls.from_pretrained.assert_called_once_with("test-causal")
+            mock_lm.eval.assert_called_once()
+            self.assertIsNotNone(app.LM_MODEL)
+
+    @patch("app.AutoModel")
+    @patch("app.AutoTokenizer")
+    def test_load_model_no_lm_for_masked(self, mock_tok_cls, mock_model_cls):
+        mock_model = MagicMock()
+        mock_model.config = MagicMock()
+        mock_model.config.architectures = ["BertForMaskedLM"]
+        mock_model.config.is_decoder = False
+        mock_model.config.n_layer = None
+        mock_model.config.n_embd = None
+        mock_model.config.num_hidden_layers = 6
+        mock_model.config.num_layers = None
+        mock_model.config.hidden_size = 256
+        mock_model.config.d_model = None
+        mock_model_cls.from_pretrained.return_value = mock_model
+        mock_tok_cls.from_pretrained.return_value = MagicMock()
+
+        app.load_model("test-bert")
+        self.assertIsNone(app.LM_MODEL)
+
+
+# ===================================================================
+# 52. EXTRACT HIDDEN STATES EDGE CASES
+# ===================================================================
+class TestExtractHiddenStatesEdgeCases(unittest.TestCase):
+    """Edge cases for extract_hidden_states."""
+
+    def test_extract_hidden_states_no_grad(self):
+        """Model should be called within torch.no_grad context."""
+        import torch
+        call_count = [0]
+
+        def check_no_grad(input_ids):
+            self.assertFalse(torch.is_grad_enabled())
+            call_count[0] += 1
+            out = MagicMock()
+            out.hidden_states = (torch.randn(1, 2, 4),)
+            return out
+
+        model = MagicMock(side_effect=check_no_grad)
+        app.extract_hidden_states(model, torch.tensor([[1, 2]]))
+        self.assertEqual(call_count[0], 1)
+
+    def test_compute_layer0_and_deltas_float32(self):
+        """Output vectors should be float32 (from .float() call)."""
+        import torch
+        # Create float16 hidden states
+        hs = tuple(torch.randn(1, 2, 4, dtype=torch.float16) for _ in range(3))
+        l0, dl = app.compute_layer0_and_deltas(hs, n_layers=2)
+        for v in l0:
+            self.assertEqual(v.dtype, np.float32)
+        for d_list in dl:
+            for d in d_list:
+                self.assertEqual(d.dtype, np.float32)
+
 
 if __name__ == "__main__":
     unittest.main()
-
