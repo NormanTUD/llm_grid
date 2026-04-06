@@ -1,0 +1,1153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Metric Space Explorer — Algorithm Visualizer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a1a;
+    color: #e0e0e0;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    overflow-x: hidden;
+  }
+  h1 {
+    text-align: center;
+    padding: 30px 20px 10px;
+    font-size: 2rem;
+    background: linear-gradient(90deg, #7eb4ff, #c084fc, #f472b6);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .subtitle {
+    text-align: center;
+    color: #888;
+    font-size: 0.95rem;
+    margin-bottom: 30px;
+  }
+
+  /* --- Sections --- */
+  .section {
+    max-width: 1100px;
+    margin: 0 auto 50px;
+    padding: 0 24px;
+  }
+  .section h2 {
+    font-size: 1.35rem;
+    margin-bottom: 12px;
+    color: #c084fc;
+    border-left: 4px solid #c084fc;
+    padding-left: 12px;
+  }
+  .section p, .section .eq {
+    line-height: 1.7;
+    color: #bbb;
+    margin-bottom: 10px;
+  }
+  .eq {
+    background: #13132a;
+    border: 1px solid #2a2a4a;
+    border-radius: 8px;
+    padding: 12px 18px;
+    font-family: 'Courier New', monospace;
+    font-size: 1.05rem;
+    color: #a5b4fc;
+    display: inline-block;
+    margin: 8px 0 14px;
+  }
+
+  /* --- Canvas containers --- */
+  .canvas-row {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+    justify-content: center;
+    margin: 18px 0;
+  }
+  .canvas-box {
+    background: #10102a;
+    border: 1px solid #2a2a4a;
+    border-radius: 12px;
+    padding: 14px;
+    text-align: center;
+  }
+  .canvas-box canvas {
+    border-radius: 8px;
+    display: block;
+    margin: 0 auto;
+  }
+  .canvas-box .label {
+    margin-top: 8px;
+    font-size: 0.82rem;
+    color: #888;
+  }
+
+  /* --- Controls --- */
+  .controls {
+    display: flex;
+    gap: 18px;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    margin: 16px 0;
+  }
+  .controls label {
+    font-size: 0.9rem;
+    color: #aaa;
+  }
+  .controls input[type=range] {
+    width: 180px;
+    accent-color: #c084fc;
+  }
+  .controls button {
+    background: linear-gradient(135deg, #7c3aed, #c084fc);
+    border: none;
+    color: #fff;
+    padding: 8px 20px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: opacity .2s;
+  }
+  .controls button:hover { opacity: .85; }
+
+  /* --- Step indicator --- */
+  .step-indicator {
+    display: flex;
+    justify-content: center;
+    gap: 6px;
+    margin: 20px 0 10px;
+  }
+  .step-dot {
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    background: #1e1e3a;
+    border: 2px solid #3a3a5a;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.8rem; color: #666;
+    transition: all .3s;
+  }
+  .step-dot.active {
+    border-color: #c084fc;
+    color: #c084fc;
+    background: #2a1a4a;
+    box-shadow: 0 0 12px #c084fc44;
+  }
+
+  /* --- Pipeline --- */
+  .pipeline {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin: 20px 0;
+  }
+  .pipe-step {
+    background: #1a1a3a;
+    border: 1px solid #3a3a5a;
+    border-radius: 8px;
+    padding: 10px 16px;
+    font-size: 0.82rem;
+    color: #999;
+    transition: all .4s;
+    text-align: center;
+    min-width: 100px;
+  }
+  .pipe-step.active {
+    border-color: #c084fc;
+    color: #e0d0ff;
+    background: #2a1a4a;
+    box-shadow: 0 0 16px #c084fc33;
+  }
+  .pipe-arrow {
+    color: #444;
+    font-size: 1.2rem;
+  }
+
+  .legend {
+    display: flex;
+    gap: 16px;
+    justify-content: center;
+    margin: 10px 0;
+    font-size: 0.82rem;
+  }
+  .legend span {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .legend .swatch {
+    width: 14px; height: 14px;
+    border-radius: 3px;
+    display: inline-block;
+  }
+
+  footer {
+    text-align: center;
+    padding: 40px 20px;
+    color: #555;
+    font-size: 0.8rem;
+  }
+</style>
+</head>
+<body>
+
+<h1>Metric Space Explorer — Algorithm Visualized</h1>
+<p class="subtitle">An interactive walkthrough of how transformer layers deform embedding space</p>
+
+<!-- ============ PIPELINE OVERVIEW ============ -->
+<div class="section">
+  <h2>Pipeline Overview</h2>
+  <p>The algorithm treats each transformer layer as a smooth deformation of the embedding space. Click through the steps below to see each stage.</p>
+  <div class="pipeline" id="pipeline">
+    <div class="pipe-step active" data-step="0">1. Tokenize</div>
+    <span class="pipe-arrow">→</span>
+    <div class="pipe-step" data-step="1">2. Extract Hidden States</div>
+    <span class="pipe-arrow">→</span>
+    <div class="pipe-step" data-step="2">3. Compute Deltas</div>
+    <span class="pipe-arrow">→</span>
+    <div class="pipe-step" data-step="3">4. PCA → 2D</div>
+    <span class="pipe-arrow">→</span>
+    <div class="pipe-step" data-step="4">5. RBF Interpolate</div>
+    <span class="pipe-arrow">→</span>
+    <div class="pipe-step" data-step="5">6. Compute Strain</div>
+    <span class="pipe-arrow">→</span>
+    <div class="pipe-step" data-step="6">7. Render</div>
+  </div>
+</div>
+
+<!-- ============ STEP 1: TOKENS ============ -->
+<div class="section">
+  <h2>Step 1 — Tokens in Embedding Space</h2>
+  <p>Input text is tokenized and each token gets an initial embedding vector. We also add diverse "probe" tokens for better spatial coverage. Here they are projected to 2D via PCA.</p>
+  <div class="canvas-row">
+    <div class="canvas-box">
+      <canvas id="cvTokens" width="500" height="400"></canvas>
+      <div class="label">Token embeddings (Layer 0)</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ STEP 2: RESIDUAL DELTAS ============ -->
+<div class="section">
+  <h2>Step 2 — Residual Stream Deltas</h2>
+  <p>For each token at each layer, we compute how much the layer "pushes" the token:</p>
+  <div class="eq">δ<sub>token,layer</sub> = h<sub>layer+1</sub>[token] − h<sub>layer</sub>[token]</div>
+  <p>Each arrow below shows the delta vector for one token at the selected layer.</p>
+  <div class="controls">
+    <label>Layer: <span id="layerVal">0</span></label>
+    <input type="range" id="layerSlider" min="0" max="5" value="0">
+  </div>
+  <div class="canvas-row">
+    <div class="canvas-box">
+      <canvas id="cvDeltas" width="500" height="400"></canvas>
+      <div class="label">Token positions + delta arrows</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ STEP 3: RBF INTERPOLATION ============ -->
+<div class="section">
+  <h2>Step 3 — RBF Interpolation (The Key Algorithm)</h2>
+  <p>We lay a regular grid over the space. For each grid vertex, we compute a <b>weighted average</b> of all known token deltas using Gaussian RBF kernels:</p>
+  <div class="eq">w<sub>i</sub> = exp( −‖p<sub>grid</sub> − p<sub>token_i</sub>‖² / (2σ²) )</div>
+  <br>
+  <div class="eq">δ<sub>grid</sub> = Σ w<sub>i</sub> · δ<sub>token_i</sub> / Σ w<sub>i</sub></div>
+  <p>This extends the discrete per-token deformations into a <b>continuous vector field</b> across the entire space. Hover over the grid to see the RBF weights from that point.</p>
+  <div class="controls">
+    <label>σ (kernel width): <span id="sigmaVal">0.30</span></label>
+    <input type="range" id="sigmaSlider" min="5" max="80" value="30">
+  </div>
+  <div class="canvas-row">
+    <div class="canvas-box">
+      <canvas id="cvRBF" width="500" height="400"></canvas>
+      <div class="label">Interpolated velocity field on grid</div>
+    </div>
+    <div class="canvas-box">
+      <canvas id="cvWeights" width="500" height="400"></canvas>
+      <div class="label">RBF weight heatmap (hover on left canvas)</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ STEP 4: DEFORMATION ============ -->
+<div class="section">
+  <h2>Step 4 — Grid Deformation</h2>
+  <p>Each grid vertex is displaced by the interpolated velocity, scaled by parameter <b>t</b> and amplification <b>amp</b>:</p>
+  <div class="eq">p'<sub>grid</sub> = p<sub>grid</sub> + t × amp × δ<sub>grid</sub></div>
+  <p>Drag the <b>t</b> slider to watch the space morph in real time!</p>
+  <div class="controls">
+    <label>t (deformation): <span id="tVal">0.00</span></label>
+    <input type="range" id="tSlider" min="0" max="100" value="0">
+    <label>amp: <span id="ampVal">1.0</span></label>
+    <input type="range" id="ampSlider" min="1" max="50" value="10">
+  </div>
+  <div class="canvas-row">
+    <div class="canvas-box">
+      <canvas id="cvDeform" width="520" height="420"></canvas>
+      <div class="label">Deformed grid + token trajectories</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ STEP 5: STRAIN ============ -->
+<div class="section">
+  <h2>Step 5 — Strain Visualization</h2>
+  <p>Strain measures how much the space is stretched or compressed between adjacent grid points:</p>
+  <div class="eq">strain = ‖p'<sub>j</sub> − p'<sub>i</sub>‖ / ‖p<sub>j</sub> − p<sub>i</sub>‖</div>
+  <p><b>Strain &gt; 1</b> → expansion (red) &nbsp;|&nbsp; <b>Strain &lt; 1</b> → contraction (blue) &nbsp;|&nbsp; <b>Strain ≈ 1</b> → preserved (gray)</p>
+  <div class="controls">
+    <label>t: <span id="tVal2">0.00</span></label>
+    <input type="range" id="tSlider2" min="0" max="100" value="0">
+  </div>
+  <div class="legend">
+    <span><span class="swatch" style="background:#4466ff"></span> Contraction</span>
+    <span><span class="swatch" style="background:#666"></span> Isometric</span>
+    <span><span class="swatch" style="background:#ff4444"></span> Expansion</span>
+  </div>
+  <div class="canvas-row">
+    <div class="canvas-box">
+      <canvas id="cvStrain" width="520" height="420"></canvas>
+      <div class="label">Strain heatmap on deformed grid</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ STEP 6: FULL INTERACTIVE ============ -->
+<div class="section">
+  <h2>Step 6 — Full Interactive View</h2>
+  <p>Everything together: deformed grid, strain coloring, token positions, and velocity field. This is what the Metric Space Explorer renders.</p>
+  <div class="controls">
+    <label>Layer: <span id="layerVal2">0</span></label>
+    <input type="range" id="layerSlider2" min="0" max="5" value="0">
+    <label>t: <span id="tVal3">0.50</span></label>
+    <input type="range" id="tSlider3" min="0" max="100" value="50">
+    <label>amp: <span id="ampVal2">1.0</span></label>
+    <input type="range" id="ampSlider2" min="1" max="50" value="10">
+    <button id="btnAnimate">▶ Animate Layers</button>
+  </div>
+  <div class="canvas-row">
+    <div class="canvas-box">
+      <canvas id="cvFull" width="700" height="520"></canvas>
+      <div class="label">Complete space morphing visualization</div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  Metric Space Explorer Algorithm Visualizer — Built to explain how transformer layers deform embedding space
+</footer>
+
+<script>
+// =====================================================
+// DATA GENERATION — Simulated tokens & layer deltas
+// =====================================================
+const COLORS = ['#f472b6','#c084fc','#7eb4ff','#34d399','#fbbf24','#fb923c','#f87171','#a78bfa','#67e8f9','#a3e635'];
+const TOKEN_LABELS = ['The','cat','sat','on','the','mat','and','purred','softly','.'];
+const NUM_TOKENS = TOKEN_LABELS.length;
+const NUM_LAYERS = 6;
+const GRID_N = 16;
+
+// Random but deterministic-ish seed
+function seededRandom(seed) {
+  let s = seed;
+  return function() {
+    s = (s * 16807 + 0) % 2147483647;
+    return (s - 1) / 2147483646;
+  };
+}
+const rand = seededRandom(42);
+
+// Generate token positions (normalized 0-1)
+const tokenPositions = [];
+for (let i = 0; i < NUM_TOKENS; i++) {
+  tokenPositions.push({ x: 0.15 + rand() * 0.7, y: 0.15 + rand() * 0.7 });
+}
+
+// Generate per-layer deltas for each token (simulating transformer behavior)
+// Each layer has a different "character" — some rotate, some expand, some cluster
+const tokenDeltas = []; // [layer][token] = {dx, dy}
+for (let l = 0; l < NUM_LAYERS; l++) {
+  const layerDeltas = [];
+  const angle = (l * 0.8) + rand() * 0.5;
+  const strength = 0.02 + rand() * 0.06;
+  for (let t = 0; t < NUM_TOKENS; t++) {
+    const cx = 0.5, cy = 0.5;
+    const px = tokenPositions[t].x - cx;
+    const py = tokenPositions[t].y - cy;
+    // Mix of rotation + radial + random
+    let dx = -py * Math.sin(angle) * strength + (rand() - 0.5) * 0.04;
+    let dy =  px * Math.cos(angle) * strength + (rand() - 0.5) * 0.04;
+    // Some layers cluster tokens
+    if (l === 2 || l === 4) {
+      dx += (0.5 - tokenPositions[t].x) * 0.03;
+      dy += (0.5 - tokenPositions[t].y) * 0.03;
+    }
+    // Some layers separate tokens
+    if (l === 1 || l === 3) {
+      dx += (tokenPositions[t].x - 0.5) * 0.04;
+      dy += (tokenPositions[t].y - 0.5) * 0.04;
+    }
+    layerDeltas.push({ dx, dy });
+  }
+  tokenDeltas.push(layerDeltas);
+}
+
+// =====================================================
+// UTILITY FUNCTIONS
+// =====================================================
+function toCanvasX(nx, w, pad=40) { return pad + nx * (w - 2*pad); }
+function toCanvasY(ny, h, pad=40) { return pad + ny * (h - 2*pad); }
+
+function drawGrid(ctx, w, h, pad=40) {
+  ctx.strokeStyle = '#1a1a3a';
+  ctx.lineWidth = 0.5;
+  for (let i = 0; i <= GRID_N; i++) {
+    const f = i / GRID_N;
+    const x = toCanvasX(f, w, pad);
+    const y = toCanvasY(f, h, pad);
+    ctx.beginPath(); ctx.moveTo(x, pad); ctx.lineTo(x, h-pad); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(w-pad, y); ctx.stroke();
+  }
+}
+
+function drawTokens(ctx, w, h, pad=40, showLabels=true) {
+  for (let i = 0; i < NUM_TOKENS; i++) {
+    const x = toCanvasX(tokenPositions[i].x, w, pad);
+    const y = toCanvasY(tokenPositions[i].y, h, pad);
+    ctx.beginPath();
+    ctx.arc(x, y, 7, 0, Math.PI*2);
+    ctx.fillStyle = COLORS[i % COLORS.length];
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    if (showLabels) {
+      ctx.fillStyle = '#fff';
+      ctx.font = '11px monospace';
+      ctx.fillText(TOKEN_LABELS[i], x + 10, y + 4);
+    }
+  }
+}
+
+function rbfWeight(px, py, tx, ty, sigma) {
+  const d2 = (px - tx)**2 + (py - ty)**2;
+  return Math.exp(-d2 / (2 * sigma * sigma));
+}
+
+function interpolateDelta(px, py, layer, sigma) {
+  let wSum = 0, dxSum = 0, dySum = 0;
+  for (let t = 0; t < NUM_TOKENS; t++) {
+    const w = rbfWeight(px, py, tokenPositions[t].x, tokenPositions[t].y, sigma);
+    wSum += w;
+    dxSum += w * tokenDeltas[layer][t].dx;
+    dySum += w * tokenDeltas[layer][t].dy;
+  }
+  if (wSum < 1e-15) return { dx: 0, dy: 0 };
+  return { dx: dxSum / wSum, dy: dySum / wSum };
+}
+
+function strainColor(strain) {
+  // strain < 1 → blue, strain > 1 → red, strain ≈ 1 → gray
+  const s = Math.max(0.3, Math.min(2.0, strain));
+  if (s < 1) {
+    const f = 1 - s; // 0..0.7
+    const t = Math.min(1, f * 2);
+    const r = Math.round(102 * (1-t) + 68 * t);
+    const g = Math.round(102 * (1-t) + 102 * t);
+    const b = Math.round(102 * (1-t) + 255 * t);
+    return `rgb(${r},${g},${b})`;
+  } else {
+    const f = s - 1; // 0..1
+    const t = Math.min(1, f * 2);
+    const r = Math.round(102 * (1-t) + 255 * t);
+    const g = Math.round(102 * (1-t) + 68 * t);
+    const b = Math.round(102 * (1-t) + 68 * t);
+    return `rgb(${r},${g},${b})`;
+  }
+}
+
+// =====================================================
+// STEP 1: TOKEN CANVAS
+// =====================================================
+function renderTokens() {
+  const cv = document.getElementById('cvTokens');
+  const ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  drawGrid(ctx, cv.width, cv.height);
+  drawTokens(ctx, cv.width, cv.height);
+}
+
+// =====================================================
+// STEP 2: DELTAS CANVAS
+// =====================================================
+function renderDeltas() {
+  const cv = document.getElementById('cvDeltas');
+  const ctx = cv.getContext('2d');
+  const layer = parseInt(document.getElementById('layerSlider').value);
+  document.getElementById('layerVal').textContent = layer;
+
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  drawGrid(ctx, cv.width, cv.height);
+
+  const arrowScale = 8;
+  for (let i = 0; i < NUM_TOKENS; i++) {
+    const x = toCanvasX(tokenPositions[i].x, cv.width);
+    const y = toCanvasY(tokenPositions[i].y, cv.height);
+    const dx = tokenDeltas[layer][i].dx * arrowScale * (cv.width - 80);
+    const dy = tokenDeltas[layer][i].dy * arrowScale * (cv.height - 80);
+
+    // Arrow line
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + dx, y + dy);
+    ctx.strokeStyle = COLORS[i % COLORS.length];
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+
+    // Arrowhead
+    const angle = Math.atan2(dy, dx);
+    const headLen = 8;
+    ctx.beginPath();
+    ctx.moveTo(x + dx, y + dy);
+    ctx.lineTo(x + dx - headLen * Math.cos(angle - 0.4), y + dy - headLen * Math.sin(angle - 0.4));
+    ctx.moveTo(x + dx, y + dy);
+    ctx.lineTo(x + dx - headLen * Math.cos(angle + 0.4), y + dy - headLen * Math.sin(angle + 0.4));
+    ctx.stroke();
+  }
+
+  drawTokens(ctx, cv.width, cv.height);
+}
+
+// =====================================================
+// STEP 3: RBF INTERPOLATION
+// =====================================================
+let rbfHoverX = 0.5, rbfHoverY = 0.5;
+
+function renderRBF() {
+  const cv = document.getElementById('cvRBF');
+  const ctx = cv.getContext('2d');
+  const sigma = parseInt(document.getElementById('sigmaSlider').value) / 100;
+  document.getElementById('sigmaVal').textContent = sigma.toFixed(2);
+  const layer = parseInt(document.getElementById('layerSlider').value);
+
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  drawGrid(ctx, cv.width, cv.height);
+
+  // Draw velocity field arrows on grid
+  const arrowScale = 6;
+  for (let i = 0; i <= GRID_N; i++) {
+    for (let j = 0; j <= GRID_N; j++) {
+      const gx = i / GRID_N;
+      const gy = j / GRID_N;
+      const d = interpolateDelta(gx, gy, layer, sigma);
+      const cx = toCanvasX(gx, cv.width);
+      const cy = toCanvasY(gy, cv.height);
+      const dx = d.dx * arrowScale * (cv.width - 80);
+      const dy = d.dy * arrowScale * (cv.height - 80);
+      const mag = Math.sqrt(dx*dx + dy*dy);
+      const alpha = Math.min(1, mag / 30);
+
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + dx, cy + dy);
+      ctx.strokeStyle = `rgba(160,130,255,${alpha})`;
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+
+      if (mag > 3) {
+        const angle = Math.atan2(dy, dx);
+        ctx.beginPath();
+        ctx.moveTo(cx + dx, cy + dy);
+        ctx.lineTo(cx + dx - 4*Math.cos(angle-0.5), cy + dy - 4*Math.sin(angle-0.5));
+        ctx.moveTo(cx + dx, cy + dy);
+        ctx.lineTo(cx + dx - 4*Math.cos(angle+0.5), cy + dy - 4*Math.sin(angle+0.5));
+        ctx.stroke();
+      }
+    }
+  }
+
+  drawTokens(ctx, cv.width, cv.height);
+
+  // Draw hover crosshair
+  const hx = toCanvasX(rbfHoverX, cv.width);
+  const hy = toCanvasY(rbfHoverY, cv.height);
+  ctx.beginPath();
+  ctx.arc(hx, hy, 5, 0, Math.PI*2);
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
+
+function renderWeights() {
+  const cv = document.getElementById('cvWeights');
+  const ctx = cv.getContext('2d');
+  const sigma = parseInt(document.getElementById('sigmaSlider').value) / 100;
+
+  ctx.clearRect(0, 0, cv.width, cv.height);
+
+  const pad = 40;
+  const iw = cv.width - 2*pad;
+  const ih = cv.height - 2*pad;
+  const res = 4;
+
+  // Draw weight heatmap
+  for (let px = 0; px < iw; px += res) {
+    for (let py = 0; py < ih; py += res) {
+      const nx = px / iw;
+      const ny = py / ih;
+      let wSum = 0;
+      let maxW = 0;
+      for (let t = 0; t < NUM_TOKENS; t++) {
+        const w = rbfWeight(rbfHoverX, rbfHoverY, tokenPositions[t].x, tokenPositions[t].y, sigma);
+        const wHere = rbfWeight(nx, ny, tokenPositions[t].x, tokenPositions[t].y, sigma);
+        wSum += wHere;
+        maxW = Math.max(maxW, wHere);
+      }
+      // Show how much this point's tokens contribute to the hovered point
+      let totalW = 0;
+      for (let t = 0; t < NUM_TOKENS; t++) {
+        totalW += rbfWeight(rbfHoverX, rbfHoverY, tokenPositions[t].x, tokenPositions[t].y, sigma);
+      }
+      // Highlight: weight of nearest token to this pixel, as seen from hover point
+      let wFromHover = 0;
+      for (let t = 0; t < NUM_TOKENS; t++) {
+        const wt = rbfWeight(rbfHoverX, rbfHoverY, tokenPositions[t].x, tokenPositions[t].y, sigma);
+        const proximity = rbfWeight(nx, ny, tokenPositions[t].x, tokenPositions[t].y, sigma * 0.5);
+        wFromHover += (wt / (totalW + 1e-15)) * proximity;
+      }
+      const brightness = Math.min(1, wFromHover * 8);
+      const r = Math.round(40 + brightness * 160);
+      const g = Math.round(20 + brightness * 100);
+      const b = Math.round(80 + brightness * 175);
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      ctx.fillRect(pad + px, pad + py, res, res);
+    }
+  }
+
+  // Draw token positions with their weights
+  for (let t = 0; t < NUM_TOKENS; t++) {
+    const w = rbfWeight(rbfHoverX, rbfHoverY, tokenPositions[t].x, tokenPositions[t].y, sigma);
+    let totalW = 0;
+    for (let t2 = 0; t2 < NUM_TOKENS; t2++) {
+      totalW += rbfWeight(rbfHoverX, rbfHoverY, tokenPositions[t2].x, tokenPositions[t2].y, sigma);
+    }
+    const normW = w / (totalW + 1e-15);
+    const x = toCanvasX(tokenPositions[t].x, cv.width);
+    const y = toCanvasY(tokenPositions[t].y, cv.height);
+    const radius = 4 + normW * 20;
+
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI*2);
+    ctx.fillStyle = COLORS[t % COLORS.length] + '99';
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Weight label
+    ctx.fillStyle = '#fff';
+    ctx.font = '10px monospace';
+    ctx.fillText(`${TOKEN_LABELS[t]}: ${(normW*100).toFixed(1)}%`, x + radius + 4, y + 4);
+  }
+
+  // Hover point indicator
+  const hx = toCanvasX(rbfHoverX, cv.width);
+  const hy = toCanvasY(rbfHoverY, cv.height);
+  ctx.beginPath();
+  ctx.arc(hx, hy, 6, 0, Math.PI*2);
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(hx, hy, 2, 0, Math.PI*2);
+  ctx.fillStyle = '#fff';
+  ctx.fill();
+
+  // Label
+  ctx.fillStyle = '#aaa';
+  ctx.font = '11px sans-serif';
+  ctx.fillText('← weights from this point', hx + 10, hy - 8);
+}
+
+// Mouse tracking for RBF hover
+document.getElementById('cvRBF').addEventListener('mousemove', function(e) {
+  const rect = this.getBoundingClientRect();
+  const pad = 40;
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  rbfHoverX = Math.max(0, Math.min(1, (mx - pad) / (this.width - 2*pad)));
+  rbfHoverY = Math.max(0, Math.min(1, (my - pad) / (this.height - 2*pad)));
+  renderRBF();
+  renderWeights();
+});
+
+// =====================================================
+// STEP 4: DEFORMATION
+// =====================================================
+function renderDeformation() {
+  const cv = document.getElementById('cvDeform');
+  const ctx = cv.getContext('2d');
+  const t = parseInt(document.getElementById('tSlider').value) / 100;
+  const amp = parseInt(document.getElementById('ampSlider').value) / 10;
+  const sigma = parseInt(document.getElementById('sigmaSlider').value) / 100;
+  const layer = parseInt(document.getElementById('layerSlider').value);
+
+  document.getElementById('tVal').textContent = t.toFixed(2);
+  document.getElementById('ampVal').textContent = amp.toFixed(1);
+
+  ctx.clearRect(0, 0, cv.width, cv.height);
+
+  const pad = 50;
+
+  // Compute deformed grid positions
+  const gridPos = [];    // original
+  const gridDef = [];    // deformed
+  for (let i = 0; i <= GRID_N; i++) {
+    gridPos.push([]);
+    gridDef.push([]);
+    for (let j = 0; j <= GRID_N; j++) {
+      const gx = i / GRID_N;
+      const gy = j / GRID_N;
+      const d = interpolateDelta(gx, gy, layer, sigma);
+      gridPos[i].push({ x: gx, y: gy });
+      gridDef[i].push({
+        x: gx + t * amp * d.dx,
+        y: gy + t * amp * d.dy
+      });
+    }
+  }
+
+  // Draw deformed grid lines
+  ctx.lineWidth = 1;
+  // Horizontal lines
+  for (let j = 0; j <= GRID_N; j++) {
+    ctx.beginPath();
+    for (let i = 0; i <= GRID_N; i++) {
+      const x = toCanvasX(gridDef[i][j].x, cv.width, pad);
+      const y = toCanvasY(gridDef[i][j].y, cv.height, pad);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = 'rgba(120, 100, 200, 0.4)';
+    ctx.stroke();
+  }
+  // Vertical lines
+  for (let i = 0; i <= GRID_N; i++) {
+    ctx.beginPath();
+    for (let j = 0; j <= GRID_N; j++) {
+      const x = toCanvasX(gridDef[i][j].x, cv.width, pad);
+      const y = toCanvasY(gridDef[i][j].y, cv.height, pad);
+      if (j === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = 'rgba(120, 100, 200, 0.4)';
+    ctx.stroke();
+  }
+
+  // Draw token trajectories (ghost trail from original to deformed position)
+  for (let i = 0; i < NUM_TOKENS; i++) {
+    const ox = toCanvasX(tokenPositions[i].x, cv.width, pad);
+    const oy = toCanvasY(tokenPositions[i].y, cv.height, pad);
+    const d = tokenDeltas[layer][i];
+    const nx = toCanvasX(tokenPositions[i].x + t * amp * d.dx, cv.width, pad);
+    const ny = toCanvasY(tokenPositions[i].y + t * amp * d.dy, cv.height, pad);
+
+    // Trail
+    ctx.beginPath();
+    ctx.setLineDash([3, 3]);
+    ctx.moveTo(ox, oy);
+    ctx.lineTo(nx, ny);
+    ctx.strokeStyle = COLORS[i % COLORS.length] + '88';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Ghost original
+    ctx.beginPath();
+    ctx.arc(ox, oy, 4, 0, Math.PI*2);
+    ctx.fillStyle = COLORS[i % COLORS.length] + '44';
+    ctx.fill();
+
+    // Current position
+    ctx.beginPath();
+    ctx.arc(nx, ny, 7, 0, Math.PI*2);
+    ctx.fillStyle = COLORS[i % COLORS.length];
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    ctx.fillStyle = '#fff';
+    ctx.font = '11px monospace';
+    ctx.fillText(TOKEN_LABELS[i], nx + 10, ny + 4);
+  }
+}
+
+// =====================================================
+// STEP 5: STRAIN
+// =====================================================
+function renderStrain() {
+  const cv = document.getElementById('cvStrain');
+  const ctx = cv.getContext('2d');
+  const t = parseInt(document.getElementById('tSlider2').value) / 100;
+  const sigma = parseInt(document.getElementById('sigmaSlider').value) / 100;
+  const layer = parseInt(document.getElementById('layerSlider').value);
+  const amp = parseInt(document.getElementById('ampSlider').value) / 10;
+
+  document.getElementById('tVal2').textContent = t.toFixed(2);
+
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  const pad = 50;
+
+  // Compute deformed grid
+  const gridDef = [];
+  for (let i = 0; i <= GRID_N; i++) {
+    gridDef.push([]);
+    for (let j = 0; j <= GRID_N; j++) {
+      const gx = i / GRID_N;
+      const gy = j / GRID_N;
+      const d = interpolateDelta(gx, gy, layer, sigma);
+      gridDef[i].push({
+        x: gx + t * amp * d.dx,
+        y: gy + t * amp * d.dy
+      });
+    }
+  }
+
+  const origSpacing = 1 / GRID_N;
+
+  // Draw strain-colored quads
+  for (let i = 0; i < GRID_N; i++) {
+    for (let j = 0; j < GRID_N; j++) {
+      // Compute average strain for this cell
+      const dx1 = gridDef[i+1][j].x - gridDef[i][j].x;
+      const dy1 = gridDef[i+1][j].y - gridDef[i][j].y;
+      const dx2 = gridDef[i][j+1].x - gridDef[i][j].x;
+      const dy2 = gridDef[i][j+1].y - gridDef[i][j].y;
+      const distH = Math.sqrt(dx1*dx1 + dy1*dy1);
+      const distV = Math.sqrt(dx2*dx2 + dy2*dy2);
+      const strainH = distH / origSpacing;
+      const strainV = distV / origSpacing;
+      const avgStrain = (strainH + strainV) / 2;
+
+      // Draw filled quad
+      const x0 = toCanvasX(gridDef[i][j].x, cv.width, pad);
+      const y0 = toCanvasY(gridDef[i][j].y, cv.height, pad);
+      const x1 = toCanvasX(gridDef[i+1][j].x, cv.width, pad);
+      const y1 = toCanvasY(gridDef[i+1][j].y, cv.height, pad);
+      const x2 = toCanvasX(gridDef[i+1][j+1].x, cv.width, pad);
+      const y2 = toCanvasY(gridDef[i+1][j+1].y, cv.height, pad);
+      const x3 = toCanvasX(gridDef[i][j+1].x, cv.width, pad);
+      const y3 = toCanvasY(gridDef[i][j+1].y, cv.height, pad);
+
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.lineTo(x3, y3);
+      ctx.closePath();
+      ctx.fillStyle = strainColor(avgStrain);
+      ctx.globalAlpha = 0.7;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // Draw deformed grid lines on top
+  ctx.lineWidth = 0.8;
+  ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+  for (let j = 0; j <= GRID_N; j++) {
+    ctx.beginPath();
+    for (let i = 0; i <= GRID_N; i++) {
+      const x = toCanvasX(gridDef[i][j].x, cv.width, pad);
+      const y = toCanvasY(gridDef[i][j].y, cv.height, pad);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+  for (let i = 0; i <= GRID_N; i++) {
+    ctx.beginPath();
+    for (let j = 0; j <= GRID_N; j++) {
+      const x = toCanvasX(gridDef[i][j].x, cv.width, pad);
+      const y = toCanvasY(gridDef[i][j].y, cv.height, pad);
+      if (j === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+
+  // Draw tokens at deformed positions
+  for (let i = 0; i < NUM_TOKENS; i++) {
+    const d = tokenDeltas[layer][i];
+    const nx = toCanvasX(tokenPositions[i].x + t * amp * d.dx, cv.width, pad);
+    const ny = toCanvasY(tokenPositions[i].y + t * amp * d.dy, cv.height, pad);
+    ctx.beginPath();
+    ctx.arc(nx, ny, 6, 0, Math.PI*2);
+    ctx.fillStyle = COLORS[i % COLORS.length];
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+}
+
+// =====================================================
+// STEP 6: FULL INTERACTIVE VIEW
+// =====================================================
+let animating = false;
+let animFrame = null;
+
+function renderFull() {
+  const cv = document.getElementById('cvFull');
+  const ctx = cv.getContext('2d');
+  const layer = parseInt(document.getElementById('layerSlider2').value);
+  const t = parseInt(document.getElementById('tSlider3').value) / 100;
+  const amp = parseInt(document.getElementById('ampSlider2').value) / 10;
+  const sigma = parseInt(document.getElementById('sigmaSlider').value) / 100;
+
+  document.getElementById('layerVal2').textContent = layer;
+  document.getElementById('tVal3').textContent = t.toFixed(2);
+  document.getElementById('ampVal2').textContent = amp.toFixed(1);
+
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  const pad = 60;
+
+  // Title
+  ctx.fillStyle = '#c084fc';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.fillText(`Layer ${layer}  |  t = ${t.toFixed(2)}  |  amp = ${amp.toFixed(1)}`, pad, 25);
+
+  // Compute deformed grid
+  const gridDef = [];
+  for (let i = 0; i <= GRID_N; i++) {
+    gridDef.push([]);
+    for (let j = 0; j <= GRID_N; j++) {
+      const gx = i / GRID_N;
+      const gy = j / GRID_N;
+      const d = interpolateDelta(gx, gy, layer, sigma);
+      gridDef[i].push({
+        x: gx + t * amp * d.dx,
+        y: gy + t * amp * d.dy
+      });
+    }
+  }
+
+  const origSpacing = 1 / GRID_N;
+
+  // Strain-colored quads
+  for (let i = 0; i < GRID_N; i++) {
+    for (let j = 0; j < GRID_N; j++) {
+      const dx1 = gridDef[i+1][j].x - gridDef[i][j].x;
+      const dy1 = gridDef[i+1][j].y - gridDef[i][j].y;
+      const dx2 = gridDef[i][j+1].x - gridDef[i][j].x;
+      const dy2 = gridDef[i][j+1].y - gridDef[i][j].y;
+      const distH = Math.sqrt(dx1*dx1 + dy1*dy1);
+      const distV = Math.sqrt(dx2*dx2 + dy2*dy2);
+      const avgStrain = ((distH / origSpacing) + (distV / origSpacing)) / 2;
+
+      const x0 = toCanvasX(gridDef[i][j].x, cv.width, pad);
+      const y0 = toCanvasY(gridDef[i][j].y, cv.height, pad);
+      const x1 = toCanvasX(gridDef[i+1][j].x, cv.width, pad);
+      const y1 = toCanvasY(gridDef[i+1][j].y, cv.height, pad);
+      const x2 = toCanvasX(gridDef[i+1][j+1].x, cv.width, pad);
+      const y2 = toCanvasY(gridDef[i+1][j+1].y, cv.height, pad);
+      const x3 = toCanvasX(gridDef[i][j+1].x, cv.width, pad);
+      const y3 = toCanvasY(gridDef[i][j+1].y, cv.height, pad);
+
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.lineTo(x3, y3);
+      ctx.closePath();
+      ctx.fillStyle = strainColor(avgStrain);
+      ctx.globalAlpha = 0.55;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // Deformed grid lines
+  ctx.lineWidth = 0.8;
+  ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+  for (let j = 0; j <= GRID_N; j++) {
+    ctx.beginPath();
+    for (let i = 0; i <= GRID_N; i++) {
+      const x = toCanvasX(gridDef[i][j].x, cv.width, pad);
+      const y = toCanvasY(gridDef[i][j].y, cv.height, pad);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+  for (let i = 0; i <= GRID_N; i++) {
+    ctx.beginPath();
+    for (let j = 0; j <= GRID_N; j++) {
+      const x = toCanvasX(gridDef[i][j].x, cv.width, pad);
+      const y = toCanvasY(gridDef[i][j].y, cv.height, pad);
+      if (j === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+
+  // Velocity field (sparse)
+  const arrowStep = 3;
+  for (let i = 0; i <= GRID_N; i += arrowStep) {
+    for (let j = 0; j <= GRID_N; j += arrowStep) {
+      const gx = i / GRID_N;
+      const gy = j / GRID_N;
+      const d = interpolateDelta(gx, gy, layer, sigma);
+      const cx = toCanvasX(gridDef[i][j].x, cv.width, pad);
+      const cy = toCanvasY(gridDef[i][j].y, cv.height, pad);
+      const dx = d.dx * 5 * (cv.width - 2*pad);
+      const dy = d.dy * 5 * (cv.height - 2*pad);
+      const mag = Math.sqrt(dx*dx + dy*dy);
+
+      if (mag > 2) {
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(cx + dx, cy + dy);
+        ctx.strokeStyle = `rgba(255,255,255,0.3)`;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        const angle = Math.atan2(dy, dx);
+        ctx.beginPath();
+        ctx.moveTo(cx + dx, cy + dy);
+        ctx.lineTo(cx + dx - 5*Math.cos(angle-0.4), cy + dy - 5*Math.sin(angle-0.4));
+        ctx.moveTo(cx + dx, cy + dy);
+        ctx.lineTo(cx + dx - 5*Math.cos(angle+0.4), cy + dy - 5*Math.sin(angle+0.4));
+        ctx.stroke();
+      }
+    }
+  }
+
+  // Tokens with trails
+  for (let i = 0; i < NUM_TOKENS; i++) {
+    const d = tokenDeltas[layer][i];
+    const ox = toCanvasX(tokenPositions[i].x, cv.width, pad);
+    const oy = toCanvasY(tokenPositions[i].y, cv.height, pad);
+    const nx = toCanvasX(tokenPositions[i].x + t * amp * d.dx, cv.width, pad);
+    const ny = toCanvasY(tokenPositions[i].y + t * amp * d.dy, cv.height, pad);
+
+    // Trail
+    ctx.beginPath();
+    ctx.setLineDash([2, 3]);
+    ctx.moveTo(ox, oy);
+    ctx.lineTo(nx, ny);
+    ctx.strokeStyle = COLORS[i % COLORS.length] + '66';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Ghost
+    ctx.beginPath();
+    ctx.arc(ox, oy, 3, 0, Math.PI*2);
+    ctx.fillStyle = COLORS[i % COLORS.length] + '33';
+    ctx.fill();
+
+    // Token
+    ctx.beginPath();
+    ctx.arc(nx, ny, 8, 0, Math.PI*2);
+    ctx.fillStyle = COLORS[i % COLORS.length];
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 11px monospace';
+    ctx.fillText(TOKEN_LABELS[i], nx + 12, ny + 4);
+  }
+}
+
+// Animate through layers
+function animateLayers() {
+  if (animating) {
+    animating = false;
+    document.getElementById('btnAnimate').textContent = '▶ Animate Layers';
+    if (animFrame) cancelAnimationFrame(animFrame);
+    return;
+  }
+  animating = true;
+  document.getElementById('btnAnimate').textContent = '⏸ Stop';
+
+  let currentLayer = 0;
+  let currentT = 0;
+  const speed = 0.8;
+
+  function step() {
+    if (!animating) return;
+    currentT += speed;
+    if (currentT > 100) {
+      currentT = 0;
+      currentLayer++;
+      if (currentLayer >= NUM_LAYERS) currentLayer = 0;
+    }
+    document.getElementById('layerSlider2').value = currentLayer;
+    document.getElementById('tSlider3').value = Math.round(currentT);
+    renderFull();
+    animFrame = requestAnimationFrame(step);
+  }
+  step();
+}
+
+// =====================================================
+// EVENT LISTENERS
+// =====================================================
+document.getElementById('layerSlider').addEventListener('input', () => {
+  renderDeltas();
+  renderRBF();
+  renderWeights();
+  renderDeformation();
+  renderStrain();
+});
+
+document.getElementById('sigmaSlider').addEventListener('input', () => {
+  renderRBF();
+  renderWeights();
+  renderDeformation();
+  renderStrain();
+  renderFull();
+});
+
+document.getElementById('tSlider').addEventListener('input', renderDeformation);
+document.getElementById('ampSlider').addEventListener('input', () => {
+  renderDeformation();
+});
+
+document.getElementById('tSlider2').addEventListener('input', renderStrain);
+
+document.getElementById('layerSlider2').addEventListener('input', renderFull);
+document.getElementById('tSlider3').addEventListener('input', renderFull);
+document.getElementById('ampSlider2').addEventListener('input', renderFull);
+document.getElementById('btnAnimate').addEventListener('click', animateLayers);
+
+// Pipeline step highlighting
+document.querySelectorAll('.pipe-step').forEach(el => {
+  el.addEventListener('click', function() {
+    document.querySelectorAll('.pipe-step').forEach(e => e.classList.remove('active'));
+    this.classList.add('active');
+    const step = parseInt(this.dataset.step);
+    const sections = document.querySelectorAll('.section');
+    if (sections[step + 1]) {
+      sections[step + 1].scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  });
+});
+
+// =====================================================
+// INITIAL RENDER
+// =====================================================
+renderTokens();
+renderDeltas();
+renderRBF();
+renderWeights();
+renderDeformation();
+renderStrain();
+renderFull();
+
+</script>
+</body>
+</html>
