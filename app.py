@@ -7,6 +7,8 @@
 #   "sentencepiece",
 #   "protobuf",
 #   "numpy",
+#   "sae-lens",
+#   "transformer-lens",
 # ]
 # ///
 
@@ -19,6 +21,97 @@ import subprocess
 import threading
 from urllib.parse import urlparse
 from datetime import datetime, timedelta, UTC
+
+SAE_AVAILABLE = True
+
+# ============================================================
+# 3b. SAE LOADING (per-layer sparse autoencoders)
+# ============================================================
+
+SAE_MODELS = {}  # layer_idx -> trained SAE
+
+# Known SAE release mappings for popular models
+# SAELens uses release IDs like "gpt2-small-res-jb" etc.
+SAE_RELEASE_MAP = {
+    "gpt2": "gpt2-small-res-jb",
+    "gpt2-small": "gpt2-small-res-jb",
+    "gpt2-medium": "gpt2-medium-res-jb",
+    "gpt2-large": "gpt2-large-res-jb",
+    "EleutherAI/pythia-70m-deduped": "pythia-70m-deduped-res-sm",
+    "EleutherAI/pythia-160m": "pythia-160m-deduped-res-sm",
+    "EleutherAI/pythia-410m": "pythia-410m-deduped-res-sm",
+}
+
+# Hook point template per architecture
+SAE_HOOK_TEMPLATES = {
+    "gpt2": "blocks.{layer}.hook_resid_post",
+    "pythia": "blocks.{layer}.hook_resid_post",
+    "default": "blocks.{layer}.hook_resid_post",
+}
+
+
+def get_sae_release_id(model_name):
+    """Map a HuggingFace model name to a SAELens release ID."""
+    if model_name in SAE_RELEASE_MAP:
+        return SAE_RELEASE_MAP[model_name]
+    # Try common patterns
+    mn = model_name.lower()
+    if "gpt2" in mn:
+        if "medium" in mn:
+            return "gpt2-medium-res-jb"
+        if "large" in mn:
+            return "gpt2-large-res-jb"
+        if "xl" in mn:
+            return "gpt2-xl-res-jb"
+        return "gpt2-small-res-jb"
+    if "pythia" in mn:
+        for key in SAE_RELEASE_MAP:
+            if key in model_name:
+                return SAE_RELEASE_MAP[key]
+    return None
+
+
+def get_sae_hook_template(model_name):
+    """Get the hook point template string for a model."""
+    mn = model_name.lower()
+    if "gpt2" in mn:
+        return SAE_HOOK_TEMPLATES["gpt2"]
+    if "pythia" in mn:
+        return SAE_HOOK_TEMPLATES["pythia"]
+    return SAE_HOOK_TEMPLATES["default"]
+
+def load_saes(model_name, n_layers):
+    """Load pre-trained SAEs for each layer. Fails gracefully per-layer."""
+    global SAE_MODELS
+    SAE_MODELS = {}
+
+    if not SAE_AVAILABLE:
+        print("[SAE] sae-lens not available — skipping SAE loading")
+        return
+
+    release_id = get_sae_release_id(model_name)
+    if release_id is None:
+        print(f"[SAE] No known SAE release for model '{model_name}' — skipping")
+        return
+
+    hook_template = get_sae_hook_template(model_name)
+    print(f"[SAE] Loading SAEs from release '{release_id}' for {n_layers} layers...")
+
+    for layer in range(n_layers):
+        sae_id = hook_template.format(layer=layer)
+        try:
+            sae, cfg_dict, sparsity = SAE.from_pretrained(
+                release=release_id,
+                sae_id=sae_id,
+            )
+            SAE_MODELS[layer] = sae
+            sae.eval()
+            d_sae = sae.cfg.d_sae if hasattr(sae.cfg, 'd_sae') else '?'
+            print(f"  [SAE] Layer {layer}: loaded ({d_sae} latents)")
+        except Exception as e:
+            print(f"  [SAE] Layer {layer}: not available ({e})")
+
+    print(f"[SAE] Loaded SAEs for {len(SAE_MODELS)}/{n_layers} layers")
 
 # ============================================================
 # 0. UV CHECK AND INSTALLATION
@@ -164,6 +257,10 @@ def load_model(model_name):
             LM_MODEL.eval()
         except Exception as e:
             print(f"[Model] Could not load LM head: {e}")
+
+    # Load SAEs for this model
+    n_layers = get_n_layers(MODEL_CONFIG)
+    load_saes(model_name, n_layers)
 
 # ============================================================
 # 4. TOKENIZATION
@@ -1002,6 +1099,46 @@ Tokens: <span id="i-tok">-</span>
 <h3>Predicted Next Token</h3>
 <div id="next-token-panel" style="background:#0f3460;padding:6px;border-radius:4px;font-size:11px;line-height:1.6">
 <span style="color:#555">Run a prompt to see predictions</span>
+</div>
+<h3>SAE Feature Inspector</h3>
+<div id="sae-panel" style="background:#0f3460;padding:8px;border-radius:4px;font-size:10px">
+  <div id="sae-status" style="color:#555;margin-bottom:6px">Loading SAE info...</div>
+  <div id="sae-controls" style="display:none">
+    <div class="cr">
+      <label>Layer:</label>
+      <select id="sae-layer" style="flex:1;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;padding:2px;font-size:10px"></select>
+    </div>
+    <div class="cr" style="margin-top:4px">
+      <label>Token:</label>
+      <select id="sae-token" style="flex:1;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;padding:2px;font-size:10px">
+        <option value="0">Run text first</option>
+      </select>
+    </div>
+    <div class="cr" style="margin-top:4px">
+      <label>Top K:</label>
+      <input type="range" id="sae-topk" min="5" max="50" value="20" step="1">
+      <span class="v" id="v-sae-topk">20</span>
+    </div>
+    <button onclick="fetchSAEFeatures()" style="margin-top:6px;background:#53a8b6;color:#fff;border:none;padding:4px 12px;border-radius:3px;cursor:pointer;font-size:10px;font-weight:bold;width:100%">Inspect Features</button>
+    <div id="sae-features-list" style="margin-top:8px;max-height:250px;overflow-y:auto"></div>
+    <div id="sae-intervention" style="display:none;margin-top:8px;border-top:1px solid #1a1a2e;padding-top:6px">
+      <div style="color:#e94560;font-weight:bold;margin-bottom:4px">⚡ Intervention</div>
+      <div class="cr">
+        <label>Feature:</label>
+        <input type="number" id="sae-int-feature" min="0" value="0" style="width:70px;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;padding:2px;font-size:10px">
+      </div>
+      <div class="cr" style="margin-top:3px">
+        <label>Clamp to:</label>
+        <input type="range" id="sae-int-clamp" min="-10" max="50" value="0" step="0.5" style="flex:1">
+        <span class="v" id="v-sae-clamp">0.0</span>
+      </div>
+      <div style="display:flex;gap:4px;margin-top:4px">
+        <button onclick="runSAEIntervention()" style="flex:1;background:#e94560;color:#fff;border:none;padding:4px 8px;border-radius:3px;cursor:pointer;font-size:10px;font-weight:bold">Apply</button>
+        <button onclick="clearSAEIntervention()" style="flex:1;background:#555;color:#fff;border:none;padding:4px 8px;border-radius:3px;cursor:pointer;font-size:10px">Clear</button>
+      </div>
+      <div id="sae-int-results" style="margin-top:6px"></div>
+    </div>
+  </div>
 </div>
 <h3>Selected Tokens (click canvas to select)</h3>
 <div id="selected-tokens"><span style="color:#555;font-size:10px">Click on a token dot to select it</span></div>
@@ -1892,6 +2029,288 @@ function draw2D(){
     c.fillText('Zoom: '+zoomLevel.toFixed(2)+'x  (Scroll=zoom, Shift+drag=pan, 0=reset)',42,H-10);
 }
 
+// ===================== SAE FEATURE INSPECTOR =====================
+
+var saeInfo = null;
+
+function initSAEPanel(){
+    fetch('/sae_info')
+    .then(function(r){return r.json()})
+    .then(function(info){
+        saeInfo = info;
+        var status = document.getElementById('sae-status');
+        var controls = document.getElementById('sae-controls');
+        if(!info.sae_available){
+            status.innerHTML = '<span style="color:#e94560">sae-lens not installed.</span><br>pip install sae-lens transformer-lens';
+            return;
+        }
+        if(info.loaded_layers.length === 0){
+            status.innerHTML = '<span style="color:#f5a623">No SAEs available for ' + info.model_name + '</span><br>SAEs exist for: gpt2, gpt2-medium, gpt2-large, pythia models';
+            return;
+        }
+        status.innerHTML = '<span style="color:#2ecc71">✓ SAEs loaded for ' + info.loaded_layers.length + '/' + info.total_layers + ' layers</span>';
+        controls.style.display = 'block';
+
+        // Populate layer dropdown
+        var layerSel = document.getElementById('sae-layer');
+        layerSel.innerHTML = '';
+        for(var i = 0; i < info.loaded_layers.length; i++){
+            var l = info.loaded_layers[i];
+            var li = info.layer_info[String(l)];
+            var opt = document.createElement('option');
+            opt.value = l;
+            opt.textContent = 'Layer ' + l + (li && li.d_sae ? ' (' + li.d_sae + ' latents)' : '');
+            layerSel.appendChild(opt);
+        }
+    })
+    .catch(function(e){
+        document.getElementById('sae-status').innerHTML = '<span style="color:#e94560">Error: ' + e + '</span>';
+    });
+}
+
+// Update token dropdown when data changes
+function updateSAETokenDropdown(){
+    var sel = document.getElementById('sae-token');
+    sel.innerHTML = '';
+    if(!D) return;
+    for(var i = 0; i < D.n_real; i++){
+        var opt = document.createElement('option');
+        opt.value = i;
+        opt.textContent = '[' + i + '] ' + D.tokens[i];
+        sel.appendChild(opt);
+    }
+    // Default to last token
+    sel.value = D.n_real - 1;
+}
+
+// Hook into onData to refresh token list and SAE info
+var _origOnData = onData;
+onData = function(){
+    _origOnData();
+    updateSAETokenDropdown();
+    initSAEPanel();
+};
+
+function fetchSAEFeatures(){
+    if(!D) return;
+    var layer = +document.getElementById('sae-layer').value;
+    var tokenIdx = +document.getElementById('sae-token').value;
+    var topK = +document.getElementById('sae-topk').value;
+    var text = D.text;
+
+    var list = document.getElementById('sae-features-list');
+    list.innerHTML = '<span style="color:#53a8b6">Loading...</span>';
+
+    fetch('/sae_features', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({text: text, layer: layer, token_idx: tokenIdx, top_k: topK})
+    })
+    .then(function(r){return r.json()})
+    .then(function(data){
+        if(data.error){
+            list.innerHTML = '<span style="color:#e94560">' + data.error + '</span>';
+            return;
+        }
+        var features = data.features;
+        var nLatents = data.n_latents || '?';
+        var html = '<div style="color:#888;margin-bottom:4px">Token: <b style="color:#e94560">' +
+                   data.tokens[tokenIdx] + '</b> | Layer ' + layer +
+                   ' | ' + nLatents + ' total latents</div>';
+
+        // Token activation heatmap for top features
+        if(data.token_activations && data.tokens){
+            html += '<div style="margin-bottom:6px;font-size:9px;color:#888">Activation heatmap (top features × tokens):</div>';
+            html += '<div style="overflow-x:auto;margin-bottom:6px"><table style="border-collapse:collapse;font-size:8px">';
+            // Header row: tokens
+            html += '<tr><td></td>';
+            for(var ti = 0; ti < data.tokens.length; ti++){
+                var isSel = (ti === tokenIdx);
+                html += '<td style="padding:1px 3px;text-align:center;color:' + (isSel ? '#e94560' : '#888') + ';font-weight:' + (isSel ? 'bold' : 'normal') + '">' + data.tokens[ti] + '</td>';
+            }
+            html += '</tr>';
+            // Feature rows
+            var taKeys = Object.keys(data.token_activations);
+            for(var fi = 0; fi < Math.min(taKeys.length, 8); fi++){
+                var fid = taKeys[fi];
+                var acts = data.token_activations[fid];
+                // Find max for color scaling
+                var maxAct = 0;
+                for(var ai = 0; ai < acts.length; ai++){
+                    if(Math.abs(acts[ai]) > maxAct) maxAct = Math.abs(acts[ai]);
+                }
+                if(maxAct < 1e-8) maxAct = 1;
+                html += '<tr><td style="padding:1px 4px;color:#53a8b6;white-space:nowrap">F' + fid + '</td>';
+                for(var ai = 0; ai < acts.length; ai++){
+                    var intensity = Math.min(1, Math.abs(acts[ai]) / maxAct);
+                    var r = acts[ai] > 0 ? Math.round(233 * intensity) : Math.round(0);
+                    var g = acts[ai] > 0 ? Math.round(69 * intensity) : Math.round(119 * intensity);
+                    var b = acts[ai] > 0 ? Math.round(96 * intensity) : Math.round(182 * intensity);
+                    var bg = 'rgba(' + r + ',' + g + ',' + b + ',' + (0.2 + 0.6 * intensity).toFixed(2) + ')';
+                    html += '<td style="padding:1px 3px;text-align:center;background:' + bg + '">' + acts[ai].toFixed(2) + '</td>';
+                }
+                html += '</tr>';
+            }
+            html += '</table></div>';
+        }
+
+        // Feature list
+        html += '<div style="font-size:9px;color:#888;margin-bottom:2px">Click a feature to set up intervention:</div>';
+        for(var i = 0; i < features.length; i++){
+            var f = features[i];
+            var barW = Math.min(120, Math.max(2, Math.abs(f.activation) * 10));
+            var barColor = f.activation > 0 ? '#e94560' : '#0077b6';
+            html += '<div class="sae-feat-row" onclick="selectSAEFeature(' + f.feature_id + ',' + f.activation.toFixed(4) + ')" ' +
+                    'style="display:flex;align-items:center;gap:4px;padding:2px 4px;cursor:pointer;border-radius:2px;margin:1px 0" ' +
+                    'onmouseover="this.style.background=\'#1a1a2e\'" onmouseout="this.style.background=\'transparent\'">';
+            html += '<span style="color:#53a8b6;min-width:55px;font-family:monospace">F' + f.feature_id + '</span>';
+            html += '<div style="background:' + barColor + ';height:6px;width:' + barW + 'px;border-radius:2px;flex-shrink:0"></div>';
+            html += '<span style="color:#888;font-size:9px;min-width:60px">' + f.activation.toFixed(4) + '</span>';
+            html += '</div>';
+        }
+
+        list.innerHTML = html;
+
+        // Show intervention panel
+        document.getElementById('sae-intervention').style.display = 'block';
+    })
+    .catch(function(e){
+        list.innerHTML = '<span style="color:#e94560">Error: ' + e + '</span>';
+    });
+}
+
+function selectSAEFeature(featureId, currentActivation){
+    document.getElementById('sae-int-feature').value = featureId;
+    // Set clamp slider to a value that would amplify it
+    var clampVal = Math.max(currentActivation * 3, 10);
+    var slider = document.getElementById('sae-int-clamp');
+    slider.value = Math.min(+slider.max, clampVal).toFixed(1);
+    document.getElementById('v-sae-clamp').textContent = slider.value;
+}
+
+function runSAEIntervention(){
+    if(!D) return;
+    var layer = +document.getElementById('sae-layer').value;
+    var featureId = +document.getElementById('sae-int-feature').value;
+    var clampValue = +document.getElementById('sae-int-clamp').value;
+    var text = D.text;
+
+    var results = document.getElementById('sae-int-results');
+    results.innerHTML = '<span style="color:#53a8b6">Running intervention...</span>';
+
+    fetch('/sae_intervene', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({text: text, layer: layer, feature_id: featureId, clamp_value: clampValue})
+    })
+    .then(function(r){return r.json()})
+    .then(function(data){
+        if(data.error){
+            results.innerHTML = '<span style="color:#e94560">' + data.error + '</span>';
+            return;
+        }
+        var html = '<div style="color:#f5a623;font-weight:bold;margin-bottom:4px">Feature ' + featureId + ' clamped to ' + clampValue +
+                   ' at layer ' + data.layer + '</div>';
+
+        // Side-by-side comparison
+        html += '<div style="display:flex;gap:8px">';
+
+        // Baseline column
+        html += '<div style="flex:1">';
+        html += '<div style="color:#888;font-size:9px;margin-bottom:3px;text-decoration:underline">Baseline</div>';
+        for(var i = 0; i < data.baseline_predictions.length; i++){
+            var bp = data.baseline_predictions[i];
+            var barW = Math.max(2, bp.prob * 150);
+            html += '<div style="display:flex;align-items:center;gap:3px;margin:1px 0">';
+            html += '<span style="color:#a0a0c0;min-width:55px;font-family:monospace;font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + bp.token + '</span>';
+            html += '<div style="background:#555;height:5px;width:' + barW + 'px;border-radius:2px;flex-shrink:0"></div>';
+            html += '<span style="color:#888;font-size:8px">' + (bp.prob * 100).toFixed(1) + '%</span>';
+            html += '</div>';
+        }
+        html += '</div>';
+
+        // Modified column
+        html += '<div style="flex:1">';
+        html += '<div style="color:#e94560;font-size:9px;margin-bottom:3px;text-decoration:underline">Modified</div>';
+        for(var i = 0; i < data.modified_predictions.length; i++){
+            var mp = data.modified_predictions[i];
+            var barW2 = Math.max(2, mp.prob * 150);
+            // Check if this token was in baseline top predictions
+            var isNew = true;
+            for(var bi = 0; bi < data.baseline_predictions.length; bi++){
+                if(data.baseline_predictions[bi].token === mp.token){
+                    isNew = false;
+                    break;
+                }
+            }
+            var tokenColor = isNew ? '#e94560' : '#a0a0c0';
+            html += '<div style="display:flex;align-items:center;gap:3px;margin:1px 0">';
+            html += '<span style="color:' + tokenColor + ';min-width:55px;font-family:monospace;font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (isNew ? '★ ' : '') + mp.token + '</span>';
+            html += '<div style="background:#e94560;height:5px;width:' + barW2 + 'px;border-radius:2px;flex-shrink:0"></div>';
+            html += '<span style="color:#888;font-size:8px">' + (mp.prob * 100).toFixed(1) + '%</span>';
+            html += '</div>';
+        }
+        html += '</div>';
+
+        html += '</div>'; // end flex container
+
+        // Summary of biggest changes
+        html += '<div style="margin-top:6px;border-top:1px solid #1a1a2e;padding-top:4px;font-size:9px;color:#888">';
+        // Find the biggest probability shift
+        var maxShift = 0;
+        var shiftToken = '';
+        var shiftDir = '';
+        for(var mi = 0; mi < data.modified_predictions.length; mi++){
+            var mToken = data.modified_predictions[mi].token;
+            var mProb = data.modified_predictions[mi].prob;
+            var bProb = 0;
+            for(var bi2 = 0; bi2 < data.baseline_predictions.length; bi2++){
+                if(data.baseline_predictions[bi2].token === mToken){
+                    bProb = data.baseline_predictions[bi2].prob;
+                    break;
+                }
+            }
+            var shift = mProb - bProb;
+            if(Math.abs(shift) > Math.abs(maxShift)){
+                maxShift = shift;
+                shiftToken = mToken;
+                shiftDir = shift > 0 ? '↑' : '↓';
+            }
+        }
+        if(Math.abs(maxShift) > 0.001){
+            html += 'Biggest shift: <span style="color:#e94560">"' + shiftToken + '"</span> ' +
+                    shiftDir + ' ' + (Math.abs(maxShift) * 100).toFixed(1) + '%';
+        } else {
+            html += 'No significant prediction changes detected.';
+        }
+        html += '</div>';
+
+        results.innerHTML = html;
+    })
+    .catch(function(e){
+        results.innerHTML = '<span style="color:#e94560">Error: ' + e + '</span>';
+    });
+}
+
+function clearSAEIntervention(){
+    document.getElementById('sae-int-results').innerHTML = '';
+    document.getElementById('sae-int-clamp').value = 0;
+    document.getElementById('v-sae-clamp').textContent = '0.0';
+}
+
+// Slider value display updates for SAE controls
+document.getElementById('sae-topk').addEventListener('input', function(){
+    document.getElementById('v-sae-topk').textContent = this.value;
+});
+document.getElementById('sae-int-clamp').addEventListener('input', function(){
+    document.getElementById('v-sae-clamp').textContent = parseFloat(this.value).toFixed(1);
+});
+
+// Initialize SAE panel on page load
+setTimeout(function(){
+    initSAEPanel();
+}, 500);
+
 // ===================== 3D DRAWING =====================
 function draw3D(){
     var p=gp(),cv=document.getElementById('cv'),c=cv.getContext('2d');
@@ -2326,17 +2745,31 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(handle_get_index())
+        elif path == "/sae_info":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(handle_sae_info(b"{}"))
         else:
             self.send_response(404)
             self.end_headers()
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path == "/run":
-            length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(length)
+        length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(length)
+
+        handler_map = {
+            "/run": handle_post_run,
+            "/sae_features": handle_sae_features,
+            "/sae_intervene": handle_sae_intervene,
+            "/sae_info": handle_sae_info,
+        }
+
+        handler = handler_map.get(path)
+        if handler:
             try:
-                response_bytes = handle_post_run(body)
+                response_bytes = handler(body)
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
@@ -2352,6 +2785,225 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
 
+def handle_sae_features(body_bytes):
+    """Return top-K active SAE features for a given token at a given layer."""
+    req = json.loads(body_bytes)
+    text = req.get("text", "").strip()
+    layer = req.get("layer", 0)
+    token_idx = req.get("token_idx", 0)
+    top_k = req.get("top_k", 20)
+
+    if not text:
+        return json.dumps({"error": "Empty text"}).encode()
+
+    if not SAE_AVAILABLE or len(SAE_MODELS) == 0:
+        return json.dumps({"error": "No SAEs loaded", "features": []}).encode()
+
+    if layer not in SAE_MODELS:
+        available = sorted(SAE_MODELS.keys())
+        return json.dumps({
+            "error": f"No SAE for layer {layer}. Available: {available}",
+            "features": []
+        }).encode()
+
+    input_ids, tokens = tokenize_text(TOKENIZER, text)
+    n_tokens = input_ids.shape[1]
+
+    if token_idx < 0 or token_idx >= n_tokens:
+        return json.dumps({"error": f"token_idx {token_idx} out of range [0, {n_tokens})"}).encode()
+
+    hs = extract_hidden_states(MODEL, input_ids)
+
+    sae = SAE_MODELS[layer]
+    with torch.no_grad():
+        # hs[layer+1] is shape (1, seq_len, hidden_dim)
+        h = hs[layer + 1].squeeze(0)  # (seq_len, hidden_dim)
+        latents = sae.encode(h)  # (seq_len, d_sae)
+
+    token_latents = latents[token_idx].cpu().numpy()
+
+    # Get top-K active features by absolute activation
+    top_indices = np.argsort(-np.abs(token_latents))[:top_k]
+    features = []
+    for idx in top_indices:
+        act = float(token_latents[idx])
+        if abs(act) < 1e-8 and len(features) >= 5:
+            break  # stop listing zeros after we have at least 5
+        features.append({
+            "feature_id": int(idx),
+            "activation": round(act, 6),
+        })
+
+    # Also return all-token activations for this feature set (for the heatmap)
+    all_token_acts = {}
+    for f in features[:10]:  # top 10 for heatmap
+        fid = f["feature_id"]
+        acts = latents[:, fid].cpu().numpy().tolist()
+        all_token_acts[str(fid)] = [round(a, 6) for a in acts]
+
+    return json.dumps({
+        "features": features,
+        "token_idx": token_idx,
+        "layer": layer,
+        "tokens": tokens,
+        "n_latents": int(latents.shape[1]),
+        "token_activations": all_token_acts,
+    }).encode()
+
+
+def handle_sae_intervene(body_bytes):
+    """Clamp an SAE feature and return modified next-token predictions."""
+    req = json.loads(body_bytes)
+    text = req.get("text", "").strip()
+    layer = req.get("layer", 0)
+    feature_id = req.get("feature_id", 0)
+    clamp_value = req.get("clamp_value", 0.0)
+
+    if not text:
+        return json.dumps({"error": "Empty text"}).encode()
+
+    if LM_MODEL is None:
+        return json.dumps({"error": "No LM head model loaded — cannot predict"}).encode()
+
+    if not SAE_AVAILABLE or layer not in SAE_MODELS:
+        return json.dumps({"error": f"No SAE for layer {layer}"}).encode()
+
+    input_ids, tokens = tokenize_text(TOKENIZER, text)
+    sae = SAE_MODELS[layer]
+
+    # First get baseline predictions (no intervention)
+    with torch.no_grad():
+        baseline_out = LM_MODEL(input_ids)
+        baseline_logits = baseline_out.logits[0, -1, :]
+        baseline_probs = torch.softmax(baseline_logits, dim=-1)
+        baseline_topk = torch.topk(baseline_probs, 10)
+
+    baseline_results = []
+    for i in range(10):
+        tid = baseline_topk.indices[i].item()
+        prob = baseline_topk.values[i].item()
+        token_str = TOKENIZER.decode([tid]).replace("\u0120", " ").replace("\u010a", "\\n")
+        baseline_results.append({"token": token_str, "prob": round(prob, 4)})
+
+    # Now run with intervention
+    def intervention_hook(module, input, output):
+        h = output[0] if isinstance(output, tuple) else output
+        with torch.no_grad():
+            latents = sae.encode(h)
+            latents[:, :, feature_id] = clamp_value
+            h_new = sae.decode(latents)
+        if isinstance(output, tuple):
+            return (h_new,) + output[1:]
+        return h_new
+
+    # We need to hook the LM_MODEL's transformer blocks, not MODEL's
+    # For GPT-2: LM_MODEL.transformer.h[layer]
+    lm_blocks = None
+    if hasattr(LM_MODEL, 'transformer'):
+        lm_blocks = _get_transformer_blocks(LM_MODEL.transformer)
+    elif hasattr(LM_MODEL, 'model'):
+        lm_blocks = _get_transformer_blocks(LM_MODEL.model)
+    else:
+        lm_blocks = _get_transformer_blocks(LM_MODEL)
+
+    if not lm_blocks or layer >= len(lm_blocks):
+        return json.dumps({"error": "Cannot hook LM model at this layer"}).encode()
+
+    hook = lm_blocks[layer].register_forward_hook(intervention_hook)
+
+    try:
+        with torch.no_grad():
+            outputs = LM_MODEL(input_ids)
+            logits = outputs.logits[0, -1, :]
+            probs = torch.softmax(logits, dim=-1)
+            topk = torch.topk(probs, 10)
+
+        modified_results = []
+        for i in range(10):
+            tid = topk.indices[i].item()
+            prob = topk.values[i].item()
+            token_str = TOKENIZER.decode([tid]).replace("\u0120", " ").replace("\u010a", "\\n")
+            modified_results.append({"token": token_str, "prob": round(prob, 4)})
+    finally:
+        hook.remove()
+
+    return json.dumps({
+        "baseline_predictions": baseline_results,
+        "modified_predictions": modified_results,
+        "feature_id": feature_id,
+        "clamp_value": clamp_value,
+        "layer": layer,
+        "tokens": tokens,
+    }).encode()
+
+
+def handle_sae_info(body_bytes):
+    """Return info about which SAE layers are available."""
+    info = {
+        "sae_available": SAE_AVAILABLE,
+        "loaded_layers": sorted(SAE_MODELS.keys()),
+        "model_name": MODEL_NAME,
+        "total_layers": get_n_layers(MODEL_CONFIG) if MODEL_CONFIG else 0,
+    }
+    # Add per-layer info
+    layer_info = {}
+    for layer, sae in SAE_MODELS.items():
+        d_sae = sae.cfg.d_sae if hasattr(sae.cfg, 'd_sae') else None
+        layer_info[str(layer)] = {
+            "d_sae": d_sae,
+        }
+    info["layer_info"] = layer_info
+    return json.dumps(info).encode()
+
+
+def handle_sae_intervene(body_bytes):
+    req = json.loads(body_bytes)
+    text = req["text"]
+    layer = req["layer"]
+    feature_id = req["feature_id"]
+    clamp_value = req["clamp_value"]
+    
+    input_ids, tokens = tokenize_text(TOKENIZER, text)
+    
+    # Run with intervention using hooks
+    sae = SAE_MODELS[layer]
+    
+    def intervention_hook(module, input, output):
+        h = output[0] if isinstance(output, tuple) else output
+        with torch.no_grad():
+            latents = sae.encode(h)
+            latents[:, :, feature_id] = clamp_value
+            h_new = sae.decode(latents)
+        if isinstance(output, tuple):
+            return (h_new,) + output[1:]
+        return h_new
+    
+    # Register hook on the appropriate layer
+    blocks = _get_transformer_blocks(MODEL)
+    hook = blocks[layer].register_forward_hook(intervention_hook)
+    
+    try:
+        # Get modified next-token predictions
+        with torch.no_grad():
+            outputs = LM_MODEL(input_ids)
+            logits = outputs.logits[0, -1, :]
+            probs = torch.softmax(logits, dim=-1)
+            topk = torch.topk(probs, 10)
+        
+        results = []
+        for i in range(10):
+            tid = topk.indices[i].item()
+            prob = topk.values[i].item()
+            token_str = TOKENIZER.decode([tid])
+            results.append({"token": token_str, "prob": round(prob, 4)})
+    finally:
+        hook.remove()
+    
+    return json.dumps({
+        "modified_predictions": results,
+        "feature_id": feature_id,
+        "clamp_value": clamp_value,
+    }).encode()
 
 # ============================================================
 # 14. BROWSER OPENER
@@ -2400,6 +3052,68 @@ def main():
     print(f"\n[Server] http://127.0.0.1:{args.port}")
     print("[Server] Ctrl+C to stop\n")
     server.serve_forever()
+
+# New section: SAE LOADING
+from sae_lens import SAE  # or your own SAE class
+
+SAE_MODELS = {}  # layer_idx -> trained SAE
+
+def load_saes(model_name, n_layers):
+    """Load pre-trained SAEs for each layer."""
+    global SAE_MODELS
+    SAE_MODELS = {}
+    for layer in range(n_layers):
+        try:
+            sae = SAE.from_pretrained(
+                release=f"{model_name}-res-jb",  # example naming
+                sae_id=f"blocks.{layer}.hook_resid_post",
+            )
+            SAE_MODELS[layer] = sae
+            print(f"[SAE] Loaded SAE for layer {layer}: {sae.cfg.d_sae} latents")
+        except Exception as e:
+            print(f"[SAE] No SAE available for layer {layer}: {e}")
+
+
+def extract_sae_features(hidden_states, n_layers):
+    """
+    For each layer, run the hidden state through the SAE encoder
+    to get sparse latent activations.
+
+    Returns: dict[layer] -> (n_tokens, n_latents) numpy array
+    """
+    sae_activations = {}
+    for layer in range(n_layers):
+        if layer not in SAE_MODELS:
+            continue
+        sae = SAE_MODELS[layer]
+        h = hidden_states[layer + 1]  # layer+1 because index 0 is embedding
+        with torch.no_grad():
+            # SAE encode: h -> sparse latent
+            latents = sae.encode(h.squeeze(0))  # (seq_len, d_sae)
+        sae_activations[layer] = latents.cpu().numpy()
+    return sae_activations
+
+def intervene_sae_feature(hidden_states, layer, feature_idx, new_value, sae):
+    """
+    1. Encode the hidden state at `layer` into SAE latents
+    2. Modify latent[feature_idx] to `new_value`
+    3. Decode back to get a modified hidden state
+    4. Substitute it back and re-run remaining layers
+    """
+    h = hidden_states[layer + 1].clone()
+    
+    with torch.no_grad():
+        # Encode
+        latents = sae.encode(h)
+        
+        # Intervene
+        original_val = latents[0, :, feature_idx].clone()
+        latents[0, :, feature_idx] = new_value  # clamp to specific value
+        
+        # Decode back to activation space
+        h_modified = sae.decode(latents)
+    
+    return h_modified, original_val
 
 
 if __name__ == "__main__":
