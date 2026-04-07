@@ -16,7 +16,6 @@ import argparse
 import os
 import sys
 import json
-import shutil
 import threading
 from urllib.parse import urlparse
 from datetime import datetime, timedelta, UTC
