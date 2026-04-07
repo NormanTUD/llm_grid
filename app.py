@@ -117,37 +117,6 @@ def load_saes(model_name, n_layers):
     print(f"[SAE] Loaded SAEs for {len(SAE_MODELS)}/{n_layers} layers")
 
 # ============================================================
-# 0. UV CHECK AND INSTALLATION
-# ============================================================
-
-def ensure_uv_installed():
-    """Ensure that the 'uv' CLI is installed and available."""
-    uv_command = shutil.which("uv")
-    if uv_command:
-        return
-
-    print("[Setup] 'uv' not found. Installing 'uv'...")
-    try:
-        # Display the command that will be executed
-        print("[Setup] Command to run:")
-        print("pip install uvicorn")
-
-        # Run the installation command
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "uvicorn"])
-    except subprocess.CalledProcessError as e:
-        print(f"[Error] Failed to install 'uv'. Please install it manually. Error: {e}")
-        sys.exit(1)
-
-    # Verify installation
-    uv_command = shutil.which("uv")
-    if not uv_command:
-        print("[Error] 'uv' installation failed. Please check your environment and try again.")
-        sys.exit(1)
-
-    print("[Setup] 'uv' installation successful.")
-
-
-# ============================================================
 # 1. ENVIRONMENT SAFETY
 # ============================================================
 
@@ -178,7 +147,6 @@ def ensure_safe_env():
 
 
 # This must run BEFORE heavy imports
-ensure_uv_installed()
 ensure_safe_env()
 
 
