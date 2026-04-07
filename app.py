@@ -3792,27 +3792,37 @@ function drawFibreBundle() {
       }
 
       // ---- Draw real token dot in this room ----
+      // FIXED: Token dots stay at their ORIGINAL (undeformed) position.
+      // The metric/grid deforms around them, but the points themselves are anchored.
       var tokX = RX(fx[ti]);
       var tokY = RY(fy[ti]);
-      // Deformed position
-      var tokDX = RXd(fx[ti] + t * edxCum[ti]);
-      var tokDY = RYd(fy[ti] + t * edyCum[ti]);
 
-      // Arrow from original to deformed
-      if (Math.hypot(tokDX - tokX, tokDY - tokY) > 1) {
-        c.strokeStyle = 'rgba(255,255,100,0.5)';
-        c.lineWidth = 0.8;
+      // Compute the local strain at this token's position to visualize
+      // how much the metric has changed here (instead of showing displacement)
+      var tokDeformDX = t * edxCum[ti];
+      var tokDeformDY = t * edyCum[ti];
+      var localStrainMag = Math.sqrt(tokDeformDX * tokDeformDX + tokDeformDY * tokDeformDY);
+
+      // Draw a strain indicator ring around the fixed point
+      // Ring radius scales with local deformation magnitude — shows metric distortion
+      var strainRadius = Math.min(roomSize / 4, localStrainMag * 0.5);
+      if (strainRadius > 1.5) {
+        // Color the ring by strain: blue = contraction-like, red = expansion-like
+        // Use the deformation magnitude relative to the grid scale
+        var normStrain = Math.min(2.0, localStrainMag / (vw / N + 1e-12));
+        var ringColor = s2c(0.5 + normStrain * 0.5); // map to strain colormap
         c.beginPath();
-        c.moveTo(tokX, tokY);
-        c.lineTo(tokDX, tokDY);
+        c.arc(tokX, tokY, strainRadius, 0, Math.PI * 2);
+        c.strokeStyle = 'rgba(' + ringColor[0] + ',' + ringColor[1] + ',' + ringColor[2] + ',0.5)';
+        c.lineWidth = 1.2;
         c.stroke();
       }
 
-      // Token dot
-      c.beginPath();
-      c.arc(tokDX, tokDY, Math.max(2, roomSize / 20), 0, Math.PI * 2);
+      // Token dot — always at the FIXED original position
       var tc = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71',
                 '#e74c3c','#3498db','#9b59b6','#1abc9c','#e67e22'];
+      c.beginPath();
+      c.arc(tokX, tokY, Math.max(2, roomSize / 20), 0, Math.PI * 2);
       c.fillStyle = tc[ti % tc.length];
       c.fill();
       c.strokeStyle = '#fff';
@@ -3851,13 +3861,12 @@ function drawFibreBundle() {
       for (var ti = 0; ti < nTokens; ti++) {
         var roomCXt = startX + ti * (roomSize + gapX);
 
-        // Current token deformed position
-        var curX = roomCXt + ((fx[ti] + t * edxCum[ti] - vx0) / vw) * roomSize;
-        var curY = roomCY + ((fy[ti] + t * edyCum[ti] - vy0) / vh) * roomSize;
+        // Token positions are FIXED (undeformed) — the metric changes, not the points
+        var curX = roomCXt + ((fx[ti] - vx0) / vw) * roomSize;
+        var curY = roomCY + ((fy[ti] - vy0) / vh) * roomSize;
 
-        // Next layer token deformed position
-        var nxtX = roomCXt + ((fx[ti] + t * edxNext[ti] - vx0) / vw) * roomSize;
-        var nxtY = nextRoomCY + ((fy[ti] + t * edyNext[ti] - vy0) / vh) * roomSize;
+        var nxtX = roomCXt + ((fx[ti] - vx0) / vw) * roomSize;
+        var nxtY = nextRoomCY + ((fy[ti] - vy0) / vh) * roomSize;
 
         // Compute how much the token moved between layers
         var moveDist = Math.hypot(
