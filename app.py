@@ -1065,6 +1065,15 @@ canvas{background:#0d1117}
   font-size: 10px;
 }
 #diffeo-controls .cr { margin-bottom: 3px; }
+#neuron-grid-panel {
+    background: #0a0a1a;
+    padding: 6px;
+    border-radius: 4px;
+    max-height: 500px;
+    overflow: auto;
+    display: none;
+    min-height: 0;       /* allow flex child to shrink properly */
+}
 </style></head><body>
 <div id="side">
 <h2>Metric Space Explorer</h2>
@@ -2810,7 +2819,7 @@ document.getElementById('ng-absval').addEventListener('change', function(){
 function fetchNeuronGrid(){
     if(!D) return;
     var panel = document.getElementById('neuron-grid-panel');
-    panel.style.display = 'block';
+    panel.style.display = 'contents';
     panel.innerHTML = '<span style="color:#53a8b6">Loading neuron activations...</span>';
 
     fetch('/neuron_grid', {
@@ -2865,7 +2874,7 @@ function renderNeuronGrid(){
         html += '<div style="color:#e94560;font-weight:bold;font-size:10px;margin-bottom:2px">';
         html += '[' + ti + '] ' + data.tokens[ti];
         html += '</div>';
-        html += '<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:flex-start">';
+        html += '<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:flex-start;min-height:0;overflow:visible">';
 
         for(var li = 0; li < nLayers; li++){
             var acts = layersSource[li].activations[ti]; // array of hiddenDim floats [0,1]
