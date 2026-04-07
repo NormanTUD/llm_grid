@@ -2,6 +2,7 @@
 
 ![Screenshot](screen0.png)
 ![Screenshot](screen1.png)
+![Screenshot](screen2.png)
 
 ## What is this?
 
