@@ -1102,6 +1102,29 @@ Tokens: <span id="i-tok">-</span>
 <div id="next-token-panel" style="background:#0f3460;padding:6px;border-radius:4px;font-size:11px;line-height:1.6">
 <span style="color:#555">Run a prompt to see predictions</span>
 </div>
+<h3>Neuron Activation Grid</h3>
+<div id="neuron-grid-controls" style="margin-bottom:4px">
+  <div class="cr">
+    <label>Norm:</label>
+    <select id="ng-norm" style="flex:1;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;padding:2px;font-size:10px">
+      <option value="layer">Per-Layer (relative)</option>
+      <option value="global">Global (absolute)</option>
+    </select>
+  </div>
+  <div class="cr" style="margin-top:3px">
+    <label>Pixel size:</label>
+    <input type="range" id="ng-pixsize" min="1" max="6" value="2" step="1">
+    <span class="v" id="v-ng-pixsize">2</span>
+  </div>
+  <div class="cb" style="margin-top:3px">
+    <input type="checkbox" id="ng-absval"><label for="ng-absval">Use |activation| (absolute value)</label>
+  </div>
+  <button onclick="fetchNeuronGrid()" style="margin-top:4px;background:#53a8b6;color:#fff;border:none;padding:4px 12px;border-radius:3px;cursor:pointer;font-size:10px;font-weight:bold;width:100%">
+    Load Neuron Grid
+  </button>
+</div>
+<div id="neuron-grid-panel" style="background:#0a0a1a;padding:6px;border-radius:4px;max-height:500px;overflow:auto;display:none">
+</div>
 <h3>SAE Feature Inspector</h3>
 <div id="sae-panel" style="background:#0f3460;padding:8px;border-radius:4px;font-size:10px">
   <div id="sae-status" style="color:#555;margin-bottom:6px">Loading SAE info...</div>
@@ -2711,7 +2734,178 @@ cv3d.addEventListener('wheel', function(e) {
 
     draw();
 }, { passive: false });
+// ===================== NEURON ACTIVATION GRID =====================
 
+var neuronGridData = null;
+
+document.getElementById('ng-pixsize').addEventListener('input', function(){
+    document.getElementById('v-ng-pixsize').textContent = this.value;
+    if(neuronGridData) renderNeuronGrid();
+});
+document.getElementById('ng-norm').addEventListener('change', function(){
+    if(neuronGridData) renderNeuronGrid();
+});
+document.getElementById('ng-absval').addEventListener('change', function(){
+    if(neuronGridData) renderNeuronGrid();
+});
+
+function fetchNeuronGrid(){
+    if(!D) return;
+    var panel = document.getElementById('neuron-grid-panel');
+    panel.style.display = 'block';
+    panel.innerHTML = '<span style="color:#53a8b6">Loading neuron activations...</span>';
+
+    fetch('/neuron_grid', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({text: D.text})
+    })
+    .then(function(r){return r.json()})
+    .then(function(data){
+        if(data.error){
+            panel.innerHTML = '<span style="color:#e94560">' + data.error + '</span>';
+            return;
+        }
+        neuronGridData = data;
+        renderNeuronGrid();
+    })
+    .catch(function(e){
+        panel.innerHTML = '<span style="color:#e94560">Error: ' + e + '</span>';
+    });
+}
+
+function renderNeuronGrid(){
+    var data = neuronGridData;
+    if(!data) return;
+
+    var panel = document.getElementById('neuron-grid-panel');
+    var normMode = document.getElementById('ng-norm').value;  // 'layer' or 'global'
+    var pixSize = +document.getElementById('ng-pixsize').value;
+    var useAbs = document.getElementById('ng-absval').checked;
+    var hiddenDim = data.hidden_dim;
+    var nTokens = data.n_tokens;
+    var nLayers = data.n_layers;
+
+    var layersSource = (normMode === 'global') ? data.global_norm : data.layer_norm;
+
+    // Compute a nice grid layout for the hidden_dim neurons
+    // Try to make it roughly square
+    var gridCols = Math.ceil(Math.sqrt(hiddenDim));
+    var gridRows = Math.ceil(hiddenDim / gridCols);
+
+    var html = '';
+    html += '<div style="color:#888;font-size:9px;margin-bottom:6px">';
+    html += 'Each rectangle = one layer\'s activations. ';
+    html += 'Each pixel = one neuron (dim). ';
+    html += 'Bright = high activation, dark = low. ';
+    html += 'Grid: ' + gridCols + '×' + gridRows + ' (' + hiddenDim + ' neurons)';
+    html += '</div>';
+
+    // For each token, show all layers side by side
+    for(var ti = 0; ti < nTokens; ti++){
+        html += '<div style="margin-bottom:8px">';
+        html += '<div style="color:#e94560;font-weight:bold;font-size:10px;margin-bottom:2px">';
+        html += '[' + ti + '] ' + data.tokens[ti];
+        html += '</div>';
+        html += '<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:flex-start">';
+
+        for(var li = 0; li < nLayers; li++){
+            var acts = layersSource[li].activations[ti]; // array of hiddenDim floats [0,1]
+            var canvasId = 'ng-cv-' + ti + '-' + li;
+            var canvasW = gridCols * pixSize;
+            var canvasH = gridRows * pixSize;
+
+            html += '<div style="text-align:center">';
+            html += '<div style="color:#53a8b6;font-size:8px;margin-bottom:1px">';
+            html += (li === 0 ? 'Emb' : 'L' + (li-1));
+            html += '</div>';
+            html += '<canvas id="' + canvasId + '" width="' + canvasW + '" height="' + canvasH + '" ';
+            html += 'style="border:1px solid #0f3460;image-rendering:pixelated" ';
+            html += 'title="' + (li === 0 ? 'Embedding' : 'Layer ' + (li-1)) + ' — Token: ' + data.tokens[ti] + '">';
+            html += '</canvas>';
+            html += '</div>';
+        }
+
+        html += '</div></div>';
+    }
+
+    panel.innerHTML = html;
+
+    // Now draw on each canvas
+    for(var ti = 0; ti < nTokens; ti++){
+        for(var li = 0; li < nLayers; li++){
+            var canvasId = 'ng-cv-' + ti + '-' + li;
+            var cv = document.getElementById(canvasId);
+            if(!cv) continue;
+            var ctx = cv.getContext('2d');
+            var acts = layersSource[li].activations[ti];
+
+            var imgData = ctx.createImageData(gridCols * pixSize, gridRows * pixSize);
+
+            for(var ni = 0; ni < hiddenDim; ni++){
+                var val = acts[ni];
+                if(useAbs) val = Math.abs(val * 2 - 1); // re-center then abs
+
+                // Map to grayscale: 0 = black, 1 = white
+                var brightness = Math.floor(val * 255);
+                brightness = Math.max(0, Math.min(255, brightness));
+
+                var col = Math.floor(ni % gridCols);
+                var row = Math.floor(ni / gridCols);
+
+                // Fill the pixel block
+                for(var py = 0; py < pixSize; py++){
+                    for(var px = 0; px < pixSize; px++){
+                        var ix = (row * pixSize + py) * (gridCols * pixSize) + (col * pixSize + px);
+                        var offset = ix * 4;
+                        imgData.data[offset]     = brightness;  // R
+                        imgData.data[offset + 1] = brightness;  // G
+                        imgData.data[offset + 2] = brightness;  // B
+                        imgData.data[offset + 3] = 255;         // A
+                    }
+                }
+            }
+
+            // Fill remaining pixels (if hiddenDim doesn't fill the grid) with dark
+            for(var ni = hiddenDim; ni < gridCols * gridRows; ni++){
+                var col = ni % gridCols;
+                var row = Math.floor(ni / gridCols);
+                for(var py = 0; py < pixSize; py++){
+                    for(var px = 0; px < pixSize; px++){
+                        var ix = (row * pixSize + py) * (gridCols * pixSize) + (col * pixSize + px);
+                        var offset = ix * 4;
+                        imgData.data[offset]     = 20;
+                        imgData.data[offset + 1] = 10;
+                        imgData.data[offset + 2] = 30;
+                        imgData.data[offset + 3] = 255;
+                    }
+                }
+            }
+
+            ctx.putImageData(imgData, 0, 0);
+        }
+    }
+}
+
+// Cool-to-hot colormap: dark blue → cyan → yellow → red → white
+function valToColor(v) {
+    // v in [0, 1]
+    var r, g, b;
+    if (v < 0.25) {
+        var t = v / 0.25;
+        r = 0; g = Math.floor(t * 128); b = Math.floor(64 + t * 191);
+    } else if (v < 0.5) {
+        var t = (v - 0.25) / 0.25;
+        r = 0; g = Math.floor(128 + t * 127); b = Math.floor(255 - t * 128);
+    } else if (v < 0.75) {
+        var t = (v - 0.5) / 0.25;
+        r = Math.floor(t * 255); g = 255; b = Math.floor(127 - t * 127);
+    } else {
+        var t = (v - 0.75) / 0.25;
+        r = 255; g = Math.floor(255 - t * 128); b = Math.floor(t * 128);
+    }
+    return [r, g, b];
+}
 </script></body></html>"""
 
 
@@ -2766,6 +2960,7 @@ class Handler(BaseHTTPRequestHandler):
             "/sae_features": handle_sae_features,
             "/sae_intervene": handle_sae_intervene,
             "/sae_info": handle_sae_info,
+            "/neuron_grid": handle_neuron_grid,  # <-- ADD THIS
         }
 
         handler = handler_map.get(path)
@@ -3086,6 +3281,72 @@ def intervene_sae_feature(hidden_states, layer, feature_idx, new_value, sae):
         latents[0, :, feature_idx] = new_value
         h_modified = sae.decode(latents)
     return h_modified, original_val
+
+def handle_neuron_grid(body_bytes):
+    """Return per-layer activation vectors for each real token,
+    normalized to [0,1] for pixel rendering."""
+    req = json.loads(body_bytes)
+    text = req.get("text", "").strip()
+    if not text:
+        return json.dumps({"error": "Empty text"}).encode()
+
+    input_ids, tokens = tokenize_text(TOKENIZER, text)
+    hs = extract_hidden_states(MODEL, input_ids)
+
+    n_layers = get_n_layers(MODEL_CONFIG)
+    hidden_dim = get_hidden_dim(MODEL_CONFIG)
+    n_tokens = input_ids.shape[1]
+
+    # For each layer, collect the activation vector for each token
+    # hs[0] = embedding, hs[1] = after layer 0, ..., hs[n_layers] = after last layer
+    layers_data = []
+
+    # Compute global min/max across ALL layers for consistent normalization
+    global_min = float('inf')
+    global_max = float('-inf')
+
+    raw_activations = []
+    for layer_idx in range(n_layers + 1):  # include embedding layer (0)
+        layer_acts = hs[layer_idx][0].cpu().float().numpy()  # (seq_len, hidden_dim)
+        raw_activations.append(layer_acts)
+        global_min = min(global_min, float(layer_acts.min()))
+        global_max = max(global_max, float(layer_acts.max()))
+
+    # Normalize to [0, 1] and build response
+    range_val = global_max - global_min if (global_max - global_min) > 1e-12 else 1.0
+
+    for layer_idx, layer_acts in enumerate(raw_activations):
+        normalized = ((layer_acts - global_min) / range_val)  # (seq_len, hidden_dim)
+        # Clamp to [0,1]
+        normalized = np.clip(normalized, 0.0, 1.0)
+        layers_data.append({
+            "layer": layer_idx,  # 0 = embedding, 1 = after layer 0, etc.
+            # Each token's activation as a list of floats in [0,1]
+            "activations": normalized.tolist(),
+        })
+
+    # Also compute per-layer normalization (relative within each layer)
+    layers_data_relative = []
+    for layer_idx, layer_acts in enumerate(raw_activations):
+        lmin = float(layer_acts.min())
+        lmax = float(layer_acts.max())
+        lrange = lmax - lmin if (lmax - lmin) > 1e-12 else 1.0
+        normalized = np.clip((layer_acts - lmin) / lrange, 0.0, 1.0)
+        layers_data_relative.append({
+            "layer": layer_idx,
+            "activations": normalized.tolist(),
+        })
+
+    return json.dumps({
+        "tokens": tokens,
+        "n_tokens": n_tokens,
+        "n_layers": n_layers + 1,  # including embedding
+        "hidden_dim": hidden_dim,
+        "global_norm": layers_data,
+        "layer_norm": layers_data_relative,
+        "global_min": round(global_min, 6),
+        "global_max": round(global_max, 6),
+    }).encode()
 
 if __name__ == "__main__":
     try:
