@@ -1074,6 +1074,23 @@ canvas{background:#0d1117}
     display: none;
     min-height: 0;       /* allow flex child to shrink properly */
 }
+/* ---- Compare Mode ---- */
+#compare-area{display:none;margin-top:4px}
+#compare-area .cr{margin-bottom:3px}
+#txt-b{flex:1;background:#0d1117;color:#e0e0e0;border:1px solid #0f3460;padding:6px;font-size:12px;border-radius:4px;font-family:monospace}
+#btn-compare{background:#53a8b6;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:bold}
+#btn-compare:hover{background:#3d8a96}
+#btn-compare:disabled{background:#555;cursor:wait}
+#compare-panel{background:#0a0a1a;padding:6px;border-radius:4px;max-height:700px;overflow:auto;display:none}
+#compare-summary{background:#0f3460;padding:8px;border-radius:4px;font-size:10px;line-height:1.5;display:none}
+.compare-row{display:flex;gap:2px;margin-bottom:8px;align-items:flex-start}
+.compare-col{text-align:center}
+.compare-col canvas{border:1px solid #0f3460;image-rendering:pixelated}
+.compare-label{font-size:8px;margin-bottom:1px}
+.divergence-bar{height:4px;border-radius:2px;margin-top:2px}
+.onset-marker{color:#f5a623;font-weight:bold}
+#compare-divergence-chart{margin:8px 0}
+#compare-divergence-chart canvas{border:1px solid #0f3460;border-radius:4px}
 </style></head><body>
 <div id="side">
 <h2>Metric Space Explorer</h2>
@@ -1100,6 +1117,24 @@ canvas{background:#0d1117}
 <div id="text-area">
 <input id="txt-in" type="text" placeholder="Enter text..." value="The quick brown fox jumps over the lazy dog">
 <button id="btn-run" onclick="runText()">Run</button>
+</div>
+<div class="cb" style="margin-bottom:4px">
+  <input type="checkbox" id="cb-compare" onchange="toggleCompareMode()">
+  <label for="cb-compare" style="color:#53a8b6;font-weight:bold">⚡ Compare Mode</label>
+</div>
+<div id="compare-area">
+  <div style="font-size:10px;color:#888;margin-bottom:4px">
+    Enter a second text to compare activations side-by-side.
+    See where the model processes them differently.
+  </div>
+  <div style="display:flex;gap:4px;margin-bottom:4px">
+    <input id="txt-b" type="text" placeholder="Second text (e.g. false version)..."
+           value="The capital of France is Berlin">
+    <button id="btn-compare" onclick="runCompare()">Compare</button>
+  </div>
+  <div id="compare-summary"></div>
+  <div id="compare-divergence-chart"></div>
+  <div id="compare-panel"></div>
 </div>
 <div id="info">
 Model: <span id="i-mod">-</span> |
@@ -4334,8 +4369,474 @@ onKeyFibre = function(e) {
     toggleDiv.appendChild(btn);
   }
 })();
-</script></body></html>"""
 
+// ============================================================
+// COMPARE MODE — Differential Activation Maps
+// ============================================================
+
+var compareData = null;
+
+function toggleCompareMode() {
+  var on = document.getElementById('cb-compare').checked;
+  document.getElementById('compare-area').style.display = on ? 'block' : 'none';
+  if (!on) {
+    document.getElementById('compare-panel').style.display = 'none';
+    document.getElementById('compare-summary').style.display = 'none';
+    document.getElementById('compare-divergence-chart').innerHTML = '';
+    compareData = null;
+  }
+}
+
+function runCompare() {
+  var textA = document.getElementById('txt-in').value.trim();
+  var textB = document.getElementById('txt-b').value.trim();
+  if (!textA || !textB) { alert('Enter both texts'); return; }
+
+  var btn = document.getElementById('btn-compare');
+  btn.disabled = true; btn.textContent = 'Comparing...';
+  document.getElementById('status').textContent = 'Comparing activations...';
+
+  fetch('/compare', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text_a: textA, text_b: textB })
+  })
+  .then(function(r) { if (!r.ok) throw new Error('Server error ' + r.status); return r.json(); })
+  .then(function(data) {
+    if (data.error) { alert(data.error); return; }
+    compareData = data;
+    renderCompareSummary();
+    renderDivergenceChart();
+    renderCompareGrids();
+    btn.disabled = false; btn.textContent = 'Compare';
+    document.getElementById('status').textContent =
+      'Compare: ' + data.n_common + ' aligned tokens, ' +
+      data.n_layers + ' layers, onset layer: ' +
+      (data.onset_layer >= 0 ? data.onset_layer : 'none');
+  })
+  .catch(function(e) {
+    alert('Error: ' + e);
+    btn.disabled = false; btn.textContent = 'Compare';
+  });
+}
+
+function renderCompareSummary() {
+  var d = compareData;
+  var panel = document.getElementById('compare-summary');
+  panel.style.display = 'block';
+
+  var html = '';
+  html += '<div style="color:#e94560;font-weight:bold;margin-bottom:4px">Differential Activation Analysis</div>';
+  html += '<div><b style="color:#53a8b6">Text A:</b> <span style="color:#a0a0c0">' +
+          d.tokens_a.join(' ') + '</span></div>';
+  html += '<div><b style="color:#f5a623">Text B:</b> <span style="color:#a0a0c0">' +
+          d.tokens_b.join(' ') + '</span></div>';
+  html += '<div style="margin-top:4px">';
+  html += 'Aligned tokens: <span style="color:#e94560">' + d.n_common + '</span> | ';
+  html += 'Layers: <span style="color:#e94560">' + d.n_layers + '</span> | ';
+  html += 'Hidden dim: <span style="color:#e94560">' + d.hidden_dim + '</span> | ';
+  html += 'Max diff: <span style="color:#e94560">' + d.global_diff_max.toFixed(4) + '</span>';
+  html += '</div>';
+
+  if (d.onset_layer >= 0) {
+    html += '<div style="margin-top:4px;color:#f5a623;font-weight:bold">';
+    html += '⚡ Divergence onset at layer ' + d.onset_layer +
+            ' — this is where the model starts processing the inputs differently!';
+    html += '</div>';
+  } else {
+    html += '<div style="margin-top:4px;color:#888">';
+    html += 'No clear divergence onset detected (inputs may be very similar or very different from the start).';
+    html += '</div>';
+  }
+
+  // Top diverging dims at the most divergent layer
+  var maxDivLayer = 0;
+  var maxDiv = 0;
+  for (var i = 0; i < d.layer_divergence.length; i++) {
+    if (d.layer_divergence[i] > maxDiv) {
+      maxDiv = d.layer_divergence[i];
+      maxDivLayer = i;
+    }
+  }
+  if (d.top_dims_per_layer[maxDivLayer] && d.top_dims_per_layer[maxDivLayer].length > 0) {
+    html += '<div style="margin-top:4px;font-size:9px">';
+    html += '<b style="color:#53a8b6">Most divergent layer: ' +
+            (maxDivLayer === 0 ? 'Embedding' : 'L' + (maxDivLayer - 1)) + '</b> — Top dims: ';
+    var topDims = d.top_dims_per_layer[maxDivLayer].slice(0, 8);
+    for (var di = 0; di < topDims.length; di++) {
+      html += '<span style="color:#e94560">d' + topDims[di].dim + '</span>';
+      html += '<span style="color:#666">(' + topDims[di].mean_abs_diff.toFixed(4) + ')</span> ';
+    }
+    html += '</div>';
+  }
+
+  panel.innerHTML = html;
+}
+
+function renderDivergenceChart() {
+  var d = compareData;
+  var container = document.getElementById('compare-divergence-chart');
+  var chartW = 340, chartH = 80;
+
+  var html = '<div style="color:#888;font-size:9px;margin-bottom:2px">' +
+             'Layer-by-layer divergence (mean |A−B|):</div>';
+  html += '<canvas id="div-chart-cv" width="' + chartW + '" height="' + chartH + '"></canvas>';
+
+  // Per-token divergence sparklines
+  if (d.n_common > 0 && d.token_divergence.length > 0) {
+    html += '<div style="margin-top:6px;font-size:9px;color:#888">Per-token divergence across layers:</div>';
+    for (var ti = 0; ti < d.n_common; ti++) {
+      var tokLabel = d.tokens_a[ti];
+      var tokLabelB = d.tokens_b[ti];
+      var same = (tokLabel === tokLabelB);
+      html += '<div style="display:flex;align-items:center;gap:4px;margin:1px 0">';
+      html += '<span style="color:' + (same ? '#53a8b6' : '#e94560') +
+              ';min-width:80px;font-family:monospace;font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="A: ' +
+              tokLabel + ' | B: ' + tokLabelB + '">';
+      html += '[' + ti + '] ' + tokLabel;
+      if (!same) html += ' / ' + tokLabelB;
+      html += '</span>';
+      html += '<canvas id="tok-div-' + ti + '" width="200" height="16" style="border:1px solid #0f3460;border-radius:2px"></canvas>';
+      html += '</div>';
+    }
+  }
+
+  container.innerHTML = html;
+
+  // Draw the main divergence chart
+  var cv = document.getElementById('div-chart-cv');
+  if (!cv) return;
+  var c = cv.getContext('2d');
+  var nL = d.layer_divergence.length;
+  var maxDiv = 0;
+  for (var i = 0; i < nL; i++) {
+    if (d.layer_divergence[i] > maxDiv) maxDiv = d.layer_divergence[i];
+  }
+  if (maxDiv < 1e-12) maxDiv = 1;
+
+  var barW = Math.max(2, Math.floor((chartW - 20) / nL) - 1);
+  var barGap = 1;
+  var baseY = chartH - 15;
+  var maxBarH = baseY - 5;
+
+  c.fillStyle = '#0a0a1a';
+  c.fillRect(0, 0, chartW, chartH);
+
+  for (var i = 0; i < nL; i++) {
+    var val = d.layer_divergence[i];
+    var h = (val / maxDiv) * maxBarH;
+    var x = 10 + i * (barW + barGap);
+
+    // Color: low divergence = blue, high = red
+    var frac = val / maxDiv;
+    var r = Math.floor(frac * 233);
+    var g = Math.floor((1 - frac) * 100 + frac * 69);
+    var b = Math.floor((1 - frac) * 182 + frac * 96);
+
+    // Highlight onset layer
+    if (d.onset_layer >= 0 && i === d.onset_layer + 1) {
+      c.fillStyle = 'rgba(245,166,35,0.3)';
+      c.fillRect(x - 1, 0, barW + 2, chartH);
+    }
+
+    c.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
+    c.fillRect(x, baseY - h, barW, h);
+
+    // Layer label
+    if (nL <= 30 || i % 2 === 0) {
+      c.font = '7px monospace';
+      c.fillStyle = '#666';
+      c.textAlign = 'center';
+      c.fillText(i === 0 ? 'E' : '' + (i - 1), x + barW / 2, chartH - 2);
+    }
+  }
+
+  // Draw per-token sparklines
+  for (var ti = 0; ti < d.n_common; ti++) {
+    var sparkCv = document.getElementById('tok-div-' + ti);
+    if (!sparkCv) continue;
+    var sc = sparkCv.getContext('2d');
+    var sw = sparkCv.width, sh = sparkCv.height;
+    sc.fillStyle = '#0a0a1a';
+    sc.fillRect(0, 0, sw, sh);
+
+    var vals = [];
+    for (var li = 0; li < nL; li++) {
+      vals.push(d.token_divergence[li][ti] || 0);
+    }
+    var sparkMax = 0;
+    for (var li = 0; li < vals.length; li++) {
+      if (vals[li] > sparkMax) sparkMax = vals[li];
+    }
+    if (sparkMax < 1e-12) sparkMax = 1;
+
+    var stepX = sw / Math.max(1, nL - 1);
+
+    // Fill area
+    sc.beginPath();
+    sc.moveTo(0, sh);
+    for (var li = 0; li < nL; li++) {
+      var sx = li * stepX;
+      var sy = sh - (vals[li] / sparkMax) * (sh - 2);
+      sc.lineTo(sx, sy);
+    }
+    sc.lineTo(sw, sh);
+    sc.closePath();
+    sc.fillStyle = 'rgba(233,69,96,0.2)';
+    sc.fill();
+
+    // Line
+    sc.beginPath();
+    for (var li = 0; li < nL; li++) {
+      var sx = li * stepX;
+      var sy = sh - (vals[li] / sparkMax) * (sh - 2);
+      if (li === 0) sc.moveTo(sx, sy);
+      else sc.lineTo(sx, sy);
+    }
+    sc.strokeStyle = '#e94560';
+    sc.lineWidth = 1;
+    sc.stroke();
+
+    // Onset marker
+    if (d.onset_layer >= 0) {
+      var ox = (d.onset_layer + 1) * stepX;
+      sc.strokeStyle = 'rgba(245,166,35,0.6)';
+      sc.lineWidth = 1;
+      sc.beginPath();
+      sc.moveTo(ox, 0);
+      sc.lineTo(ox, sh);
+      sc.stroke();
+    }
+  }
+}
+
+function renderCompareGrids() {
+  var d = compareData;
+  var panel = document.getElementById('compare-panel');
+  panel.style.display = 'block';
+
+  var hiddenDim = d.hidden_dim;
+  var gridCols = Math.ceil(Math.sqrt(hiddenDim));
+  var gridRows = Math.ceil(hiddenDim / gridCols);
+  var pixSize = 2;
+
+  var html = '';
+  html += '<div style="color:#888;font-size:9px;margin-bottom:6px">';
+  html += 'Each row = one aligned token position. Three columns: ';
+  html += '<span style="color:#53a8b6">A</span> | ';
+  html += '<span style="color:#f5a623">B</span> | ';
+  html += '<span style="color:#e94560">Diff</span> (red=A>B, blue=B>A, black=same). ';
+  html += 'Each pixel = one neuron dimension. Rows within each grid = layers (top=embedding, bottom=last).';
+  html += '</div>';
+
+  // For each aligned token, show A | B | Diff stacked vertically by layer
+  for (var ti = 0; ti < d.n_common; ti++) {
+    var tokA = d.tokens_a[ti];
+    var tokB = d.tokens_b[ti];
+    var same = (tokA === tokB);
+
+    html += '<div style="margin-bottom:10px;border-bottom:1px solid #0f3460;padding-bottom:6px">';
+    html += '<div style="font-size:10px;margin-bottom:3px">';
+    html += '<span style="color:#53a8b6;font-weight:bold">[' + ti + '] A: ' + tokA + '</span>';
+    if (!same) {
+      html += ' <span style="color:#e94560">≠</span> ';
+      html += '<span style="color:#f5a623;font-weight:bold">B: ' + tokB + '</span>';
+    } else {
+      html += ' <span style="color:#2ecc71">=</span> ';
+      html += '<span style="color:#f5a623">B: ' + tokB + '</span>';
+    }
+    html += '</div>';
+
+    // Three side-by-side columns, each containing all layers stacked vertically
+    html += '<div style="display:flex;gap:8px;align-items:flex-start">';
+
+    // Column A
+    html += '<div style="text-align:center">';
+    html += '<div style="color:#53a8b6;font-size:8px;font-weight:bold;margin-bottom:2px">Text A</div>';
+    for (var li = 0; li < d.n_layers; li++) {
+      var cid = 'cmp-a-' + ti + '-' + li;
+      var cw = gridCols * pixSize;
+      var ch = gridRows * pixSize;
+      html += '<canvas id="' + cid + '" width="' + cw + '" height="' + ch + '" ' +
+              'style="display:block;image-rendering:pixelated;margin-bottom:1px" ' +
+              'title="A Token ' + ti + ' ' + (li === 0 ? 'Embedding' : 'Layer ' + (li - 1)) + '"></canvas>';
+    }
+    html += '</div>';
+
+    // Column B
+    html += '<div style="text-align:center">';
+    html += '<div style="color:#f5a623;font-size:8px;font-weight:bold;margin-bottom:2px">Text B</div>';
+    for (var li = 0; li < d.n_layers; li++) {
+      var cid = 'cmp-b-' + ti + '-' + li;
+      html += '<canvas id="' + cid + '" width="' + (gridCols * pixSize) + '" height="' + (gridRows * pixSize) + '" ' +
+              'style="display:block;image-rendering:pixelated;margin-bottom:1px" ' +
+              'title="B Token ' + ti + ' ' + (li === 0 ? 'Embedding' : 'Layer ' + (li - 1)) + '"></canvas>';
+    }
+    html += '</div>';
+
+    // Column Diff
+    html += '<div style="text-align:center">';
+    html += '<div style="color:#e94560;font-size:8px;font-weight:bold;margin-bottom:2px">A − B</div>';
+    for (var li = 0; li < d.n_layers; li++) {
+      var cid = 'cmp-d-' + ti + '-' + li;
+      html += '<canvas id="' + cid + '" width="' + (gridCols * pixSize) + '" height="' + (gridRows * pixSize) + '" ' +
+              'style="display:block;image-rendering:pixelated;margin-bottom:1px" ' +
+              'title="Diff Token ' + ti + ' ' + (li === 0 ? 'Embedding' : 'Layer ' + (li - 1)) + '"></canvas>';
+    }
+    html += '</div>';
+
+    // Column: Magnitude
+    html += '<div style="text-align:center">';
+    html += '<div style="color:#f5a623;font-size:8px;font-weight:bold;margin-bottom:2px">|Diff|</div>';
+    for (var li = 0; li < d.n_layers; li++) {
+      var cid = 'cmp-m-' + ti + '-' + li;
+      html += '<canvas id="' + cid + '" width="' + (gridCols * pixSize) + '" height="' + (gridRows * pixSize) + '" ' +
+              'style="display:block;image-rendering:pixelated;margin-bottom:1px" ' +
+              'title="Magnitude Token ' + ti + ' ' + (li === 0 ? 'Embedding' : 'Layer ' + (li - 1)) + '"></canvas>';
+    }
+    html += '</div>';
+
+    // Layer labels
+    html += '<div style="text-align:left;padding-top:12px">';
+    for (var li = 0; li < d.n_layers; li++) {
+      var isOnset = (d.onset_layer >= 0 && li === d.onset_layer + 1);
+      var lh = gridRows * pixSize + 1;
+      html += '<div style="height:' + lh + 'px;line-height:' + lh + 'px;font-size:7px;' +
+              'color:' + (isOnset ? '#f5a623' : '#555') + ';' +
+              'font-weight:' + (isOnset ? 'bold' : 'normal') + '">';
+      html += (li === 0 ? 'Emb' : 'L' + (li - 1));
+      if (isOnset) html += ' ⚡';
+      html += '</div>';
+    }
+    html += '</div>';
+
+    html += '</div>'; // end flex row
+    html += '</div>'; // end token block
+  }
+
+  panel.innerHTML = html;
+
+  // Now draw on all canvases
+  for (var ti = 0; ti < d.n_common; ti++) {
+    for (var li = 0; li < d.n_layers; li++) {
+      // Draw A
+      drawCompareCanvas('cmp-a-' + ti + '-' + li,
+        d.activations_a[li][ti], hiddenDim, gridCols, gridRows, pixSize, 'grayscale');
+      // Draw B
+      drawCompareCanvas('cmp-b-' + ti + '-' + li,
+        d.activations_b[li][ti], hiddenDim, gridCols, gridRows, pixSize, 'grayscale');
+      // Draw Diff (diverging colormap)
+      drawCompareCanvas('cmp-d-' + ti + '-' + li,
+        d.diff[li][ti], hiddenDim, gridCols, gridRows, pixSize, 'diverging');
+      // Draw Magnitude
+      drawCompareCanvas('cmp-m-' + ti + '-' + li,
+        d.diff_magnitude[li][ti], hiddenDim, gridCols, gridRows, pixSize, 'hot');
+    }
+  }
+}
+
+/**
+ * Draw a single compare-mode neuron grid canvas.
+ * @param {string} canvasId
+ * @param {number[]} acts - array of hiddenDim floats in [0,1]
+ * @param {number} hiddenDim
+ * @param {number} gridCols
+ * @param {number} gridRows
+ * @param {number} pixSize
+ * @param {string} colorMode - 'grayscale', 'diverging', or 'hot'
+ */
+function drawCompareCanvas(canvasId, acts, hiddenDim, gridCols, gridRows, pixSize, colorMode) {
+  var cv = document.getElementById(canvasId);
+  if (!cv) return;
+  if (!acts || acts.length === 0) {
+    // Empty canvas — fill dark
+    var ctx = cv.getContext('2d');
+    ctx.fillStyle = '#0a0515';
+    ctx.fillRect(0, 0, cv.width, cv.height);
+    return;
+  }
+  var ctx = cv.getContext('2d');
+  var imgData = ctx.createImageData(gridCols * pixSize, gridRows * pixSize);
+
+  for (var ni = 0; ni < hiddenDim; ni++) {
+    var val = acts[ni];
+    var r, g, b;
+
+    if (colorMode === 'diverging') {
+      // val: 0 = B >> A (blue), 0.5 = no diff (black), 1 = A >> B (red)
+      if (val < 0.5) {
+        // Blue side: 0 = bright blue, 0.5 = black
+        var intensity = (0.5 - val) * 2; // 0..1
+        r = 0;
+        g = Math.floor(intensity * 80);
+        b = Math.floor(intensity * 220);
+      } else {
+        // Red side: 0.5 = black, 1 = bright red
+        var intensity = (val - 0.5) * 2; // 0..1
+        r = Math.floor(intensity * 233);
+        g = Math.floor(intensity * 50);
+        b = Math.floor(intensity * 30);
+      }
+    } else if (colorMode === 'hot') {
+      // val: 0 = black, 1 = bright white-hot
+      // black -> red -> orange -> yellow -> white
+      if (val < 0.25) {
+        var t = val / 0.25;
+        r = Math.floor(t * 180); g = 0; b = 0;
+      } else if (val < 0.5) {
+        var t = (val - 0.25) / 0.25;
+        r = 180 + Math.floor(t * 75); g = Math.floor(t * 120); b = 0;
+      } else if (val < 0.75) {
+        var t = (val - 0.5) / 0.25;
+        r = 255; g = 120 + Math.floor(t * 135); b = Math.floor(t * 50);
+      } else {
+        var t = (val - 0.75) / 0.25;
+        r = 255; g = 255; b = 50 + Math.floor(t * 205);
+      }
+    } else {
+      // Grayscale
+      var v = Math.floor(val * 255);
+      r = v; g = v; b = v;
+    }
+
+    r = Math.max(0, Math.min(255, r));
+    g = Math.max(0, Math.min(255, g));
+    b = Math.max(0, Math.min(255, b));
+
+    var col = ni % gridCols;
+    var row = Math.floor(ni / gridCols);
+
+    for (var py = 0; py < pixSize; py++) {
+      for (var px = 0; px < pixSize; px++) {
+        var ix = (row * pixSize + py) * (gridCols * pixSize) + (col * pixSize + px);
+        var offset = ix * 4;
+        imgData.data[offset]     = r;
+        imgData.data[offset + 1] = g;
+        imgData.data[offset + 2] = b;
+        imgData.data[offset + 3] = 255;
+      }
+    }
+  }
+
+  // Fill remaining pixels dark
+  for (var ni = hiddenDim; ni < gridCols * gridRows; ni++) {
+    var col = ni % gridCols;
+    var row = Math.floor(ni / gridCols);
+    for (var py = 0; py < pixSize; py++) {
+      for (var px = 0; px < pixSize; px++) {
+        var ix = (row * pixSize + py) * (gridCols * pixSize) + (col * pixSize + px);
+        var offset = ix * 4;
+        imgData.data[offset]     = 10;
+        imgData.data[offset + 1] = 5;
+        imgData.data[offset + 2] = 20;
+        imgData.data[offset + 3] = 255;
+      }
+    }
+  }
+
+  ctx.putImageData(imgData, 0, 0);
+}
+</script></body></html>"""
 
 # ============================================================
 # 13. HTTP SERVER (thin wrappers)
@@ -4385,6 +4886,7 @@ class Handler(BaseHTTPRequestHandler):
 
         handler_map = {
             "/run": handle_post_run,
+            "/compare": handle_compare,
             "/sae_features": handle_sae_features,
             "/sae_intervene": handle_sae_intervene,
             "/sae_info": handle_sae_info,
@@ -4708,6 +5210,154 @@ def handle_neuron_grid(body_bytes):
         "layer_norm": layers_data_relative,
         "global_min": round(global_min, 6),
         "global_max": round(global_max, 6),
+    }).encode()
+
+def handle_compare(body_bytes):
+    """Compare two texts: return per-layer activation grids for A, B, and A-B diff."""
+    req = json.loads(body_bytes)
+    text_a = req.get("text_a", "").strip()
+    text_b = req.get("text_b", "").strip()
+    if not text_a or not text_b:
+        return json.dumps({"error": "Both text_a and text_b required"}).encode()
+
+    # Tokenize both
+    ids_a, tokens_a = tokenize_text(TOKENIZER, text_a)
+    ids_b, tokens_b = tokenize_text(TOKENIZER, text_b)
+
+    # Extract hidden states
+    hs_a = extract_hidden_states(MODEL, ids_a)
+    hs_b = extract_hidden_states(MODEL, ids_b)
+
+    n_layers = get_n_layers(MODEL_CONFIG)
+    hidden_dim = get_hidden_dim(MODEL_CONFIG)
+    n_tok_a = ids_a.shape[1]
+    n_tok_b = ids_b.shape[1]
+
+    # We align by position index up to min length for the diff.
+    # Tokens beyond the shorter sequence get no diff.
+    n_common = min(n_tok_a, n_tok_b)
+
+    # Collect raw activations: list of (n_layers+1) arrays, each (seq_len, hidden_dim)
+    raw_a = []
+    raw_b = []
+    for li in range(n_layers + 1):
+        raw_a.append(hs_a[li][0].cpu().float().numpy())
+        raw_b.append(hs_b[li][0].cpu().float().numpy())
+
+    # --- Normalize A and B independently (per-layer) for their own grids ---
+    def normalize_per_layer(raw_list):
+        result = []
+        for layer_acts in raw_list:
+            lmin = float(layer_acts.min())
+            lmax = float(layer_acts.max())
+            lr = lmax - lmin if (lmax - lmin) > 1e-12 else 1.0
+            normed = np.clip((layer_acts - lmin) / lr, 0.0, 1.0)
+            result.append(normed.tolist())
+        return result
+
+    norm_a = normalize_per_layer(raw_a)
+    norm_b = normalize_per_layer(raw_b)
+
+    # --- Compute diff for aligned tokens ---
+    # diff = activation_A - activation_B (raw, then normalize to [-1, 1] -> [0, 1])
+    diff_layers = []
+    diff_magnitude_layers = []  # |diff| for magnitude heatmap
+
+    # Track global diff range for consistent normalization
+    global_diff_max = 0.0
+    raw_diffs = []
+    for li in range(n_layers + 1):
+        if n_common > 0:
+            d = raw_a[li][:n_common] - raw_b[li][:n_common]  # (n_common, hidden_dim)
+        else:
+            d = np.zeros((0, hidden_dim))
+        raw_diffs.append(d)
+        if d.size > 0:
+            m = float(np.abs(d).max())
+            if m > global_diff_max:
+                global_diff_max = m
+
+    if global_diff_max < 1e-12:
+        global_diff_max = 1.0
+
+    for li in range(n_layers + 1):
+        d = raw_diffs[li]
+        if d.size > 0:
+            # Map diff from [-global_diff_max, +global_diff_max] to [0, 1]
+            # 0.5 = no difference, 0 = B >> A, 1 = A >> B
+            normed_diff = np.clip(d / (2 * global_diff_max) + 0.5, 0.0, 1.0)
+            # Magnitude: 0 = no diff, 1 = max diff
+            mag = np.clip(np.abs(d) / global_diff_max, 0.0, 1.0)
+        else:
+            normed_diff = np.zeros((0, hidden_dim))
+            mag = np.zeros((0, hidden_dim))
+        diff_layers.append(normed_diff.tolist())
+        diff_magnitude_layers.append(mag.tolist())
+
+    # --- Per-layer divergence summary (scalar per layer) ---
+    # Mean absolute diff across all aligned tokens and dims
+    layer_divergence = []
+    for li in range(n_layers + 1):
+        d = raw_diffs[li]
+        if d.size > 0:
+            layer_divergence.append(round(float(np.mean(np.abs(d))), 6))
+        else:
+            layer_divergence.append(0.0)
+
+    # --- Per-token divergence at each layer ---
+    # For each aligned token, mean |diff| across dims
+    token_divergence = []  # list of (n_layers+1) lists of n_common floats
+    for li in range(n_layers + 1):
+        d = raw_diffs[li]
+        if d.size > 0:
+            per_tok = np.mean(np.abs(d), axis=1)  # (n_common,)
+            token_divergence.append([round(float(v), 6) for v in per_tok])
+        else:
+            token_divergence.append([])
+
+    # --- Top diverging dimensions per layer ---
+    # Which hidden dims show the biggest difference?
+    top_dims_per_layer = []
+    for li in range(n_layers + 1):
+        d = raw_diffs[li]
+        if d.size > 0:
+            mean_abs_per_dim = np.mean(np.abs(d), axis=0)  # (hidden_dim,)
+            top_k = min(20, hidden_dim)
+            top_idx = np.argsort(-mean_abs_per_dim)[:top_k]
+            top_dims_per_layer.append([
+                {"dim": int(idx), "mean_abs_diff": round(float(mean_abs_per_dim[idx]), 6)}
+                for idx in top_idx
+            ])
+        else:
+            top_dims_per_layer.append([])
+
+    # --- Find the "divergence onset" layer ---
+    # The layer where divergence first exceeds 2x the embedding-layer divergence
+    onset_layer = -1
+    if len(layer_divergence) > 1 and layer_divergence[0] > 1e-12:
+        baseline_div = layer_divergence[0]
+        for li in range(1, len(layer_divergence)):
+            if layer_divergence[li] > baseline_div * 2:
+                onset_layer = li - 1  # report as transformer layer index
+                break
+
+    return json.dumps({
+        "tokens_a": tokens_a,
+        "tokens_b": tokens_b,
+        "n_tokens_a": n_tok_a,
+        "n_tokens_b": n_tok_b,
+        "n_common": n_common,
+        "n_layers": n_layers + 1,
+        "hidden_dim": hidden_dim,
+        "activations_a": norm_a,
+        "activations_b": norm_b,
+        "diff": diff_layers,
+        "diff_magnitude": diff_magnitude_layers,
+        "layer_divergence": layer_divergence,
+        "token_divergence": token_divergence,
+        "top_dims_per_layer": top_dims_per_layer,
+        "onset_layer": onset_layer,
+        "global_diff_max": round(global_diff_max, 6),
     }).encode()
 
 if __name__ == "__main__":
