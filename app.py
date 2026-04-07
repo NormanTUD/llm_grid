@@ -1030,7 +1030,41 @@ canvas{background:#0d1117}
 #strain-stats-panel tr.current-layer{background:rgba(233,69,96,0.2)}
 #strain-stats-panel tr.most-active{background:rgba(83,168,182,0.15)}
 #strain-stats-panel tr:hover{background:rgba(255,255,255,0.05)}
+/* Diffeomorphism Stacking Mode */
+#tab-diffeo { }
+.diffeo-canvas-wrap {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+#diffeo-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
 .strain-bar{display:inline-block;height:6px;border-radius:2px;vertical-align:middle}
+/* Diffeomorphism Stacking Overlay */
+.diffeo-canvas-wrap {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+#diffeo-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+#diffeo-controls {
+  background: #0f3460;
+  padding: 8px;
+  border-radius: 4px;
+  font-size: 10px;
+}
+#diffeo-controls .cr { margin-bottom: 3px; }
 </style></head><body>
 <div id="side">
 <h2>Metric Space Explorer</h2>
@@ -1185,8 +1219,65 @@ Tokens: <span id="i-tok">-</span>
 <div class="cb"><input type="checkbox" id="cb-vec"><label for="cb-vec">Vector Arrows</label></div>
 <div id="keys"><b>Keys:</b> ←→ Dim X | ↑↓ Dim Y | PgUp/PgDn Dim Z (3D) | [/] Layer | ;/' t | A/Z Amp | Space Auto | R Reset | D Next Dim Pair | 0 Reset Zoom<br>
 <b>Mouse:</b> Scroll=Zoom | Shift+Drag=Pan | Click=Select Token | Drag=Rotate (3D)</div>
+<h3>🌊 Diffeomorphism Stacking</h3>
+<div id="diffeo-controls">
+  <div class="cr">
+    <label>Active:</label>
+    <select id="diffeo-active" onchange="diffeoState.active=(this.value==='on');toggleDiffeo()">
+      <option value="off">Off</option>
+      <option value="on">On</option>
+    </select>
+  </div>
+  <div class="cr">
+    <label>Slices:</label>
+    <input type="range" id="diffeo-slices" min="2" max="24" step="1" value="8"
+      oninput="diffeoState.numSlices=+this.value;document.getElementById('v-diffeo-slices').textContent=this.value;rebuildDiffeo()">
+    <span class="v" id="v-diffeo-slices">8</span>
+  </div>
+  <div class="cr">
+    <label>Kelp Amp:</label>
+    <input type="range" id="diffeo-amp" min="0" max="4" step="0.05" value="1.0"
+      oninput="diffeoState.kelpAmplitude=+this.value;document.getElementById('v-diffeo-amp').textContent=(+this.value).toFixed(2)">
+    <span class="v" id="v-diffeo-amp">1.00</span>
+  </div>
+  <div class="cr">
+    <label>Divergence:</label>
+    <input type="range" id="diffeo-sens" min="0.1" max="8" step="0.1" value="1.0"
+      oninput="diffeoState.divergenceSensitivity=+this.value;document.getElementById('v-diffeo-sens').textContent=(+this.value).toFixed(1)">
+    <span class="v" id="v-diffeo-sens">1.0</span>
+  </div>
+  <div class="cr">
+    <label>Layer Gap:</label>
+    <input type="range" id="diffeo-spacing" min="20" max="200" step="5" value="70"
+      oninput="diffeoState.layerSpacing=+this.value;document.getElementById('v-diffeo-spacing').textContent=this.value">
+    <span class="v" id="v-diffeo-spacing">70</span>
+  </div>
+  <div class="cr">
+    <label>Opacity:</label>
+    <input type="range" id="diffeo-alpha" min="0.05" max="0.8" step="0.05" value="0.25"
+      oninput="diffeoState.sliceAlpha=+this.value;document.getElementById('v-diffeo-alpha').textContent=(+this.value).toFixed(2)">
+    <span class="v" id="v-diffeo-alpha">0.25</span>
+  </div>
+  <div class="cr">
+    <label>Grid Res:</label>
+    <input type="range" id="diffeo-res" min="3" max="24" step="1" value="10"
+      oninput="diffeoState.gridRes=+this.value;document.getElementById('v-diffeo-res').textContent=this.value;rebuildDiffeo()">
+    <span class="v" id="v-diffeo-res">10</span>
+  </div>
+  <div class="cr">
+    <label>Dim Pairs:</label>
+    <select id="diffeo-dimmode" onchange="diffeoState.dimMode=this.value;rebuildDiffeo()">
+      <option value="auto">Auto (all combos)</option>
+      <option value="sequential">Sequential (0-1, 2-3…)</option>
+      <option value="first">Against Dim 0</option>
+    </select>
+  </div>
+</div>
 </div>
 <div id="main">
+<div class="diffeo-canvas-wrap" id="diffeo-wrap" style="display:none">
+  <canvas id="diffeo-canvas"></canvas>
+</div>
 <canvas id="cv"></canvas>
 <div id="legend">
 <div class="li"><div class="lc" style="background:linear-gradient(90deg,#0077b6,#666,#e94560)"></div>Strain</div>
@@ -2872,6 +2963,459 @@ function valToColor(v) {
     }
     return [r, g, b];
 }
+// ============================================================
+// DIFFEOMORPHISM STACKING — KELP FOREST OF LAYER ROOMS
+// ============================================================
+
+var diffeoCanvas = document.getElementById('diffeo-canvas');
+var diffeoCtx = diffeoCanvas ? diffeoCanvas.getContext('2d') : null;
+var diffeoAnimId = null;
+var diffeoTime = 0;
+
+var diffeoState = {
+  active: false,
+  numSlices: 8,
+  kelpAmplitude: 1.0,
+  divergenceSensitivity: 1.0,
+  layerSpacing: 70,
+  sliceAlpha: 0.25,
+  gridRes: 10,
+  dimMode: 'auto',
+  slices: [],
+  built: false,
+};
+
+function toggleDiffeo() {
+  var wrap = document.getElementById('diffeo-wrap');
+  if (!wrap) return;
+  wrap.style.display = diffeoState.active ? 'block' : 'none';
+  if (diffeoState.active) {
+    resizeDiffeoCanvas();
+    rebuildDiffeo();
+    startDiffeoLoop();
+  } else {
+    stopDiffeoLoop();
+    if (diffeoCtx) {
+      var W = diffeoCanvas.width / (window.devicePixelRatio || 1);
+      var H = diffeoCanvas.height / (window.devicePixelRatio || 1);
+      diffeoCtx.clearRect(0, 0, W, H);
+    }
+  }
+}
+
+function resizeDiffeoCanvas() {
+  if (!diffeoCanvas) return;
+  var container = document.getElementById('main');
+  var dpr = window.devicePixelRatio || 1;
+  diffeoCanvas.width = container.clientWidth * dpr;
+  diffeoCanvas.height = container.clientHeight * dpr;
+  diffeoCanvas.style.width = container.clientWidth + 'px';
+  diffeoCanvas.style.height = container.clientHeight + 'px';
+  if (diffeoCtx) diffeoCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+// Hook into window resize
+var _origRsz = rsz;
+rsz = function() {
+  _origRsz();
+  if (diffeoState.active) resizeDiffeoCanvas();
+};
+
+function startDiffeoLoop() {
+  if (diffeoAnimId) return;
+  function loop() {
+    diffeoTime += 0.016;
+    if (diffeoState.active && diffeoState.built) {
+      updateDiffeoGrids(diffeoTime);
+      renderDiffeoOverlay(diffeoTime);
+    }
+    diffeoAnimId = requestAnimationFrame(loop);
+  }
+  diffeoAnimId = requestAnimationFrame(loop);
+}
+
+function stopDiffeoLoop() {
+  if (diffeoAnimId) {
+    cancelAnimationFrame(diffeoAnimId);
+    diffeoAnimId = null;
+  }
+}
+
+/**
+ * Build diffeomorphism slices from the server data D.
+ * Each slice = one 2D cross-section (dim pair) at one layer.
+ * Deformation comes from D.deltas[layer][point][dim].
+ */
+function rebuildDiffeo() {
+  diffeoState.slices = [];
+  diffeoState.built = false;
+  if (!D || D.n_layers < 1 || D.n_points < 2) return;
+
+  var nL = D.n_layers;
+  var nP = D.n_points;
+  var nR = D.n_real;
+  var hiddenDim = D.hidden_dim;
+  var res = diffeoState.gridRes;
+
+  // Use the currently active deltas (respects decomposition selector)
+  var activeDeltas = getActiveDeltas();
+  if (!activeDeltas) activeDeltas = D.deltas;
+
+  // Generate dimension pairs
+  var dimPairs = [];
+  var maxDims = Math.min(hiddenDim, 8);
+  if (diffeoState.dimMode === 'sequential') {
+    for (var d = 0; d + 1 < maxDims; d += 2) dimPairs.push([d, d + 1]);
+  } else if (diffeoState.dimMode === 'first') {
+    for (var d = 1; d < maxDims; d++) dimPairs.push([0, d]);
+  } else {
+    for (var a = 0; a < maxDims; a++)
+      for (var b = a + 1; b < maxDims; b++)
+        dimPairs.push([a, b]);
+  }
+  if (dimPairs.length === 0) dimPairs.push([0, 1]);
+
+  // Build slice configs: layer × dim pair
+  var sliceConfigs = [];
+  for (var li = 0; li < nL; li++) {
+    for (var pi = 0; pi < dimPairs.length; pi++) {
+      sliceConfigs.push({ layerIdx: li, dimA: dimPairs[pi][0], dimB: dimPairs[pi][1] });
+    }
+  }
+
+  // Evenly sample if too many
+  var maxSlices = diffeoState.numSlices;
+  if (sliceConfigs.length > maxSlices) {
+    var step = sliceConfigs.length / maxSlices;
+    var sampled = [];
+    for (var i = 0; i < maxSlices; i++) sampled.push(sliceConfigs[Math.floor(i * step)]);
+    sliceConfigs = sampled;
+  }
+
+  // For each slice, compute the deformation grid
+  // We use the real tokens' fixed_pos and deltas to define the deformation field
+  // via RBF interpolation onto a regular grid in the 2D subspace.
+  for (var si = 0; si < sliceConfigs.length; si++) {
+    var cfg = sliceConfigs[si];
+    var dA = cfg.dimA, dB = cfg.dimB, lay = cfg.layerIdx;
+
+    // Extract the 2D positions and delta vectors for real tokens in this dim pair
+    var posA = new Float64Array(nR), posB = new Float64Array(nR);
+    var delA = new Float64Array(nR), delB = new Float64Array(nR);
+    var mnA = Infinity, mxA = -Infinity, mnB = Infinity, mxB = -Infinity;
+
+    for (var ti = 0; ti < nR; ti++) {
+      posA[ti] = D.fixed_pos[ti][dA];
+      posB[ti] = D.fixed_pos[ti][dB];
+      delA[ti] = activeDeltas[lay][ti][dA];
+      delB[ti] = activeDeltas[lay][ti][dB];
+      if (posA[ti] < mnA) mnA = posA[ti]; if (posA[ti] > mxA) mxA = posA[ti];
+      if (posB[ti] < mnB) mnB = posB[ti]; if (posB[ti] > mxB) mxB = posB[ti];
+    }
+
+    var rngA = mxA - mnA || 1, rngB = mxB - mnB || 1;
+    var rng = Math.max(rngA, rngB);
+    var pad = 0.15;
+    var cA = (mnA + mxA) / 2, cB = (mnB + mxB) / 2;
+    var lo = cA - rng * (0.5 + pad), hi = cA + rng * (0.5 + pad);
+    var loB = cB - rng * (0.5 + pad), hiB = cB + rng * (0.5 + pad);
+
+    // RBF bandwidth
+    var sigma = rng * 0.2;
+    var s2i = 1 / (2 * sigma * sigma);
+
+    // Build grid
+    var grid = [];
+    for (var gy = 0; gy <= res; gy++) {
+      for (var gx = 0; gx <= res; gx++) {
+        var u = gx / res;
+        var v = gy / res;
+        var worldA = lo + u * (hi - lo);
+        var worldB = loB + v * (hiB - loB);
+
+        // RBF interpolation of delta from real tokens
+        var dx = 0, dy = 0, ws = 0;
+        for (var k = 0; k < nR; k++) {
+          var ea = worldA - posA[k], eb = worldB - posB[k];
+          var w = Math.exp(-(ea * ea + eb * eb) * s2i);
+          dx += w * delA[k];
+          dy += w * delB[k];
+          ws += w;
+        }
+        if (ws > 1e-15) { dx /= ws; dy /= ws; }
+
+        grid.push({ ox: u, oy: v, dx: dx, dy: dy, divergence: 0 });
+      }
+    }
+
+    // Compute divergence (how much neighboring displacements differ)
+    for (var gy = 0; gy < res; gy++) {
+      for (var gx = 0; gx < res; gx++) {
+        var idx = gy * (res + 1) + gx;
+        var idxR = idx + 1;
+        var idxD = idx + (res + 1);
+        var ddx = grid[idxR].dx - grid[idx].dx;
+        var ddy = grid[idxD].dy - grid[idx].dy;
+        grid[idx].divergence = Math.sqrt(ddx * ddx + ddy * ddy);
+      }
+    }
+
+    var hue = (cfg.layerIdx / nL) * 120 + (cfg.dimA * 40 + cfg.dimB * 20);
+
+    diffeoState.slices.push({
+      layerIdx: cfg.layerIdx,
+      dimA: cfg.dimA,
+      dimB: cfg.dimB,
+      grid: grid,
+      hue: hue % 360,
+      res: res,
+    });
+  }
+
+  diffeoState.built = true;
+}
+
+/**
+ * Update grid deformations each frame.
+ * Re-reads deltas from D so it stays in sync with layer/decomp changes.
+ * The kelp sway is purely time-driven via divergence.
+ */
+function updateDiffeoGrids(time) {
+  if (!D || !diffeoState.built) return;
+
+  var activeDeltas = getActiveDeltas();
+  if (!activeDeltas) activeDeltas = D.deltas;
+  var nR = D.n_real;
+
+  for (var si = 0; si < diffeoState.slices.length; si++) {
+    var slice = diffeoState.slices[si];
+    var res = slice.res;
+    var lay = slice.layerIdx;
+    var dA = slice.dimA, dB = slice.dimB;
+
+    // Recompute positions and deltas for this layer
+    var posA = new Float64Array(nR), posB = new Float64Array(nR);
+    var delA = new Float64Array(nR), delB = new Float64Array(nR);
+    var mnA = Infinity, mxA = -Infinity, mnB = Infinity, mxB = -Infinity;
+
+    for (var ti = 0; ti < nR; ti++) {
+      posA[ti] = D.fixed_pos[ti][dA];
+      posB[ti] = D.fixed_pos[ti][dB];
+      delA[ti] = activeDeltas[lay][ti][dA];
+      delB[ti] = activeDeltas[lay][ti][dB];
+      if (posA[ti] < mnA) mnA = posA[ti]; if (posA[ti] > mxA) mxA = posA[ti];
+      if (posB[ti] < mnB) mnB = posB[ti]; if (posB[ti] > mxB) mxB = posB[ti];
+    }
+
+    var rng = Math.max(mxA - mnA, mxB - mnB) || 1;
+    var pad = 0.15;
+    var cA = (mnA + mxA) / 2, cB = (mnB + mxB) / 2;
+    var lo = cA - rng * (0.5 + pad), hi = cA + rng * (0.5 + pad);
+    var loB = cB - rng * (0.5 + pad), hiB = cB + rng * (0.5 + pad);
+    var sigma = rng * 0.2;
+    var s2i = 1 / (2 * sigma * sigma);
+
+    for (var gi = 0; gi < slice.grid.length; gi++) {
+      var cell = slice.grid[gi];
+      var worldA = lo + cell.ox * (hi - lo);
+      var worldB = loB + cell.oy * (hiB - loB);
+
+      var dx = 0, dy = 0, ws = 0;
+      for (var k = 0; k < nR; k++) {
+        var ea = worldA - posA[k], eb = worldB - posB[k];
+        var w = Math.exp(-(ea * ea + eb * eb) * s2i);
+        dx += w * delA[k];
+        dy += w * delB[k];
+        ws += w;
+      }
+      if (ws > 1e-15) { dx /= ws; dy /= ws; }
+      cell.dx = dx;
+      cell.dy = dy;
+    }
+
+    // Recompute divergence
+    for (var gy = 0; gy < res; gy++) {
+      for (var gx = 0; gx < res; gx++) {
+        var idx = gy * (res + 1) + gx;
+        var idxR = idx + 1;
+        var idxD = idx + (res + 1);
+        var ddx = slice.grid[idxR].dx - slice.grid[idx].dx;
+        var ddy = slice.grid[idxD].dy - slice.grid[idx].dy;
+        slice.grid[idx].divergence = Math.sqrt(ddx * ddx + ddy * ddy);
+      }
+    }
+  }
+}
+
+/**
+ * Render the stacked diffeomorphism slices as translucent kelp-swaying grids.
+ */
+function renderDiffeoOverlay(time) {
+  if (!diffeoState.active || !diffeoCtx || diffeoState.slices.length === 0) return;
+
+  var dpr = window.devicePixelRatio || 1;
+  var W = diffeoCanvas.width / dpr;
+  var H = diffeoCanvas.height / dpr;
+  diffeoCtx.clearRect(0, 0, W, H);
+
+  var nSlices = diffeoState.slices.length;
+  var spacing = diffeoState.layerSpacing;
+  var totalHeight = nSlices * spacing;
+  var startY = (H - totalHeight) / 2;
+
+  var amp = diffeoState.kelpAmplitude;
+  var sens = diffeoState.divergenceSensitivity;
+  var alpha = diffeoState.sliceAlpha;
+
+  // Normalize delta magnitudes for visible sway
+  var maxDelta = 0;
+  for (var si = 0; si < nSlices; si++) {
+    var grid = diffeoState.slices[si].grid;
+    for (var gi = 0; gi < grid.length; gi++) {
+      var mag = Math.sqrt(grid[gi].dx * grid[gi].dx + grid[gi].dy * grid[gi].dy);
+      if (mag > maxDelta) maxDelta = mag;
+    }
+  }
+  var deltaScale = maxDelta > 1e-8 ? 1.0 / maxDelta : 1.0;
+
+  for (var si = 0; si < nSlices; si++) {
+    var slice = diffeoState.slices[si];
+    var res = slice.res;
+    var grid = slice.grid;
+    var baseY = startY + si * spacing;
+
+    var sliceW = W * 0.55;
+    var sliceH = spacing * 0.75;
+
+    // Perspective: further slices smaller
+    var depthFactor = 0.65 + 0.35 * (si / Math.max(nSlices - 1, 1));
+    var perspW = sliceW * depthFactor;
+    var perspH = sliceH * depthFactor;
+    var perspX = (W - perspW) / 2;
+    var perspY = baseY + (sliceH - perspH) / 2;
+
+    diffeoCtx.save();
+    diffeoCtx.globalAlpha = alpha * (0.4 + 0.6 * depthFactor);
+
+    // Draw deformed grid cells
+    for (var gy = 0; gy < res; gy++) {
+      for (var gx = 0; gx < res; gx++) {
+        var idx00 = gy * (res + 1) + gx;
+        var idx10 = idx00 + 1;
+        var idx01 = idx00 + (res + 1);
+        var idx11 = idx01 + 1;
+
+        var corners = [idx00, idx10, idx11, idx01];
+        var pts = [];
+        for (var ci = 0; ci < 4; ci++) {
+          var cell = grid[corners[ci]];
+          var div = cell.divergence * sens;
+          // Kelp sway: divergence drives amplitude, time drives oscillation
+          var swayX = Math.sin(time * 0.7 + corners[ci] * 0.5 + si * 1.3) * div * amp * 35 * deltaScale;
+          var swayY = Math.sin(time * 0.5 + corners[ci] * 0.3 + si * 0.9) * div * amp * 12 * deltaScale;
+
+          var screenX = perspX + (cell.ox + cell.dx * deltaScale * amp * 0.3) * perspW + swayX;
+          var screenY = perspY + (cell.oy + cell.dy * deltaScale * amp * 0.3) * perspH + swayY;
+          pts.push({ x: screenX, y: screenY });
+        }
+
+        var cellDiv = grid[idx00].divergence * sens;
+        var brightness = Math.min(70, 30 + cellDiv * 300 * deltaScale);
+        var saturation = 50 + Math.min(30, cellDiv * 50 * deltaScale);
+
+        // Filled quad
+        diffeoCtx.beginPath();
+        diffeoCtx.moveTo(pts[0].x, pts[0].y);
+        diffeoCtx.lineTo(pts[1].x, pts[1].y);
+        diffeoCtx.lineTo(pts[2].x, pts[2].y);
+        diffeoCtx.lineTo(pts[3].x, pts[3].y);
+        diffeoCtx.closePath();
+        diffeoCtx.fillStyle = 'hsla(' + slice.hue + ',' + saturation + '%,' + brightness + '%,' + (alpha * 0.4) + ')';
+        diffeoCtx.fill();
+
+        // Grid lines
+        diffeoCtx.strokeStyle = 'hsla(' + slice.hue + ',70%,' + Math.min(80, 40 + cellDiv * 150 * deltaScale) + '%,' + (alpha * 1.2) + ')';
+        diffeoCtx.lineWidth = 0.5 + cellDiv * 3 * deltaScale;
+        diffeoCtx.stroke();
+      }
+    }
+
+    // Kelp strands connecting to next slice
+    if (si < nSlices - 1) {
+      var nextSlice = diffeoState.slices[si + 1];
+      var nextBaseY = startY + (si + 1) * spacing;
+      var nextDepth = 0.65 + 0.35 * ((si + 1) / Math.max(nSlices - 1, 1));
+      var nextPerspW = sliceW * nextDepth;
+      var nextPerspH = spacing * 0.75 * nextDepth;
+      var nextPerspX = (W - nextPerspW) / 2;
+      var nextPerspY = nextBaseY + (spacing * 0.75 - nextPerspH) / 2;
+
+      var step = Math.max(1, Math.floor(res / 3));
+      for (var gy = 0; gy <= res; gy += step) {
+        for (var gx = 0; gx <= res; gx += step) {
+          var idx = gy * (res + 1) + gx;
+          if (idx >= grid.length) continue;
+          var cell = grid[idx];
+          var div = cell.divergence * sens;
+
+          var swX1 = Math.sin(time * 0.7 + idx * 0.5 + si * 1.3) * div * amp * 35 * deltaScale;
+          var swY1 = Math.sin(time * 0.5 + idx * 0.3 + si * 0.9) * div * amp * 12 * deltaScale;
+          var x1 = perspX + (cell.ox + cell.dx * deltaScale * amp * 0.3) * perspW + swX1;
+          var y1 = perspY + (cell.oy + cell.dy * deltaScale * amp * 0.3) * perspH + swY1;
+
+          var nextGrid = nextSlice.grid;
+          var nIdx = Math.min(idx, nextGrid.length - 1);
+          var nCell = nextGrid[nIdx];
+          var nDiv = nCell.divergence * sens;
+          var swX2 = Math.sin(time * 0.7 + nIdx * 0.5 + (si + 1) * 1.3) * nDiv * amp * 35 * deltaScale;
+          var swY2 = Math.sin(time * 0.5 + nIdx * 0.3 + (si + 1) * 0.9) * nDiv * amp * 12 * deltaScale;
+          var x2 = nextPerspX + (nCell.ox + nCell.dx * deltaScale * amp * 0.3) * nextPerspW + swX2;
+          var y2 = nextPerspY + (nCell.oy + nCell.dy * deltaScale * amp * 0.3) * nextPerspH + swY2;
+
+          var midX = (x1 + x2) / 2 + Math.sin(time * 1.1 + idx) * div * amp * 18 * deltaScale;
+          var midY = (y1 + y2) / 2;
+
+          diffeoCtx.strokeStyle = 'hsla(' + Math.round((slice.hue + nextSlice.hue) / 2) + ',60%,45%,' + (alpha * 0.7) + ')';
+          diffeoCtx.lineWidth = 0.8 + div * 2.5 * deltaScale;
+          diffeoCtx.beginPath();
+          diffeoCtx.moveTo(x1, y1);
+          diffeoCtx.quadraticCurveTo(midX, midY, x2, y2);
+          diffeoCtx.stroke();
+        }
+      }
+    }
+
+    // Slice label
+    diffeoCtx.globalAlpha = 0.6;
+    diffeoCtx.fillStyle = 'hsl(' + slice.hue + ',70%,65%)';
+    diffeoCtx.font = '9px monospace';
+    diffeoCtx.fillText(
+      'L' + slice.layerIdx + ' d' + slice.dimA + '\u00d7d' + slice.dimB,
+      perspX - 65,
+      perspY + perspH / 2 + 3
+    );
+
+    diffeoCtx.restore();
+  }
+}
+
+// Hook into onData so diffeo rebuilds when new data arrives
+var _origOnData2 = onData;
+onData = function() {
+  _origOnData2();
+  if (diffeoState.active) {
+    rebuildDiffeo();
+  }
+};
+
+// Hook into draw so decomposition/layer changes trigger rebuild
+var _origDraw = draw;
+draw = function() {
+  _origDraw();
+  if (diffeoState.active && D) {
+    rebuildDiffeo();
+  }
+};
 </script></body></html>"""
 
 
