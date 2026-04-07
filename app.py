@@ -1173,6 +1173,7 @@ Tokens: <span id="i-tok">-</span>
 </div>
 <h3>View Mode</h3>
 <div class="view-toggle">
+<button id="btn-fibre" onclick="setViewMode('fibre')">Fibre Bundle</button>
 <button id="btn-2d" class="active" onclick="setViewMode('2d')">2D</button>
 <button id="btn-3d" onclick="setViewMode('3d')">3D</button>
 </div>
@@ -3416,6 +3417,852 @@ draw = function() {
     rebuildDiffeo();
   }
 };
+
+// ============================================================
+// FIBRE BUNDLE VIEW — Neuron Pixel Grids Stacked as Kelp Rooms
+// ============================================================
+
+// State for fibre bundle view
+var fibreState = {
+  neuronData: null,       // cached neuron grid data from server
+  loading: false,
+  normMode: 'layer',      // 'layer' or 'global'
+  pixSize: 2,
+  useAbs: false,
+  roomSpacing: 80,        // vertical gap between layer rooms
+  roomWidth: 0,           // computed
+  roomHeight: 0,          // computed
+  tokenSpacing: 0,        // computed
+  dimX: 0,                // which hidden dim maps to X sort within room
+  dimY: 1,                // which hidden dim maps to Y sort within room
+  dimZ: 2,                // depth axis for 3D projection
+  show3D: false,          // toggle pseudo-3D stacking
+  rotX: -0.3,
+  rotY: 0.4,
+  dragActive: false,
+  dragLastX: 0,
+  dragLastY: 0,
+  scrollY: 0,             // vertical scroll offset
+  selectedToken: -1,
+  hoveredNeuron: null,
+  showConnections: true,   // show diffeomorphism lines between layers
+  connectionDensity: 0.1,  // fraction of neurons to connect
+  colormap: 'grayscale',   // 'grayscale', 'coolhot', 'viridis'
+};
+
+// Extend setViewMode to handle fibre
+var _origSetViewMode = setViewMode;
+setViewMode = function(mode) {
+  if (mode === 'fibre') {
+    viewMode = 'fibre';
+    document.getElementById('btn-2d').className = '';
+    document.getElementById('btn-3d').className = '';
+    document.getElementById('btn-fibre').className = 'active';
+    document.getElementById('dz-row').style.display = 'flex';
+    // Auto-fetch neuron data if we have D but no neuron data
+    if (D && !fibreState.neuronData && !fibreState.loading) {
+      fetchFibreNeuronData();
+    }
+    draw();
+  } else {
+    document.getElementById('btn-fibre').className = '';
+    _origSetViewMode(mode);
+  }
+};
+
+function fetchFibreNeuronData() {
+  if (!D || fibreState.loading) return;
+  fibreState.loading = true;
+  document.getElementById('status').textContent = 'Loading neuron activations for fibre view...';
+
+  fetch('/neuron_grid', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: D.text })
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) {
+      document.getElementById('status').textContent = 'Neuron grid error: ' + data.error;
+      fibreState.loading = false;
+      return;
+    }
+    fibreState.neuronData = data;
+    fibreState.loading = false;
+    document.getElementById('status').textContent =
+      'Fibre view ready — ' + data.n_tokens + ' tokens × ' +
+      data.n_layers + ' layers × ' + data.hidden_dim + ' neurons';
+    draw();
+  })
+  .catch(function(e) {
+    document.getElementById('status').textContent = 'Error: ' + e;
+    fibreState.loading = false;
+  });
+}
+
+// Hook into onData to clear cached neuron data when new text is run
+var _origOnData3 = onData;
+onData = function() {
+  fibreState.neuronData = null;
+  _origOnData3();
+  if (viewMode === 'fibre' && D) {
+    fetchFibreNeuronData();
+  }
+};
+
+// Extend draw() to handle fibre mode
+var _origDraw2 = draw;
+draw = function() {
+  if (viewMode === 'fibre') {
+    drawFibreBundle();
+    return;
+  }
+  _origDraw2();
+};
+
+// Extend key handler for fibre-specific controls
+var _origOnKey = onKey;
+onKey = function(e) {
+  if (viewMode === 'fibre') {
+    onKeyFibre(e);
+    return;
+  }
+  _origOnKey(e);
+};
+
+function drawFibreBundle() {
+  var cv = document.getElementById('cv');
+  var c = cv.getContext('2d');
+  var W = cv.width, H = cv.height;
+  c.clearRect(0, 0, W, H);
+
+  if (!D) {
+    c.font = '14px monospace';
+    c.fillStyle = '#555';
+    c.fillText('Run a prompt first', W / 2 - 80, H / 2);
+    return;
+  }
+
+  if (!fibreState.neuronData) {
+    c.font = '14px monospace';
+    c.fillStyle = '#53a8b6';
+    c.fillText(fibreState.loading ? 'Loading neuron activations...' : 'Switch to Fibre view to auto-load', 40, H / 2);
+    return;
+  }
+
+  var data = fibreState.neuronData;
+  var nTokens = data.n_tokens;
+  var nLayers = data.n_layers;
+  var hiddenDim = data.hidden_dim;
+  var normMode = document.getElementById('ng-norm').value;
+  var layersSource = (normMode === 'global') ? data.global_norm : data.layer_norm;
+  var useAbs = document.getElementById('ng-absval').checked;
+  var currentLayer = +document.getElementById('sl-layer').value;
+
+  var dx = +document.getElementById('sl-dx').value;
+  var dy = +document.getElementById('sl-dy').value;
+  var dz = +document.getElementById('sl-dz').value;
+
+  // Clamp dims to valid range
+  dx = Math.min(dx, hiddenDim - 1);
+  dy = Math.min(dy, hiddenDim - 1);
+  dz = Math.min(dz, hiddenDim - 1);
+
+  // ---- Layout: grid of 3D rooms ----
+  // Columns = tokens (base manifold)
+  // Rows = layers (fibre), bottom = embedding, top = final layer
+  // Each room is a mini 3D scatter of neurons
+
+  // Room sizing
+  var margin = 50;
+  var labelW = 40;  // left margin for layer labels
+  var labelH = 30;  // bottom margin for token labels
+  var availW = (W / zoomLevel) - 2 * margin - labelW;
+  var availH = (H / zoomLevel) - 2 * margin - labelH;
+
+  var roomW = Math.max(20, Math.floor(availW / nTokens) - 4);
+  var roomH = Math.max(20, Math.floor(availH / nLayers) - 4);
+  var roomSize = Math.min(roomW, roomH);
+  var gapX = Math.max(4, Math.floor(roomSize * 0.15));
+  var gapY = Math.max(4, Math.floor(roomSize * 0.15));
+
+  // Shared 3D rotation for ALL rooms
+  var cosRY = Math.cos(fibreState.rotY), sinRY = Math.sin(fibreState.rotY);
+  var cosRX = Math.cos(fibreState.rotX), sinRX = Math.sin(fibreState.rotX);
+
+  function rot3(x, y, z) {
+    var x1 = x * cosRY + z * sinRY;
+    var z1 = -x * sinRY + z * cosRY;
+    var y1 = y * cosRX - z1 * sinRX;
+    var z2 = y * sinRX + z1 * cosRX;
+    return [x1, y1, z2];
+  }
+
+  // For each room, we need to know the raw activation values (not just normalized)
+  // to position neurons in 3D by their actual dim values.
+  // But we only have normalized [0,1] data from the server.
+  // We'll use the normalized values directly as coordinates — they're already spread [0,1].
+
+  // Precompute per-room: for each (token, layer), get the activation array
+  // and compute 3D positions for a subsample of neurons
+
+  // Subsample neurons for performance
+  var maxNeuronsPerRoom = Math.min(hiddenDim, Math.max(200, Math.floor(8000 / (nTokens * nLayers))));
+  var neuronStep = Math.max(1, Math.floor(hiddenDim / maxNeuronsPerRoom));
+
+  // Focal length for mini perspective
+  var focalLen = roomSize * 2.5;
+
+  c.save();
+  c.translate(panX, panY);
+  c.scale(zoomLevel, zoomLevel);
+
+  var startX = margin + labelW;
+  var startY = margin;
+
+  // Draw from back layers to front for proper overlap
+  for (var li = nLayers - 1; li >= 0; li--) {
+    // Row position: layer 0 (embedding) at bottom, last layer at top
+    var rowIdx = nLayers - 1 - li;
+    var roomCY = startY + rowIdx * (roomSize + gapY) + roomSize / 2;
+
+    var isCurrentLayer = (li === currentLayer + 1) || (li === 0 && currentLayer === 0);
+
+    // Layer label
+    c.font = (isCurrentLayer ? 'bold ' : '') + '9px monospace';
+    c.fillStyle = isCurrentLayer ? '#e94560' : '#666';
+    c.textAlign = 'right';
+    var layerLabel = li === 0 ? 'Emb' : 'L' + (li - 1);
+    c.fillText(layerLabel, startX - 8, roomCY + 3);
+
+    for (var ti = 0; ti < nTokens; ti++) {
+      var roomCX = startX + ti * (roomSize + gapX) + roomSize / 2;
+      var acts = layersSource[li].activations[ti]; // array of hiddenDim floats [0,1]
+
+      // Draw room background
+      var bgAlpha = isCurrentLayer ? 0.12 : 0.06;
+      c.fillStyle = 'rgba(30,30,60,' + bgAlpha + ')';
+      c.fillRect(roomCX - roomSize / 2, roomCY - roomSize / 2, roomSize, roomSize);
+
+      // Room border
+      c.strokeStyle = isCurrentLayer ? 'rgba(233,69,96,0.5)' : 'rgba(60,60,100,0.2)';
+      c.lineWidth = isCurrentLayer ? 1.5 : 0.5;
+      c.strokeRect(roomCX - roomSize / 2, roomCY - roomSize / 2, roomSize, roomSize);
+
+      // ---- Draw neurons as 3D scatter inside this room ----
+      // Each neuron's position:
+      //   local x = acts[dx] (normalized 0-1)
+      //   local y = acts[dy] (normalized 0-1)
+      //   local z = acts[dz] (normalized 0-1)
+      // Color = activation brightness (average or specific dim)
+
+      var halfRoom = roomSize * 0.42;
+      var points = [];
+
+      for (var ni = 0; ni < hiddenDim; ni += neuronStep) {
+        var ax = acts[dx] !== undefined ? acts[dx] : 0;
+        var ay = acts[dy] !== undefined ? acts[dy] : 0;
+        var az = acts[dz] !== undefined ? acts[dz] : 0;
+
+        // Use THIS neuron's value for position along the chosen dims
+        // But we want each neuron at a DIFFERENT position.
+        // The key insight: neuron ni's activation IS its "value",
+        // but we want to scatter neurons in 3D space.
+        //
+        // Position neuron ni by:
+        //   x = acts[ni] projected onto dim dx direction
+        //   y = acts[ni] projected onto dim dy direction  
+        //   z = acts[ni] projected onto dim dz direction
+        //
+        // Actually, each neuron IS a dimension. So neuron ni lives at
+        // a position determined by its index and its activation value.
+        // 
+        // Better approach: use the neuron index to define a base position
+        // (like a grid), then DISPLACE by the activation value.
+        // This way, changing dims changes which neurons cluster where.
+
+        // Base position: neuron index mapped to a grid
+        var gridCols = Math.ceil(Math.sqrt(hiddenDim));
+        var baseCol = ni % gridCols;
+        var baseRow = Math.floor(ni / gridCols);
+        var gridRows = Math.ceil(hiddenDim / gridCols);
+
+        // Normalized base position [-1, 1]
+        var bx = (baseCol / (gridCols - 1 || 1)) * 2 - 1;
+        var by = (baseRow / (gridRows - 1 || 1)) * 2 - 1;
+
+        // The activation value for this neuron
+        var val = acts[ni];
+        if (useAbs) val = Math.abs(val * 2 - 1);
+
+        // 3D position: base grid on XY, activation on Z
+        // But we want dims to matter. So:
+        // - Sort/arrange neurons by their proximity to the chosen dims
+        // - Use dim dx value as x-displacement, dim dy as y-displacement, dim dz as z
+        
+        // Approach: each neuron ni has activation acts[ni].
+        // We also know acts[dx], acts[dy], acts[dz] for this token.
+        // But that's the same for all neurons in this room.
+        //
+        // The RIGHT approach for "each neuron as a pixel in 3D":
+        // x = neuron_index_x (grid position)
+        // y = neuron_index_y (grid position)  
+        // z = activation value of this neuron (brightness = depth)
+        // Then rotating shows the activation landscape in 3D.
+
+        var lx = bx * halfRoom;
+        var ly = by * halfRoom;
+        var lz = (val - 0.5) * halfRoom * 1.5; // activation drives depth
+
+        // Apply shared rotation
+        var r = rot3(lx, ly, lz);
+
+        // Mini perspective projection
+        var pScale = focalLen / (focalLen + r[2]);
+        var sx = roomCX + r[0] * pScale;
+        var sy = roomCY + r[1] * pScale;
+
+        points.push({
+          sx: sx, sy: sy, z: r[2], scale: pScale,
+          val: val, ni: ni
+        });
+      }
+
+      // Sort by depth (back to front)
+      points.sort(function(a, b) { return b.z - a.z; });
+
+      // Draw neurons
+      var dotSize = Math.max(0.5, Math.min(3, roomSize / 30));
+      for (var pi = 0; pi < points.length; pi++) {
+        var pt = points[pi];
+        var rgb = neuronColor(pt.val, fibreState.colormap);
+        var depthAlpha = Math.max(0.15, Math.min(0.95, 0.7 - pt.z / (halfRoom * 3)));
+        var sz = Math.max(0.3, dotSize * pt.scale);
+
+        c.fillStyle = 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',' + depthAlpha.toFixed(2) + ')';
+        c.fillRect(pt.sx - sz / 2, pt.sy - sz / 2, sz, sz);
+      }
+
+      // Draw mini axes in corner of room
+      if (roomSize > 40) {
+        var axLen = roomSize * 0.15;
+        var axO = rot3(0, 0, 0);
+        var axX = rot3(axLen, 0, 0);
+        var axY = rot3(0, axLen, 0);
+        var axZ = rot3(0, 0, axLen);
+
+        c.globalAlpha = 0.3;
+        c.lineWidth = 0.5;
+        // X axis
+        c.strokeStyle = '#e94560';
+        c.beginPath();
+        c.moveTo(roomCX - roomSize / 2 + 8 + axO[0], roomCY + roomSize / 2 - 8 + axO[1]);
+        c.lineTo(roomCX - roomSize / 2 + 8 + axX[0], roomCY + roomSize / 2 - 8 + axX[1]);
+        c.stroke();
+        // Y axis
+        c.strokeStyle = '#53a8b6';
+        c.beginPath();
+        c.moveTo(roomCX - roomSize / 2 + 8 + axO[0], roomCY + roomSize / 2 - 8 + axO[1]);
+        c.lineTo(roomCX - roomSize / 2 + 8 + axY[0], roomCY + roomSize / 2 - 8 + axY[1]);
+        c.stroke();
+        // Z axis
+        c.strokeStyle = '#f5a623';
+        c.beginPath();
+        c.moveTo(roomCX - roomSize / 2 + 8 + axO[0], roomCY + roomSize / 2 - 8 + axO[1]);
+        c.lineTo(roomCX - roomSize / 2 + 8 + axZ[0], roomCY + roomSize / 2 - 8 + axZ[1]);
+        c.stroke();
+        c.globalAlpha = 1.0;
+      }
+
+      // Token label at bottom (only for bottom row = embedding layer)
+      if (li === 0) {
+        c.font = 'bold 8px monospace';
+        c.fillStyle = '#e94560';
+        c.textAlign = 'center';
+        c.fillText('[' + ti + ']', roomCX, roomCY + roomSize / 2 + 10);
+        if (roomSize > 30) {
+          c.font = '7px monospace';
+          c.fillStyle = '#a0a0c0';
+          c.fillText(data.tokens[ti], roomCX, roomCY + roomSize / 2 + 19);
+        }
+      }
+
+      // ---- Diffeomorphism connections to next layer ----
+      if (fibreState.showConnections && li < nLayers - 1) {
+        var nextRowIdx = nLayers - 2 - li;  // row for layer li+1
+        // Actually: li goes from nLayers-1 down to 0
+        // rowIdx for li = nLayers - 1 - li
+        // rowIdx for li+1 = nLayers - 1 - (li+1) = nLayers - 2 - li
+        // But li+1 has a SMALLER rowIdx (higher on screen)
+        // Wait, li=0 is embedding (bottom), rowIdx = nLayers-1 (bottom of screen)
+        // li=nLayers-1 is last layer, rowIdx = 0 (top of screen)
+        // So li+1 is one layer up, rowIdx is one less = higher on screen
+        var nextRoomCY = startY + (nLayers - 2 - li) * (roomSize + gapY) + roomSize / 2;
+        var nextActs = layersSource[li + 1].activations[ti];
+
+        // Draw a few connection lines between rooms
+        var connStep = Math.max(1, Math.floor(hiddenDim / Math.max(3, Math.floor(hiddenDim * fibreState.connectionDensity))));
+        c.lineWidth = 0.4;
+
+        for (var ci = 0; ci < hiddenDim; ci += connStep) {
+          var v1 = acts[ci];
+          var v2 = nextActs[ci];
+          if (useAbs) {
+            v1 = Math.abs(v1 * 2 - 1);
+            v2 = Math.abs(v2 * 2 - 1);
+          }
+          var delta = v2 - v1;
+          var absDelta = Math.abs(delta);
+          var alpha = Math.min(0.5, absDelta * 2.5);
+          if (alpha < 0.03) continue;
+
+          // Start point: bottom edge of current room
+          var sx1 = roomCX + (Math.random() - 0.5) * roomSize * 0.6;
+          var sy1 = roomCY - roomSize / 2;
+          // End point: top edge of next room (which is above = lower roomCY)
+          var sx2 = roomCX + (Math.random() - 0.5) * roomSize * 0.6;
+          var sy2 = nextRoomCY + roomSize / 2;
+
+          if (delta > 0) {
+            c.strokeStyle = 'rgba(233,69,96,' + alpha.toFixed(2) + ')';
+          } else {
+            c.strokeStyle = 'rgba(0,119,182,' + alpha.toFixed(2) + ')';
+          }
+
+          var midX = (sx1 + sx2) / 2 + Math.sin(ci * 0.3 + li) * roomSize * 0.1;
+          c.beginPath();
+          c.moveTo(sx1, sy1);
+          c.quadraticCurveTo(midX, (sy1 + sy2) / 2, sx2, sy2);
+          c.stroke();
+        }
+      }
+    }
+  }
+
+  // Base manifold label
+  c.font = 'bold 10px monospace';
+  c.fillStyle = '#53a8b6';
+  c.textAlign = 'center';
+  var totalW = nTokens * (roomSize + gapX) - gapX;
+  c.fillText('← Base Manifold: Token Index →', startX + totalW / 2, startY + nLayers * (roomSize + gapY) + 25);
+
+  // Fibre label
+  c.save();
+  c.translate(startX - 30, startY + nLayers * (roomSize + gapY) / 2);
+  c.rotate(-Math.PI / 2);
+  c.font = 'bold 10px monospace';
+  c.fillStyle = '#53a8b6';
+  c.textAlign = 'center';
+  c.fillText('← Fibre: Layer Depth →', 0, 0);
+  c.restore();
+
+  c.restore();
+
+  // HUD
+  drawFibreBundleHUD(c, W, H, nTokens, nLayers, hiddenDim, currentLayer);
+}
+
+function drawFibreBundleHUD(c, W, H, nTokens, nLayers, hiddenDim, currentLayer) {
+  var dx = +document.getElementById('sl-dx').value;
+  var dy = +document.getElementById('sl-dy').value;
+  var dz = +document.getElementById('sl-dz').value;
+
+  c.font = '11px monospace';
+  c.fillStyle = 'rgba(255,255,255,0.45)';
+  c.textAlign = 'left';
+  c.fillText(
+    'FIBRE BUNDLE  Tokens:' + nTokens +
+    '  Layers:' + nLayers + '  Neurons:' + hiddenDim +
+    '  XY grid, Z=activation' +
+    '  Colormap:' + fibreState.colormap +
+    '  Layer:' + currentLayer,
+    12, 16
+  );
+
+  c.font = '9px monospace';
+  c.fillStyle = 'rgba(255,255,255,0.3)';
+  c.fillText(
+    'Drag=Rotate All | Shift+Drag=Pan | Scroll=Zoom | [/]=Layer | C=Connections | M=Colormap | D=Density | 0=Reset',
+    12, H - 8
+  );
+}
+
+function onKeyFibre(e) {
+  if (document.activeElement === document.getElementById('txt-in')) return;
+  var maxDim = D ? D.hidden_dim - 1 : 767;
+  var sdx = document.getElementById('sl-dx');
+  var sdy = document.getElementById('sl-dy');
+  var sdz = document.getElementById('sl-dz');
+
+  if (e.key === 'ArrowRight') {
+    e.preventDefault();
+    var newX = +sdx.value + 1;
+    if (newX > maxDim) newX = 0;
+    if (newX === +sdy.value) newX = (newX + 1) % (maxDim + 1);
+    sdx.value = newX;
+    sdx.dispatchEvent(new Event('input'));
+  } else if (e.key === 'ArrowLeft') {
+    e.preventDefault();
+    var newX = +sdx.value - 1;
+    if (newX < 0) newX = maxDim;
+    if (newX === +sdy.value) newX = (newX - 1 + maxDim + 1) % (maxDim + 1);
+    sdx.value = newX;
+    sdx.dispatchEvent(new Event('input'));
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    var newY = +sdy.value + 1;
+    if (newY > maxDim) newY = 0;
+    if (newY === +sdx.value) newY = (newY + 1) % (maxDim + 1);
+    sdy.value = newY;
+    sdy.dispatchEvent(new Event('input'));
+  } else if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    var newY = +sdy.value - 1;
+    if (newY < 0) newY = maxDim;
+    if (newY === +sdx.value) newY = (newY - 1 + maxDim + 1) % (maxDim + 1);
+    sdy.value = newY;
+    sdy.dispatchEvent(new Event('input'));
+  } else if (e.key === 'PageUp') {
+    e.preventDefault();
+    var newZ = +sdz.value + 1;
+    if (newZ > maxDim) newZ = 0;
+    while (newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ + 1) % (maxDim + 1);
+    sdz.value = newZ;
+    sdz.dispatchEvent(new Event('input'));
+  } else if (e.key === 'PageDown') {
+    e.preventDefault();
+    var newZ = +sdz.value - 1;
+    if (newZ < 0) newZ = maxDim;
+    while (newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ - 1 + maxDim + 1) % (maxDim + 1);
+    sdz.value = newZ;
+    sdz.dispatchEvent(new Event('input'));
+  } else if (e.key === '.' || e.key === ']') {
+    var sl = document.getElementById('sl-layer');
+    sl.value = Math.min(+sl.max, +sl.value + 1);
+    sl.dispatchEvent(new Event('input'));
+  } else if (e.key === ',' || e.key === '[') {
+    var sl = document.getElementById('sl-layer');
+    sl.value = Math.max(0, +sl.value - 1);
+    sl.dispatchEvent(new Event('input'));
+  } else if (e.key === 'c' || e.key === 'C') {
+    fibreState.showConnections = !fibreState.showConnections;
+    draw();
+  } else if (e.key === '3') {
+    fibreState.show3D = !fibreState.show3D;
+    draw();
+  } else if (e.key === '0') {
+    zoomLevel = 1.0; panX = 0; panY = 0;
+    fibreState.scrollY = 0;
+    fibreState.rotX = -0.3; fibreState.rotY = 0.4;
+    draw();
+  } else if (e.key === 'r' || e.key === 'R') {
+    rstAll();
+  }
+}
+
+// ---- Colormaps ----
+function neuronColor(val, colormap) {
+  // val in [0, 1]
+  val = Math.max(0, Math.min(1, val));
+  if (colormap === 'coolhot') {
+    return valToColor(val);
+  } else if (colormap === 'viridis') {
+    // Approximate viridis
+    var r, g, b;
+    if (val < 0.25) {
+      var t = val / 0.25;
+      r = Math.floor(68 + t * (-4)); g = Math.floor(1 + t * 50); b = Math.floor(84 + t * 74);
+    } else if (val < 0.5) {
+      var t = (val - 0.25) / 0.25;
+      r = Math.floor(64 - t * 30); g = Math.floor(51 + t * 70); b = Math.floor(158 - t * 20);
+    } else if (val < 0.75) {
+      var t = (val - 0.5) / 0.25;
+      r = Math.floor(34 + t * 100); g = Math.floor(121 + t * 60); b = Math.floor(138 - t * 60);
+    } else {
+      var t = (val - 0.75) / 0.25;
+      r = Math.floor(134 + t * 119); g = Math.floor(181 + t * 40); b = Math.floor(78 - t * 50);
+    }
+    return [r, g, b];
+  } else {
+    // Grayscale
+    var v = Math.floor(val * 255);
+    return [v, v, v];
+  }
+}
+
+// ---- Main Fibre Bundle Drawing ----
+
+
+function drawNeuronRoom(c, x, y, w, h, gridCols, gridRows, pixSize, hiddenDim, acts, useAbs, highlight, tokenIdx, layerIdx) {
+  // Border
+  c.strokeStyle = highlight ? 'rgba(233,69,96,0.6)' : 'rgba(60,60,100,0.3)';
+  c.lineWidth = highlight ? 1.5 : 0.5;
+  c.strokeRect(x - 0.5, y - 0.5, w + 1, h + 1);
+
+  // Draw each neuron as a pixel
+  for (var ni = 0; ni < hiddenDim; ni++) {
+    var val = acts[ni];
+    if (useAbs) val = Math.abs(val * 2 - 1);
+
+    var col = ni % gridCols;
+    var row = Math.floor(ni / gridCols);
+    var px = x + col * pixSize;
+    var py = y + row * pixSize;
+
+    var rgb = neuronColor(val, fibreState.colormap);
+    c.fillStyle = 'rgb(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ')';
+    c.fillRect(px, py, pixSize, pixSize);
+  }
+
+  // Fill remaining cells dark
+  for (var ni = hiddenDim; ni < gridCols * gridRows; ni++) {
+    var col = ni % gridCols;
+    var row = Math.floor(ni / gridCols);
+    c.fillStyle = '#0a0515';
+    c.fillRect(x + col * pixSize, y + row * pixSize, pixSize, pixSize);
+  }
+}
+
+function drawDiffeoConnections(c, tokenX, layerY, nextLayerY, roomW, roomH,
+  gridCols, gridRows, pixSize, hiddenDim, acts, nextActs, useAbs, layerIdx) {
+  // Draw thin lines connecting corresponding neurons between layers
+  // Only draw a subset for performance
+  var step = Math.max(1, Math.floor(hiddenDim * (1 - fibreState.connectionDensity)));
+  if (step < 1) step = 1;
+
+  c.lineWidth = 0.3;
+
+  for (var ni = 0; ni < hiddenDim; ni += step) {
+    var val = acts[ni];
+    var nextVal = nextActs[ni];
+    if (useAbs) {
+      val = Math.abs(val * 2 - 1);
+      nextVal = Math.abs(nextVal * 2 - 1);
+    }
+
+    var col = ni % gridCols;
+    var row = Math.floor(ni / gridCols);
+
+    var x1 = tokenX + col * pixSize + pixSize / 2;
+    var y1 = layerY + row * pixSize + pixSize / 2;
+    var x2 = tokenX + col * pixSize + pixSize / 2;
+    var y2 = nextLayerY + roomH + row * pixSize + pixSize / 2;
+
+    // Color based on activation change
+    var delta = nextVal - val;
+    var absDelta = Math.abs(delta);
+    var alpha = Math.min(0.6, absDelta * 3);
+
+    if (alpha < 0.02) continue;
+
+    if (delta > 0) {
+      c.strokeStyle = 'rgba(233,69,96,' + alpha.toFixed(2) + ')'; // expansion = red
+    } else {
+      c.strokeStyle = 'rgba(0,119,182,' + alpha.toFixed(2) + ')'; // contraction = blue
+    }
+
+    // Slight curve for visual appeal
+    var midX = x1 + Math.sin(ni * 0.1 + layerIdx) * 3;
+    var midY = (y1 + y2) / 2;
+
+    c.beginPath();
+    c.moveTo(x1, y1);
+    c.quadraticCurveTo(midX, midY, x2, y2);
+    c.stroke();
+  }
+}
+
+// ---- 3D Pseudo-Perspective Fibre View ----
+function drawFibreBundle3D(c, W, H, data, layersSource, nTokens, nLayers, hiddenDim,
+  gridCols, gridRows, pixSize, roomW, roomH, tokenGap, layerGap, useAbs, currentLayer, offsetX, offsetY) {
+
+  var dx = +document.getElementById('sl-dx').value;
+  var dy = +document.getElementById('sl-dy').value;
+  var dz = +document.getElementById('sl-dz').value;
+
+  // In 3D mode:
+  // X axis = token index
+  // Y axis = layer depth (fibre)
+  // Z axis = a chosen hidden dimension's activation value
+
+  var totalTokenW = nTokens * (roomW + tokenGap) - tokenGap;
+  var focalLen = 500;
+
+  function rot3D(x, y, z) {
+    var cosY = Math.cos(fibreState.rotY), sinY = Math.sin(fibreState.rotY);
+    var x1 = x * cosY + z * sinY, z1 = -x * sinY + z * cosY;
+    var cosX = Math.cos(fibreState.rotX), sinX = Math.sin(fibreState.rotX);
+    var y1 = y * cosX - z1 * sinX, z2 = y * sinX + z1 * cosX;
+    return [x1, y1, z2];
+  }
+
+  function proj(x, y, z) {
+    var r = rot3D(x, y, z);
+    var scale = focalLen / (focalLen + r[2]);
+    return [W / (2 * zoomLevel) + r[0] * scale, H / (2 * zoomLevel) + r[1] * scale, r[2], scale];
+  }
+
+  // Scale factors
+  var xScale = 200;  // spread tokens
+  var yScale = 40;   // spread layers
+  var zScale = 80;   // depth from activation
+
+  // Draw from back to front (painter's algorithm by layer)
+  for (var li = 0; li < nLayers; li++) {
+    var layerDepth = (li - nLayers / 2) * yScale;
+    var isCurrentLayer = (li === currentLayer + 1) || (li === 0 && currentLayer === 0);
+
+    for (var ti = 0; ti < nTokens; ti++) {
+      var tokenOffset = (ti - nTokens / 2) * (roomW + tokenGap) * 0.8;
+      var acts = layersSource[li].activations[ti];
+
+      // For each neuron, compute a 3D position
+      // X = token position + neuron column offset
+      // Y = layer position + neuron row offset
+      // Z = activation value of a chosen dimension (dz)
+
+      // Draw the room as a small grid of projected pixels
+      for (var ni = 0; ni < hiddenDim; ni++) {
+        var val = acts[ni];
+        if (useAbs) val = Math.abs(val * 2 - 1);
+
+        var col = ni % gridCols;
+        var row = Math.floor(ni / gridCols);
+
+        var wx = tokenOffset + (col - gridCols / 2) * pixSize * 0.5;
+        var wy = layerDepth + (row - gridRows / 2) * pixSize * 0.3;
+        var wz = (val - 0.5) * zScale;
+
+        var p = proj(wx, wy, wz);
+        var sz = Math.max(0.5, pixSize * 0.4 * p[3]);
+
+        var rgb = neuronColor(val, fibreState.colormap);
+        var depthAlpha = Math.max(0.1, Math.min(0.9, 0.7 - p[2] * 0.001));
+        c.fillStyle = 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',' + depthAlpha.toFixed(2) + ')';
+        c.fillRect(p[0] - sz / 2, p[1] - sz / 2, sz, sz);
+      }
+
+      // Token label
+      if (li === 0) {
+        var lp = proj(tokenOffset, layerDepth + gridRows * pixSize * 0.2, 0);
+        c.font = Math.max(7, Math.round(9 * lp[3])) + 'px monospace';
+        c.fillStyle = '#e94560';
+        c.textAlign = 'center';
+        c.fillText(data.tokens[ti], lp[0], lp[1] + 12);
+      }
+    }
+
+    // Layer label
+    var llp = proj(-nTokens / 2 * (roomW + tokenGap) * 0.8 - 40, layerDepth, 0);
+    c.font = '8px monospace';
+    c.fillStyle = isCurrentLayer ? '#e94560' : '#555';
+    c.textAlign = 'right';
+    var layerLabel = li === 0 ? 'Emb' : 'L' + (li - 1);
+    c.fillText(layerLabel, llp[0], llp[1] + 3);
+  }
+
+  // Draw 3D axes
+  var axLen = 80;
+  var axes = [
+    { v: [1, 0, 0], label: 'Token →', color: '#e94560' },
+    { v: [0, 1, 0], label: 'Layer ↑', color: '#53a8b6' },
+    { v: [0, 0, 1], label: 'Dim ' + dz, color: '#f5a623' }
+  ];
+  var o3 = proj(0, 0, 0);
+  for (var ai = 0; ai < 3; ai++) {
+    var ax = axes[ai];
+    var e3 = proj(ax.v[0] * axLen, ax.v[1] * axLen, ax.v[2] * axLen);
+    c.strokeStyle = ax.color;
+    c.globalAlpha = 0.5;
+    c.lineWidth = 1.5;
+    c.beginPath();
+    c.moveTo(o3[0], o3[1]);
+    c.lineTo(e3[0], e3[1]);
+    c.stroke();
+    c.globalAlpha = 1;
+    c.font = '9px monospace';
+    c.fillStyle = ax.color;
+    c.textAlign = 'left';
+    c.fillText(ax.label, e3[0] + 4, e3[1] - 4);
+  }
+}
+
+// ---- Mouse interaction for fibre view ----
+cv3d.addEventListener('mousedown', function(e) {
+  if (viewMode !== 'fibre') return;
+  if (e.button === 0 && !e.shiftKey) {
+    // Normal drag = rotate all rooms
+    fibreState.dragActive = true;
+    fibreState.dragLastX = e.clientX;
+    fibreState.dragLastY = e.clientY;
+    e.preventDefault();
+    return;
+  }
+  if (e.button === 1 || (e.button === 0 && e.shiftKey)) {
+    // Shift+drag or middle = pan
+    e.preventDefault();
+    panActive = true;
+    panLastX = e.clientX;
+    panLastY = e.clientY;
+  }
+});
+
+window.addEventListener('mousemove', function(e) {
+  if (viewMode !== 'fibre') return;
+  if (fibreState.dragActive) {
+    var ddx = e.clientX - fibreState.dragLastX;
+    var ddy = e.clientY - fibreState.dragLastY;
+    fibreState.rotY += ddx * 0.005;
+    fibreState.rotX += ddy * 0.005;
+    fibreState.rotX = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, fibreState.rotX));
+    fibreState.dragLastX = e.clientX;
+    fibreState.dragLastY = e.clientY;
+    draw();
+    return;
+  }
+});
+
+window.addEventListener('mouseup', function(e) {
+  if (viewMode === 'fibre') {
+    fibreState.dragActive = false;
+  }
+});
+
+// Colormap cycling with 'M' key in fibre mode
+var _origOnKeyFibre = onKeyFibre;
+onKeyFibre = function(e) {
+  if (e.key === 'm' || e.key === 'M') {
+    var maps = ['grayscale', 'coolhot', 'viridis'];
+    var idx = maps.indexOf(fibreState.colormap);
+    fibreState.colormap = maps[(idx + 1) % maps.length];
+    document.getElementById('status').textContent = 'Colormap: ' + fibreState.colormap;
+    draw();
+    return;
+  }
+  if (e.key === 'd' || e.key === 'D') {
+    // Adjust connection density
+    fibreState.connectionDensity = Math.min(1.0, fibreState.connectionDensity + 0.05);
+    if (fibreState.connectionDensity > 1.0) fibreState.connectionDensity = 0.02;
+    document.getElementById('status').textContent =
+      'Connection density: ' + (fibreState.connectionDensity * 100).toFixed(0) + '%';
+    draw();
+    return;
+  }
+  _origOnKeyFibre(e);
+};
+
+// ---- Fibre view button in sidebar ----
+// Add the button dynamically if it doesn't exist
+(function() {
+  var toggleDiv = document.querySelector('.view-toggle');
+  if (toggleDiv && !document.getElementById('btn-fibre')) {
+    var btn = document.createElement('button');
+    btn.id = 'btn-fibre';
+    btn.textContent = 'Fibre Bundle';
+    btn.onclick = function() { setViewMode('fibre'); };
+    toggleDiv.appendChild(btn);
+  }
+})();
 </script></body></html>"""
 
 
