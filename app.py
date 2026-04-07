@@ -3582,17 +3582,19 @@ function drawFibreBundle() {
   // ---- Layout ----
   // Columns = tokens (base manifold)
   // Rows = layers (fibre), bottom = layer 0, top = last layer
-  var margin = 50;
-  var labelW = 45;
-  var labelH = 35;
+    var margin = 30;
+    var labelW = 35;
+    var labelH = 25;
   var availW = (W / zoomLevel) - 2 * margin - labelW;
   var availH = (H / zoomLevel) - 2 * margin - labelH;
 
-  var roomW = Math.max(30, Math.floor(availW / nTokens) - 6);
-  var roomH = Math.max(30, Math.floor(availH / nLayers) - 6);
-  var roomSize = Math.min(roomW, roomH);
-  var gapX = Math.max(4, Math.floor(roomSize * 0.12));
-  var gapY = Math.max(4, Math.floor(roomSize * 0.12));
+    var gapFracX = 0.35;  // gap as fraction of room size
+    var gapFracY = 0.35;
+    var roomW = Math.max(30, Math.floor(availW / (nTokens * (1 + gapFracX))) );
+    var roomH = Math.max(30, Math.floor(availH / (nLayers * (1 + gapFracY))) );
+    var roomSize = Math.min(roomW, roomH);
+    var gapX = Math.max(8, Math.floor(roomSize * gapFracX));
+    var gapY = Math.max(8, Math.floor(roomSize * gapFracY));
 
   // Precompute fixed positions for the 2 chosen dims
   var fx = new Float64Array(nP), fy = new Float64Array(nP);
@@ -3890,7 +3892,7 @@ function drawFibreBundle() {
         }
         c.lineWidth = Math.min(2, 0.3 + moveDist * 0.005);
 
-        var midX = (sx1 + sx2) / 2 + Math.sin(ti * 1.5 + li * 0.7) * gapX * 0.3;
+        var midX = (sx1 + sx2) / 2 + Math.sin(ti * 1.5 + li * 0.7) * gapX * 0.6;
         c.beginPath();
         c.moveTo(sx1, sy1);
         c.quadraticCurveTo(midX, (sy1 + sy2) / 2, sx2, sy2);
