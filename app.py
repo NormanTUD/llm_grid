@@ -3543,75 +3543,85 @@ function drawFibreBundle() {
     return;
   }
 
-  if (!fibreState.neuronData) {
-    c.font = '14px monospace';
-    c.fillStyle = '#53a8b6';
-    c.fillText(fibreState.loading ? 'Loading neuron activations...' : 'Switch to Fibre view to auto-load', 40, H / 2);
-    return;
-  }
+  // We use D (the main data with deltas) for the deformation grids,
+  // and fibreState.neuronData for the pixel overlay if available.
+  // But the key visualization is the DEFORMED GRID per room.
 
-  var data = fibreState.neuronData;
-  var nTokens = data.n_tokens;
-  var nLayers = data.n_layers;
-  var hiddenDim = data.hidden_dim;
-  var normMode = document.getElementById('ng-norm').value;
-  var layersSource = (normMode === 'global') ? data.global_norm : data.layer_norm;
-  var useAbs = document.getElementById('ng-absval').checked;
-  var currentLayer = +document.getElementById('sl-layer').value;
+  var nTokens = D.n_real;
+  var nLayers = D.n_layers;
+  var hiddenDim = D.hidden_dim;
+  var nP = D.n_points;
 
   var dx = +document.getElementById('sl-dx').value;
   var dy = +document.getElementById('sl-dy').value;
-  var dz = +document.getElementById('sl-dz').value;
+  var amp = +document.getElementById('sl-amp').value;
+  var t = +document.getElementById('sl-t').value;
+  var sig = +document.getElementById('sl-sig').value;
+  var currentLayer = +document.getElementById('sl-layer').value;
+  var showGrid = document.getElementById('cb-grid').checked;
+  var showHeat = document.getElementById('cb-heat').checked;
+  var showSC = document.getElementById('cb-sc').checked;
 
-  // Clamp dims to valid range
+  // Use the active deltas based on decomposition selector
+  var activeDeltas = getActiveDeltas();
+  if (!activeDeltas) activeDeltas = D.deltas;
+
+  // Clamp dims
   dx = Math.min(dx, hiddenDim - 1);
   dy = Math.min(dy, hiddenDim - 1);
-  dz = Math.min(dz, hiddenDim - 1);
 
-  // ---- Layout: grid of 3D rooms ----
+  // ---- Layout ----
   // Columns = tokens (base manifold)
-  // Rows = layers (fibre), bottom = embedding, top = final layer
-  // Each room is a mini 3D scatter of neurons
-
-  // Room sizing
+  // Rows = layers (fibre), bottom = layer 0, top = last layer
   var margin = 50;
-  var labelW = 40;  // left margin for layer labels
-  var labelH = 30;  // bottom margin for token labels
+  var labelW = 45;
+  var labelH = 35;
   var availW = (W / zoomLevel) - 2 * margin - labelW;
   var availH = (H / zoomLevel) - 2 * margin - labelH;
 
-  var roomW = Math.max(20, Math.floor(availW / nTokens) - 4);
-  var roomH = Math.max(20, Math.floor(availH / nLayers) - 4);
+  var roomW = Math.max(30, Math.floor(availW / nTokens) - 6);
+  var roomH = Math.max(30, Math.floor(availH / nLayers) - 6);
   var roomSize = Math.min(roomW, roomH);
-  var gapX = Math.max(4, Math.floor(roomSize * 0.15));
-  var gapY = Math.max(4, Math.floor(roomSize * 0.15));
+  var gapX = Math.max(4, Math.floor(roomSize * 0.12));
+  var gapY = Math.max(4, Math.floor(roomSize * 0.12));
 
-  // Shared 3D rotation for ALL rooms
-  var cosRY = Math.cos(fibreState.rotY), sinRY = Math.sin(fibreState.rotY);
-  var cosRX = Math.cos(fibreState.rotX), sinRX = Math.sin(fibreState.rotX);
-
-  function rot3(x, y, z) {
-    var x1 = x * cosRY + z * sinRY;
-    var z1 = -x * sinRY + z * cosRY;
-    var y1 = y * cosRX - z1 * sinRX;
-    var z2 = y * sinRX + z1 * cosRX;
-    return [x1, y1, z2];
+  // Precompute fixed positions for the 2 chosen dims
+  var fx = new Float64Array(nP), fy = new Float64Array(nP);
+  for (var i = 0; i < nP; i++) {
+    fx[i] = D.fixed_pos[i][dx];
+    fy[i] = D.fixed_pos[i][dy];
   }
 
-  // For each room, we need to know the raw activation values (not just normalized)
-  // to position neurons in 3D by their actual dim values.
-  // But we only have normalized [0,1] data from the server.
-  // We'll use the normalized values directly as coordinates — they're already spread [0,1].
+  // Compute global range for consistent scaling across all rooms
+  var mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
+  for (var i = 0; i < nP; i++) {
+    if (fx[i] < mnx) mnx = fx[i]; if (fx[i] > mxx) mxx = fx[i];
+    if (fy[i] < mny) mny = fy[i]; if (fy[i] > mxy) mxy = fy[i];
+  }
+  var mr = Math.max(mxx - mnx, mxy - mny) || 1;
+  var cxv = (mnx + mxx) / 2, cyv = (mny + mxy) / 2;
+  var pd = 0.15;
+  var vx0 = cxv - mr * (0.5 + pd), vy0 = cyv - mr * (0.5 + pd);
+  var vw = mr * (1 + 2 * pd), vh = vw;
 
-  // Precompute per-room: for each (token, layer), get the activation array
-  // and compute 3D positions for a subsample of neurons
+  // Precompute per-layer deltas for each point (in the 2 chosen dims)
+  // edx[layer][point], edy[layer][point]
+  var edxAll = [];
+  var edyAll = [];
+  for (var lay = 0; lay < nLayers; lay++) {
+    var edxL = new Float64Array(nP);
+    var edyL = new Float64Array(nP);
+    for (var j = 0; j < nP; j++) {
+      edxL[j] = activeDeltas[lay][j][dx] * amp;
+      edyL[j] = activeDeltas[lay][j][dy] * amp;
+    }
+    edxAll.push(edxL);
+    edyAll.push(edyL);
+  }
 
-  // Subsample neurons for performance
-  var maxNeuronsPerRoom = Math.min(hiddenDim, Math.max(200, Math.floor(8000 / (nTokens * nLayers))));
-  var neuronStep = Math.max(1, Math.floor(hiddenDim / maxNeuronsPerRoom));
-
-  // Focal length for mini perspective
-  var focalLen = roomSize * 2.5;
+  // Grid resolution per room
+  var N = Math.max(4, Math.min(16, Math.floor(roomSize / 4)));
+  var s2i = 1 / (2 * sig * sig);
 
   c.save();
   c.translate(panX, panY);
@@ -3620,221 +3630,253 @@ function drawFibreBundle() {
   var startX = margin + labelW;
   var startY = margin;
 
-  // Draw from back layers to front for proper overlap
-  for (var li = nLayers - 1; li >= 0; li--) {
-    // Row position: layer 0 (embedding) at bottom, last layer at top
+  // Draw each room
+  for (var li = 0; li < nLayers; li++) {
+    // Row position: layer 0 at bottom, last layer at top
     var rowIdx = nLayers - 1 - li;
-    var roomCY = startY + rowIdx * (roomSize + gapY) + roomSize / 2;
-
-    var isCurrentLayer = (li === currentLayer + 1) || (li === 0 && currentLayer === 0);
+    var roomCY = startY + rowIdx * (roomSize + gapY);
+    var isCurrentLayer = (li === currentLayer);
 
     // Layer label
     c.font = (isCurrentLayer ? 'bold ' : '') + '9px monospace';
     c.fillStyle = isCurrentLayer ? '#e94560' : '#666';
     c.textAlign = 'right';
-    var layerLabel = li === 0 ? 'Emb' : 'L' + (li - 1);
-    c.fillText(layerLabel, startX - 8, roomCY + 3);
+    c.fillText('L' + li, startX - 8, roomCY + roomSize / 2 + 3);
+
+    // Get the cumulative deltas up to this layer
+    var edxCum = new Float64Array(nP);
+    var edyCum = new Float64Array(nP);
+    for (var cl = 0; cl <= li; cl++) {
+      for (var j = 0; j < nP; j++) {
+        edxCum[j] += edxAll[cl][j];
+        edyCum[j] += edyAll[cl][j];
+      }
+    }
 
     for (var ti = 0; ti < nTokens; ti++) {
-      var roomCX = startX + ti * (roomSize + gapX) + roomSize / 2;
-      var acts = layersSource[li].activations[ti]; // array of hiddenDim floats [0,1]
+      var roomCX = startX + ti * (roomSize + gapX);
 
-      // Draw room background
-      var bgAlpha = isCurrentLayer ? 0.12 : 0.06;
+      // Room background
+      var bgAlpha = isCurrentLayer ? 0.15 : 0.06;
       c.fillStyle = 'rgba(30,30,60,' + bgAlpha + ')';
-      c.fillRect(roomCX - roomSize / 2, roomCY - roomSize / 2, roomSize, roomSize);
+      c.fillRect(roomCX, roomCY, roomSize, roomSize);
 
       // Room border
-      c.strokeStyle = isCurrentLayer ? 'rgba(233,69,96,0.5)' : 'rgba(60,60,100,0.2)';
+      c.strokeStyle = isCurrentLayer ? 'rgba(233,69,96,0.6)' : 'rgba(60,60,100,0.25)';
       c.lineWidth = isCurrentLayer ? 1.5 : 0.5;
-      c.strokeRect(roomCX - roomSize / 2, roomCY - roomSize / 2, roomSize, roomSize);
+      c.strokeRect(roomCX, roomCY, roomSize, roomSize);
 
-      // ---- Draw neurons as 3D scatter inside this room ----
-      // Each neuron's position:
-      //   local x = acts[dx] (normalized 0-1)
-      //   local y = acts[dy] (normalized 0-1)
-      //   local z = acts[dz] (normalized 0-1)
-      // Color = activation brightness (average or specific dim)
+      // ---- Build deformed grid for this room ----
+      // Map the global embedding space into this room's pixel space
+      var nV = (N + 1) * (N + 1);
+      var oX = new Float64Array(nV), oY = new Float64Array(nV);
+      var gX = new Float64Array(nV), gY = new Float64Array(nV);
 
-      var halfRoom = roomSize * 0.42;
-      var points = [];
-
-      for (var ni = 0; ni < hiddenDim; ni += neuronStep) {
-        var ax = acts[dx] !== undefined ? acts[dx] : 0;
-        var ay = acts[dy] !== undefined ? acts[dy] : 0;
-        var az = acts[dz] !== undefined ? acts[dz] : 0;
-
-        // Use THIS neuron's value for position along the chosen dims
-        // But we want each neuron at a DIFFERENT position.
-        // The key insight: neuron ni's activation IS its "value",
-        // but we want to scatter neurons in 3D space.
-        //
-        // Position neuron ni by:
-        //   x = acts[ni] projected onto dim dx direction
-        //   y = acts[ni] projected onto dim dy direction  
-        //   z = acts[ni] projected onto dim dz direction
-        //
-        // Actually, each neuron IS a dimension. So neuron ni lives at
-        // a position determined by its index and its activation value.
-        // 
-        // Better approach: use the neuron index to define a base position
-        // (like a grid), then DISPLACE by the activation value.
-        // This way, changing dims changes which neurons cluster where.
-
-        // Base position: neuron index mapped to a grid
-        var gridCols = Math.ceil(Math.sqrt(hiddenDim));
-        var baseCol = ni % gridCols;
-        var baseRow = Math.floor(ni / gridCols);
-        var gridRows = Math.ceil(hiddenDim / gridCols);
-
-        // Normalized base position [-1, 1]
-        var bx = (baseCol / (gridCols - 1 || 1)) * 2 - 1;
-        var by = (baseRow / (gridRows - 1 || 1)) * 2 - 1;
-
-        // The activation value for this neuron
-        var val = acts[ni];
-        if (useAbs) val = Math.abs(val * 2 - 1);
-
-        // 3D position: base grid on XY, activation on Z
-        // But we want dims to matter. So:
-        // - Sort/arrange neurons by their proximity to the chosen dims
-        // - Use dim dx value as x-displacement, dim dy as y-displacement, dim dz as z
-        
-        // Approach: each neuron ni has activation acts[ni].
-        // We also know acts[dx], acts[dy], acts[dz] for this token.
-        // But that's the same for all neurons in this room.
-        //
-        // The RIGHT approach for "each neuron as a pixel in 3D":
-        // x = neuron_index_x (grid position)
-        // y = neuron_index_y (grid position)  
-        // z = activation value of this neuron (brightness = depth)
-        // Then rotating shows the activation landscape in 3D.
-
-        var lx = bx * halfRoom;
-        var ly = by * halfRoom;
-        var lz = (val - 0.5) * halfRoom * 1.5; // activation drives depth
-
-        // Apply shared rotation
-        var r = rot3(lx, ly, lz);
-
-        // Mini perspective projection
-        var pScale = focalLen / (focalLen + r[2]);
-        var sx = roomCX + r[0] * pScale;
-        var sy = roomCY + r[1] * pScale;
-
-        points.push({
-          sx: sx, sy: sy, z: r[2], scale: pScale,
-          val: val, ni: ni
-        });
+      for (var gy = 0; gy <= N; gy++) {
+        for (var gx = 0; gx <= N; gx++) {
+          var gi = gy * (N + 1) + gx;
+          oX[gi] = vx0 + (gx / N) * vw;
+          oY[gi] = vy0 + (gy / N) * vh;
+        }
       }
 
-      // Sort by depth (back to front)
-      points.sort(function(a, b) { return b.z - a.z; });
-
-      // Draw neurons
-      var dotSize = Math.max(0.5, Math.min(3, roomSize / 30));
-      for (var pi = 0; pi < points.length; pi++) {
-        var pt = points[pi];
-        var rgb = neuronColor(pt.val, fibreState.colormap);
-        var depthAlpha = Math.max(0.15, Math.min(0.95, 0.7 - pt.z / (halfRoom * 3)));
-        var sz = Math.max(0.3, dotSize * pt.scale);
-
-        c.fillStyle = 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',' + depthAlpha.toFixed(2) + ')';
-        c.fillRect(pt.sx - sz / 2, pt.sy - sz / 2, sz, sz);
+      // RBF interpolation of deformation field onto grid
+      for (var gi = 0; gi < nV; gi++) {
+        var px = oX[gi], py = oY[gi];
+        var vvx = 0, vvy = 0, ws = 0;
+        for (var k = 0; k < nP; k++) {
+          var eex = px - fx[k], eey = py - fy[k];
+          var w = Math.exp(-(eex * eex + eey * eey) * s2i);
+          vvx += w * edxCum[k];
+          vvy += w * edyCum[k];
+          ws += w;
+        }
+        if (ws > 1e-15) { vvx /= ws; vvy /= ws; }
+        gX[gi] = px + t * vvx;
+        gY[gi] = py + t * vvy;
       }
 
-      // Draw mini axes in corner of room
-      if (roomSize > 40) {
-        var axLen = roomSize * 0.15;
-        var axO = rot3(0, 0, 0);
-        var axX = rot3(axLen, 0, 0);
-        var axY = rot3(0, axLen, 0);
-        var axZ = rot3(0, 0, axLen);
-
-        c.globalAlpha = 0.3;
-        c.lineWidth = 0.5;
-        // X axis
-        c.strokeStyle = '#e94560';
-        c.beginPath();
-        c.moveTo(roomCX - roomSize / 2 + 8 + axO[0], roomCY + roomSize / 2 - 8 + axO[1]);
-        c.lineTo(roomCX - roomSize / 2 + 8 + axX[0], roomCY + roomSize / 2 - 8 + axX[1]);
-        c.stroke();
-        // Y axis
-        c.strokeStyle = '#53a8b6';
-        c.beginPath();
-        c.moveTo(roomCX - roomSize / 2 + 8 + axO[0], roomCY + roomSize / 2 - 8 + axO[1]);
-        c.lineTo(roomCX - roomSize / 2 + 8 + axY[0], roomCY + roomSize / 2 - 8 + axY[1]);
-        c.stroke();
-        // Z axis
-        c.strokeStyle = '#f5a623';
-        c.beginPath();
-        c.moveTo(roomCX - roomSize / 2 + 8 + axO[0], roomCY + roomSize / 2 - 8 + axO[1]);
-        c.lineTo(roomCX - roomSize / 2 + 8 + axZ[0], roomCY + roomSize / 2 - 8 + axZ[1]);
-        c.stroke();
-        c.globalAlpha = 1.0;
+      // Compute strain for grid edges
+      var sH = new Float64Array(N * (N + 1));
+      var sV = new Float64Array((N + 1) * N);
+      for (var ey = 0; ey <= N; ey++) {
+        for (var ex = 0; ex < N; ex++) {
+          var a = ey * (N + 1) + ex, b = a + 1;
+          var od = Math.hypot(oX[b] - oX[a], oY[b] - oY[a]);
+          var dd = Math.hypot(gX[b] - gX[a], gY[b] - gY[a]);
+          sH[ey * N + ex] = od > 1e-12 ? dd / od : 1;
+        }
+      }
+      for (var ey = 0; ey < N; ey++) {
+        for (var ex = 0; ex <= N; ex++) {
+          var a = ey * (N + 1) + ex, b = (ey + 1) * (N + 1) + ex;
+          var od = Math.hypot(oX[b] - oX[a], oY[b] - oY[a]);
+          var dd = Math.hypot(gX[b] - gX[a], gY[b] - gY[a]);
+          sV[ey * (N + 1) + ex] = od > 1e-12 ? dd / od : 1;
+        }
       }
 
-      // Token label at bottom (only for bottom row = embedding layer)
+      // Map from world coords to room pixel coords
+      function RX(wx) { return roomCX + ((wx - vx0) / vw) * roomSize; }
+      function RY(wy) { return roomCY + ((wy - vy0) / vh) * roomSize; }
+      function RXd(wx) { return roomCX + ((wx - vx0) / vw) * roomSize; }
+      function RYd(wy) { return roomCY + ((wy - vy0) / vh) * roomSize; }
+
+      // ---- Draw strain heatmap ----
+      if (showHeat) {
+        for (var hy = 0; hy < N; hy++) {
+          for (var hx = 0; hx < N; hx++) {
+            var avg = (sH[hy * N + hx] + sH[(hy + 1) * N + hx] +
+                       sV[hy * (N + 1) + hx] + sV[hy * (N + 1) + hx + 1]) / 4;
+            var co = s2c(avg);
+            var i00 = hy * (N + 1) + hx, i10 = i00 + 1;
+            var i01 = (hy + 1) * (N + 1) + hx, i11 = i01 + 1;
+            c.beginPath();
+            c.moveTo(RXd(gX[i00]), RYd(gY[i00]));
+            c.lineTo(RXd(gX[i10]), RYd(gY[i10]));
+            c.lineTo(RXd(gX[i11]), RYd(gY[i11]));
+            c.lineTo(RXd(gX[i01]), RYd(gY[i01]));
+            c.closePath();
+            c.fillStyle = 'rgba(' + co[0] + ',' + co[1] + ',' + co[2] + ',0.4)';
+            c.fill();
+          }
+        }
+      }
+
+      // ---- Draw deformed grid lines ----
+      if (showGrid) {
+        c.lineWidth = 0.6;
+        // Horizontal
+        for (var dhy = 0; dhy <= N; dhy++) {
+          for (var dhx = 0; dhx < N; dhx++) {
+            var di1 = dhy * (N + 1) + dhx, di2 = di1 + 1;
+            var es = sH[dhy * N + dhx];
+            if (showSC) {
+              var ec = s2c(es);
+              c.strokeStyle = 'rgba(' + ec[0] + ',' + ec[1] + ',' + ec[2] + ',0.8)';
+            } else {
+              c.strokeStyle = 'rgba(200,200,200,0.4)';
+            }
+            c.beginPath();
+            c.moveTo(RXd(gX[di1]), RYd(gY[di1]));
+            c.lineTo(RXd(gX[di2]), RYd(gY[di2]));
+            c.stroke();
+          }
+        }
+        // Vertical
+        for (var dvx = 0; dvx <= N; dvx++) {
+          for (var dvy = 0; dvy < N; dvy++) {
+            var dvi1 = dvy * (N + 1) + dvx, dvi2 = (dvy + 1) * (N + 1) + dvx;
+            var vs = sV[dvy * (N + 1) + dvx];
+            if (showSC) {
+              var vc = s2c(vs);
+              c.strokeStyle = 'rgba(' + vc[0] + ',' + vc[1] + ',' + vc[2] + ',0.8)';
+            } else {
+              c.strokeStyle = 'rgba(200,200,200,0.4)';
+            }
+            c.beginPath();
+            c.moveTo(RXd(gX[dvi1]), RYd(gY[dvi1]));
+            c.lineTo(RXd(gX[dvi2]), RYd(gY[dvi2]));
+            c.stroke();
+          }
+        }
+      }
+
+      // ---- Draw real token dot in this room ----
+      var tokX = RX(fx[ti]);
+      var tokY = RY(fy[ti]);
+      // Deformed position
+      var tokDX = RXd(fx[ti] + t * edxCum[ti]);
+      var tokDY = RYd(fy[ti] + t * edyCum[ti]);
+
+      // Arrow from original to deformed
+      if (Math.hypot(tokDX - tokX, tokDY - tokY) > 1) {
+        c.strokeStyle = 'rgba(255,255,100,0.5)';
+        c.lineWidth = 0.8;
+        c.beginPath();
+        c.moveTo(tokX, tokY);
+        c.lineTo(tokDX, tokDY);
+        c.stroke();
+      }
+
+      // Token dot
+      c.beginPath();
+      c.arc(tokDX, tokDY, Math.max(2, roomSize / 20), 0, Math.PI * 2);
+      var tc = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71',
+                '#e74c3c','#3498db','#9b59b6','#1abc9c','#e67e22'];
+      c.fillStyle = tc[ti % tc.length];
+      c.fill();
+      c.strokeStyle = '#fff';
+      c.lineWidth = 0.5;
+      c.stroke();
+
+      // Token label at bottom (only for bottom row)
       if (li === 0) {
         c.font = 'bold 8px monospace';
         c.fillStyle = '#e94560';
         c.textAlign = 'center';
-        c.fillText('[' + ti + ']', roomCX, roomCY + roomSize / 2 + 10);
-        if (roomSize > 30) {
+        c.fillText('[' + ti + ']', roomCX + roomSize / 2, roomCY + roomSize + 10);
+        if (roomSize > 35) {
           c.font = '7px monospace';
           c.fillStyle = '#a0a0c0';
-          c.fillText(data.tokens[ti], roomCX, roomCY + roomSize / 2 + 19);
+          c.fillText(D.tokens[ti], roomCX + roomSize / 2, roomCY + roomSize + 19);
+        }
+      }
+    }
+
+    // ---- Diffeomorphism connections between layers ----
+    if (fibreState.showConnections && li < nLayers - 1) {
+      var nextRowIdx = nLayers - 2 - li;
+      var nextRoomCY = startY + nextRowIdx * (roomSize + gapY);
+
+      // Compute next layer cumulative deltas
+      var edxNext = new Float64Array(nP);
+      var edyNext = new Float64Array(nP);
+      for (var cl = 0; cl <= li + 1; cl++) {
+        for (var j = 0; j < nP; j++) {
+          edxNext[j] += edxAll[cl][j];
+          edyNext[j] += edyAll[cl][j];
         }
       }
 
-      // ---- Diffeomorphism connections to next layer ----
-      if (fibreState.showConnections && li < nLayers - 1) {
-        var nextRowIdx = nLayers - 2 - li;  // row for layer li+1
-        // Actually: li goes from nLayers-1 down to 0
-        // rowIdx for li = nLayers - 1 - li
-        // rowIdx for li+1 = nLayers - 1 - (li+1) = nLayers - 2 - li
-        // But li+1 has a SMALLER rowIdx (higher on screen)
-        // Wait, li=0 is embedding (bottom), rowIdx = nLayers-1 (bottom of screen)
-        // li=nLayers-1 is last layer, rowIdx = 0 (top of screen)
-        // So li+1 is one layer up, rowIdx is one less = higher on screen
-        var nextRoomCY = startY + (nLayers - 2 - li) * (roomSize + gapY) + roomSize / 2;
-        var nextActs = layersSource[li + 1].activations[ti];
+      for (var ti = 0; ti < nTokens; ti++) {
+        var roomCXt = startX + ti * (roomSize + gapX);
 
-        // Draw a few connection lines between rooms
-        var connStep = Math.max(1, Math.floor(hiddenDim / Math.max(3, Math.floor(hiddenDim * fibreState.connectionDensity))));
-        c.lineWidth = 0.4;
+        // Current token deformed position
+        var curX = roomCXt + ((fx[ti] + t * edxCum[ti] - vx0) / vw) * roomSize;
+        var curY = roomCY + ((fy[ti] + t * edyCum[ti] - vy0) / vh) * roomSize;
 
-        for (var ci = 0; ci < hiddenDim; ci += connStep) {
-          var v1 = acts[ci];
-          var v2 = nextActs[ci];
-          if (useAbs) {
-            v1 = Math.abs(v1 * 2 - 1);
-            v2 = Math.abs(v2 * 2 - 1);
-          }
-          var delta = v2 - v1;
-          var absDelta = Math.abs(delta);
-          var alpha = Math.min(0.5, absDelta * 2.5);
-          if (alpha < 0.03) continue;
+        // Next layer token deformed position
+        var nxtX = roomCXt + ((fx[ti] + t * edxNext[ti] - vx0) / vw) * roomSize;
+        var nxtY = nextRoomCY + ((fy[ti] + t * edyNext[ti] - vy0) / vh) * roomSize;
 
-          // Start point: bottom edge of current room
-          var sx1 = roomCX + (Math.random() - 0.5) * roomSize * 0.6;
-          var sy1 = roomCY - roomSize / 2;
-          // End point: top edge of next room (which is above = lower roomCY)
-          var sx2 = roomCX + (Math.random() - 0.5) * roomSize * 0.6;
-          var sy2 = nextRoomCY + roomSize / 2;
+        // Compute how much the token moved between layers
+        var moveDist = Math.hypot(
+          edxAll[li + 1][ti],
+          edyAll[li + 1][ti]
+        );
+        var moveAlpha = Math.min(0.6, moveDist * 0.01 + 0.05);
 
-          if (delta > 0) {
-            c.strokeStyle = 'rgba(233,69,96,' + alpha.toFixed(2) + ')';
-          } else {
-            c.strokeStyle = 'rgba(0,119,182,' + alpha.toFixed(2) + ')';
-          }
+        // Connection line from bottom of current room to top of next room
+        var sy1 = roomCY;  // top edge of current room (current is lower on screen)
+        var sy2 = nextRoomCY + roomSize;  // bottom edge of next room (next is higher)
 
-          var midX = (sx1 + sx2) / 2 + Math.sin(ci * 0.3 + li) * roomSize * 0.1;
-          c.beginPath();
-          c.moveTo(sx1, sy1);
-          c.quadraticCurveTo(midX, (sy1 + sy2) / 2, sx2, sy2);
-          c.stroke();
+        var sx1 = roomCXt + roomSize / 2;
+        var sx2 = roomCXt + roomSize / 2;
+
+        // Color by movement magnitude
+        if (moveDist > 0.01) {
+          c.strokeStyle = 'rgba(233,69,96,' + moveAlpha.toFixed(2) + ')';
+        } else {
+          c.strokeStyle = 'rgba(83,168,182,' + (moveAlpha * 0.5).toFixed(2) + ')';
         }
+        c.lineWidth = Math.min(2, 0.3 + moveDist * 0.005);
+
+        var midX = (sx1 + sx2) / 2 + Math.sin(ti * 1.5 + li * 0.7) * gapX * 0.3;
+        c.beginPath();
+        c.moveTo(sx1, sy1);
+        c.quadraticCurveTo(midX, (sy1 + sy2) / 2, sx2, sy2);
+        c.stroke();
       }
     }
   }
@@ -3844,16 +3886,20 @@ function drawFibreBundle() {
   c.fillStyle = '#53a8b6';
   c.textAlign = 'center';
   var totalW = nTokens * (roomSize + gapX) - gapX;
-  c.fillText('← Base Manifold: Token Index →', startX + totalW / 2, startY + nLayers * (roomSize + gapY) + 25);
+  c.fillText(
+    '\u2190 Base Manifold: Token Index \u2192',
+    startX + totalW / 2,
+    startY + nLayers * (roomSize + gapY) + 28
+  );
 
   // Fibre label
   c.save();
-  c.translate(startX - 30, startY + nLayers * (roomSize + gapY) / 2);
+  c.translate(startX - 35, startY + nLayers * (roomSize + gapY) / 2);
   c.rotate(-Math.PI / 2);
   c.font = 'bold 10px monospace';
   c.fillStyle = '#53a8b6';
   c.textAlign = 'center';
-  c.fillText('← Fibre: Layer Depth →', 0, 0);
+  c.fillText('\u2190 Fibre: Layer Depth \u2192', 0, 0);
   c.restore();
 
   c.restore();
@@ -3865,15 +3911,20 @@ function drawFibreBundle() {
 function drawFibreBundleHUD(c, W, H, nTokens, nLayers, hiddenDim, currentLayer) {
   var dx = +document.getElementById('sl-dx').value;
   var dy = +document.getElementById('sl-dy').value;
-  var dz = +document.getElementById('sl-dz').value;
+  var amp = +document.getElementById('sl-amp').value;
+  var t = +document.getElementById('sl-t').value;
+  var decompLabel = getDecompLabel();
 
   c.font = '11px monospace';
   c.fillStyle = 'rgba(255,255,255,0.45)';
   c.textAlign = 'left';
   c.fillText(
     'FIBRE BUNDLE  Tokens:' + nTokens +
-    '  Layers:' + nLayers + '  Neurons:' + hiddenDim +
-    '  XY grid, Z=activation' +
+    '  Layers:' + nLayers +
+    '  Dims:' + dx + ',' + dy +
+    '  Amp:' + amp.toFixed(1) +
+    '  t:' + t.toFixed(2) +
+    '  Decomp:' + decompLabel +
     '  Colormap:' + fibreState.colormap +
     '  Layer:' + currentLayer,
     12, 16
@@ -3882,7 +3933,7 @@ function drawFibreBundleHUD(c, W, H, nTokens, nLayers, hiddenDim, currentLayer) 
   c.font = '9px monospace';
   c.fillStyle = 'rgba(255,255,255,0.3)';
   c.fillText(
-    'Drag=Rotate All | Shift+Drag=Pan | Scroll=Zoom | [/]=Layer | C=Connections | M=Colormap | D=Density | 0=Reset',
+    '\u2190\u2192 Dim X | \u2191\u2193 Dim Y | [/] Layer | A/Z Amp | ;/\' t | C=Connections | M=Colormap | Shift+Drag=Pan | Scroll=Zoom | 0=Reset',
     12, H - 8
   );
 }
