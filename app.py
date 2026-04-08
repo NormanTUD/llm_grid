@@ -135,6 +135,7 @@ def restart_with_uv(script_path, args, env):
     except FileNotFoundError:
         print("uv is not installed. Try:")
         print("curl -LsSf https://astral.sh/uv/install.sh | sh")
+        sys.exit(1)
 
 
 def ensure_safe_env():
