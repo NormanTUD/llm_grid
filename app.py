@@ -1228,9 +1228,9 @@ Tokens: <span id="i-tok">-</span>
 <div class="cr"><label>Amplify:</label><input type="range" id="sl-amp" min="0.1" max="500" value="1" step="0.1"><span class="v" id="v-amp">1.0</span></div>
 <div class="cr"><label>Mode:</label>
 <select id="sel-mode">
+<option value="cumbwd">Layers L→End (Cumulative)</option>
 <option value="single">This Layer Only</option>
 <option value="cumfwd">Layers 0→L (Cumulative)</option>
-<option value="cumbwd">Layers L→End (Cumulative)</option>
 <option value="embedding">Raw Embedding Space</option>
 </select>
 </div>
