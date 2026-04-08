@@ -1075,50 +1075,6 @@ canvas{background:#0d1117}
 #strain-stats-panel tr.current-layer{background:rgba(233,69,96,0.2)}
 #strain-stats-panel tr.most-active{background:rgba(83,168,182,0.15)}
 #strain-stats-panel tr:hover{background:rgba(255,255,255,0.05)}
-/* Diffeomorphism Stacking Mode */
-#tab-diffeo { }
-.diffeo-canvas-wrap {
-  position: absolute;
-  top: 0; left: 0; right: 0; bottom: 0;
-  pointer-events: none;
-  z-index: 5;
-}
-#diffeo-canvas {
-  display: block;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-}
-.strain-bar{display:inline-block;height:6px;border-radius:2px;vertical-align:middle}
-/* Diffeomorphism Stacking Overlay */
-.diffeo-canvas-wrap {
-  position: absolute;
-  top: 0; left: 0; right: 0; bottom: 0;
-  pointer-events: none;
-  z-index: 5;
-}
-#diffeo-canvas {
-  display: block;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-}
-#diffeo-controls {
-  background: #0f3460;
-  padding: 8px;
-  border-radius: 4px;
-  font-size: 10px;
-}
-#diffeo-controls .cr { margin-bottom: 3px; }
-#neuron-grid-panel {
-    background: #0a0a1a;
-    padding: 6px;
-    border-radius: 4px;
-    max-height: 500px;
-    overflow: auto;
-    display: none;
-    min-height: 0;       /* allow flex child to shrink properly */
-}
 /* ---- Compare Mode ---- */
 #compare-area{display:none;margin-top:4px}
 #compare-area .cr{margin-bottom:3px}
@@ -1307,62 +1263,8 @@ Tokens: <span id="i-tok">-</span>
 <div class="cb"><input type="checkbox" id="cb-syn"><label for="cb-syn">Probe Points</label></div>
 <div class="cb"><input type="checkbox" id="cb-sc" checked><label for="cb-sc">Strain Color</label></div>
 <div class="cb"><input type="checkbox" id="cb-vec"><label for="cb-vec">Vector Arrows</label></div>
-<div id="keys"><b>Keys:</b> ←→ Dim X | ↑↓ Dim Y | PgUp/PgDn Dim Z (3D) | [/] Layer | ;/' t | A/Z Amp | Space Auto | R Reset | D Next Dim Pair | 0 Reset Zoom<br>
+<div id="keys"><b>Keys:</b> ←→ Dim X | ↑↓ Dim Y | Shift+←→ Dim Z (±1) | Shift+↑↓ Dim Z (±10) | PgUp/PgDn Dim Z (3D) | [/] Layer | ;/' t | A/Z Amp | Space Auto | R Reset | D Next Dim Pair | 0 Reset Zoom<br>
 <b>Mouse:</b> Scroll=Zoom | Shift+Drag=Pan | Click=Select Token | Drag=Rotate (3D)</div>
-<h3>🌊 Diffeomorphism Stacking</h3>
-<div id="diffeo-controls">
-  <div class="cr">
-    <label>Active:</label>
-    <select id="diffeo-active" onchange="diffeoState.active=(this.value==='on');toggleDiffeo()">
-      <option value="off">Off</option>
-      <option value="on">On</option>
-    </select>
-  </div>
-  <div class="cr">
-    <label>Slices:</label>
-    <input type="range" id="diffeo-slices" min="2" max="24" step="1" value="8"
-      oninput="diffeoState.numSlices=+this.value;document.getElementById('v-diffeo-slices').textContent=this.value;rebuildDiffeo()">
-    <span class="v" id="v-diffeo-slices">8</span>
-  </div>
-  <div class="cr">
-    <label>Kelp Amp:</label>
-    <input type="range" id="diffeo-amp" min="0" max="4" step="0.05" value="1.0"
-      oninput="diffeoState.kelpAmplitude=+this.value;document.getElementById('v-diffeo-amp').textContent=(+this.value).toFixed(2)">
-    <span class="v" id="v-diffeo-amp">1.00</span>
-  </div>
-  <div class="cr">
-    <label>Divergence:</label>
-    <input type="range" id="diffeo-sens" min="0.1" max="8" step="0.1" value="1.0"
-      oninput="diffeoState.divergenceSensitivity=+this.value;document.getElementById('v-diffeo-sens').textContent=(+this.value).toFixed(1)">
-    <span class="v" id="v-diffeo-sens">1.0</span>
-  </div>
-  <div class="cr">
-    <label>Layer Gap:</label>
-    <input type="range" id="diffeo-spacing" min="20" max="200" step="5" value="70"
-      oninput="diffeoState.layerSpacing=+this.value;document.getElementById('v-diffeo-spacing').textContent=this.value">
-    <span class="v" id="v-diffeo-spacing">70</span>
-  </div>
-  <div class="cr">
-    <label>Opacity:</label>
-    <input type="range" id="diffeo-alpha" min="0.05" max="0.8" step="0.05" value="0.25"
-      oninput="diffeoState.sliceAlpha=+this.value;document.getElementById('v-diffeo-alpha').textContent=(+this.value).toFixed(2)">
-    <span class="v" id="v-diffeo-alpha">0.25</span>
-  </div>
-  <div class="cr">
-    <label>Grid Res:</label>
-    <input type="range" id="diffeo-res" min="3" max="24" step="1" value="10"
-      oninput="diffeoState.gridRes=+this.value;document.getElementById('v-diffeo-res').textContent=this.value;rebuildDiffeo()">
-    <span class="v" id="v-diffeo-res">10</span>
-  </div>
-  <div class="cr">
-    <label>Dim Pairs:</label>
-    <select id="diffeo-dimmode" onchange="diffeoState.dimMode=this.value;rebuildDiffeo()">
-      <option value="auto">Auto (all combos)</option>
-      <option value="sequential">Sequential (0-1, 2-3…)</option>
-      <option value="first">Against Dim 0</option>
-    </select>
-  </div>
-</div>
 </div>
 <div id="main">
 <div class="diffeo-canvas-wrap" id="diffeo-wrap" style="display:none">
@@ -1396,6 +1298,7 @@ function setViewMode(mode){
     viewMode=mode;
     document.getElementById('btn-2d').className=(mode==='2d'?'active':'');
     document.getElementById('btn-3d').className=(mode==='3d'?'active':'');
+    document.getElementById('btn-fibre').className=(mode==='fibre'?'active':'');
     document.getElementById('dz-row').style.display=(mode==='3d'?'flex':'none');
     draw();
 }
@@ -1843,22 +1746,58 @@ function gp(){return{
 
 function onKey(e){
     if(document.activeElement===document.getElementById('txt-in'))return;
+    if(document.activeElement===document.getElementById('txt-b'))return;
     var sl=document.getElementById('sl-layer'),st=document.getElementById('sl-t'),sa=document.getElementById('sl-amp');
     var sdx=document.getElementById('sl-dx'), sdy=document.getElementById('sl-dy'), sdz=document.getElementById('sl-dz');
     var maxDim = D ? D.hidden_dim - 1 : 767;
 
+    // Shift+Arrow = Dim Z (third axis), works in all views
+    if(e.shiftKey && e.key==='ArrowRight'){
+        e.preventDefault();
+        var newZ = +sdz.value + 1;
+        if(newZ > maxDim) newZ = 0;
+        while(newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ + 1) % (maxDim + 1);
+        sdz.value = newZ;
+        sdz.dispatchEvent(new Event('input'));
+        return;
+    }
+    else if(e.shiftKey && e.key==='ArrowLeft'){
+        e.preventDefault();
+        var newZ = +sdz.value - 1;
+        if(newZ < 0) newZ = maxDim;
+        while(newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ - 1 + maxDim + 1) % (maxDim + 1);
+        sdz.value = newZ;
+        sdz.dispatchEvent(new Event('input'));
+        return;
+    }
+    else if(e.shiftKey && e.key==='ArrowUp'){
+        e.preventDefault();
+        var newZ = +sdz.value + 10;
+        if(newZ > maxDim) newZ = newZ % (maxDim + 1);
+        while(newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ + 1) % (maxDim + 1);
+        sdz.value = newZ;
+        sdz.dispatchEvent(new Event('input'));
+        return;
+    }
+    else if(e.shiftKey && e.key==='ArrowDown'){
+        e.preventDefault();
+        var newZ = +sdz.value - 10;
+        if(newZ < 0) newZ = (newZ + maxDim + 1) % (maxDim + 1);
+        while(newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ - 1 + maxDim + 1) % (maxDim + 1);
+        sdz.value = newZ;
+        sdz.dispatchEvent(new Event('input'));
+        return;
+    }
+
     if(e.key==='ArrowRight'){
-        // Cycle Dim X forward
         e.preventDefault();
         var newX = +sdx.value + 1;
         if(newX > maxDim) newX = 0;
-        // Skip if it collides with Dim Y
         if(newX === +sdy.value) newX = (newX + 1) % (maxDim + 1);
         sdx.value = newX;
         sdx.dispatchEvent(new Event('input'));
     }
     else if(e.key==='ArrowLeft'){
-        // Cycle Dim X backward
         e.preventDefault();
         var newX = +sdx.value - 1;
         if(newX < 0) newX = maxDim;
@@ -1867,7 +1806,6 @@ function onKey(e){
         sdx.dispatchEvent(new Event('input'));
     }
     else if(e.key==='ArrowUp'){
-        // Cycle Dim Y forward
         e.preventDefault();
         var newY = +sdy.value + 1;
         if(newY > maxDim) newY = 0;
@@ -1876,7 +1814,6 @@ function onKey(e){
         sdy.dispatchEvent(new Event('input'));
     }
     else if(e.key==='ArrowDown'){
-        // Cycle Dim Y backward
         e.preventDefault();
         var newY = +sdy.value - 1;
         if(newY < 0) newY = maxDim;
@@ -1884,10 +1821,8 @@ function onKey(e){
         sdy.value = newY;
         sdy.dispatchEvent(new Event('input'));
     }
-    // Move layer controls to [ and ] (or , and .)
     else if(e.key==='.' || e.key===']'){sl.value=Math.min(+sl.max,+sl.value+1);sl.dispatchEvent(new Event('input'))}
     else if(e.key===',' || e.key==='['){sl.value=Math.max(0,+sl.value-1);sl.dispatchEvent(new Event('input'))}
-    // Move t controls to ; and '
     else if(e.key==="'"){st.value=Math.min(1,+st.value+.05).toFixed(2);st.dispatchEvent(new Event('input'))}
     else if(e.key===';'){st.value=Math.max(0,+st.value-.05).toFixed(2);st.dispatchEvent(new Event('input'))}
     else if(e.key==='a'||e.key==='A'){sa.value=Math.min(500,+sa.value*1.3).toFixed(1);sa.dispatchEvent(new Event('input'))}
@@ -1896,7 +1831,6 @@ function onKey(e){
     else if(e.key==='r'||e.key==='R'){rstAll()}
     else if(e.key==='d'||e.key==='D'){nxtD()}
     else if(e.key==='0'){zoomLevel=1.0;panX=0;panY=0;draw()}
-    // In 3D mode, PageUp/PageDown cycle Dim Z
     else if(viewMode==='3d' && e.key==='PageUp'){
         e.preventDefault();
         var newZ = +sdz.value + 1;
@@ -3547,7 +3481,7 @@ setViewMode = function(mode) {
     document.getElementById('btn-2d').className = '';
     document.getElementById('btn-3d').className = '';
     document.getElementById('btn-fibre').className = 'active';
-    document.getElementById('dz-row').style.display = 'flex';
+    document.getElementById('dz-row').style.display = 'none'; // fibre is 2D — hide Z
     // Auto-fetch neuron data if we have D but no neuron data
     if (D && !fibreState.neuronData && !fibreState.loading) {
       fetchFibreNeuronData();
@@ -4055,10 +3989,46 @@ function drawFibreBundleHUD(c, W, H, nTokens, nLayers, hiddenDim, currentLayer) 
 
 function onKeyFibre(e) {
   if (document.activeElement === document.getElementById('txt-in')) return;
+  if (document.activeElement === document.getElementById('txt-b')) return;
   var maxDim = D ? D.hidden_dim - 1 : 767;
   var sdx = document.getElementById('sl-dx');
   var sdy = document.getElementById('sl-dy');
   var sdz = document.getElementById('sl-dz');
+
+  // Shift+Arrow = Dim Z (third axis)
+  if (e.shiftKey && e.key === 'ArrowRight') {
+    e.preventDefault();
+    var newZ = +sdz.value + 1;
+    if (newZ > maxDim) newZ = 0;
+    while (newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ + 1) % (maxDim + 1);
+    sdz.value = newZ;
+    sdz.dispatchEvent(new Event('input'));
+    return;
+  } else if (e.shiftKey && e.key === 'ArrowLeft') {
+    e.preventDefault();
+    var newZ = +sdz.value - 1;
+    if (newZ < 0) newZ = maxDim;
+    while (newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ - 1 + maxDim + 1) % (maxDim + 1);
+    sdz.value = newZ;
+    sdz.dispatchEvent(new Event('input'));
+    return;
+  } else if (e.shiftKey && e.key === 'ArrowUp') {
+    e.preventDefault();
+    var newZ = +sdz.value + 10;
+    if (newZ > maxDim) newZ = newZ % (maxDim + 1);
+    while (newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ + 1) % (maxDim + 1);
+    sdz.value = newZ;
+    sdz.dispatchEvent(new Event('input'));
+    return;
+  } else if (e.shiftKey && e.key === 'ArrowDown') {
+    e.preventDefault();
+    var newZ = +sdz.value - 10;
+    if (newZ < 0) newZ = (newZ + maxDim + 1) % (maxDim + 1);
+    while (newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ - 1 + maxDim + 1) % (maxDim + 1);
+    sdz.value = newZ;
+    sdz.dispatchEvent(new Event('input'));
+    return;
+  }
 
   if (e.key === 'ArrowRight') {
     e.preventDefault();
@@ -4088,20 +4058,6 @@ function onKeyFibre(e) {
     if (newY === +sdx.value) newY = (newY - 1 + maxDim + 1) % (maxDim + 1);
     sdy.value = newY;
     sdy.dispatchEvent(new Event('input'));
-  } else if (e.key === 'PageUp') {
-    e.preventDefault();
-    var newZ = +sdz.value + 1;
-    if (newZ > maxDim) newZ = 0;
-    while (newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ + 1) % (maxDim + 1);
-    sdz.value = newZ;
-    sdz.dispatchEvent(new Event('input'));
-  } else if (e.key === 'PageDown') {
-    e.preventDefault();
-    var newZ = +sdz.value - 1;
-    if (newZ < 0) newZ = maxDim;
-    while (newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ - 1 + maxDim + 1) % (maxDim + 1);
-    sdz.value = newZ;
-    sdz.dispatchEvent(new Event('input'));
   } else if (e.key === '.' || e.key === ']') {
     var sl = document.getElementById('sl-layer');
     sl.value = Math.min(+sl.max, +sl.value + 1);
@@ -4110,12 +4066,28 @@ function onKeyFibre(e) {
     var sl = document.getElementById('sl-layer');
     sl.value = Math.max(0, +sl.value - 1);
     sl.dispatchEvent(new Event('input'));
+  } else if (e.key === "'" ) {
+    var st = document.getElementById('sl-t');
+    st.value = Math.min(1, +st.value + 0.05).toFixed(2);
+    st.dispatchEvent(new Event('input'));
+  } else if (e.key === ';') {
+    var st = document.getElementById('sl-t');
+    st.value = Math.max(0, +st.value - 0.05).toFixed(2);
+    st.dispatchEvent(new Event('input'));
+  } else if (e.key === 'a' || e.key === 'A') {
+    var sa = document.getElementById('sl-amp');
+    sa.value = Math.min(500, +sa.value * 1.3).toFixed(1);
+    sa.dispatchEvent(new Event('input'));
+  } else if (e.key === 'z' || e.key === 'Z') {
+    var sa = document.getElementById('sl-amp');
+    sa.value = Math.max(0.1, +sa.value / 1.3).toFixed(1);
+    sa.dispatchEvent(new Event('input'));
   } else if (e.key === 'c' || e.key === 'C') {
     fibreState.showConnections = !fibreState.showConnections;
     draw();
-  } else if (e.key === '3') {
-    fibreState.show3D = !fibreState.show3D;
-    draw();
+  } else if (e.key === ' ') {
+    e.preventDefault();
+    togAP();
   } else if (e.key === '0') {
     zoomLevel = 1.0; panX = 0; panY = 0;
     fibreState.scrollY = 0;
