@@ -130,7 +130,11 @@ def should_set_exclude_newer():
 
 def restart_with_uv(script_path, args, env):
     """Re-exec the current script under `uv run`."""
-    os.execvpe("uv", ["uv", "run", "--quiet", script_path] + args, env)
+    try:
+        os.execvpe("uv", ["uv", "run", "--quiet", script_path] + args, env)
+    except FileNotFoundError:
+        print("uv is not installed. Try:")
+        print("curl -LsSf https://astral.sh/uv/install.sh | sh")
 
 
 def ensure_safe_env():
