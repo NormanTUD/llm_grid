@@ -1683,7 +1683,7 @@ document.getElementById('cv').addEventListener('click', function(e){
     });
 });
 ['cb-nb','cb-nblabel'].forEach(function(id){
-    document.getElementById(id).addEventListener('change',function(){draw()});
+    document.getElementById(id).addEventListener('change', function(){ draw(); });
 });
 
 window.addEventListener('resize',function(){rsz();draw()});
@@ -1711,10 +1711,10 @@ for(var i=0;i<SLS.length;i++)(function(c){
 })(SLS[i]);
 
 ['cb-grid','cb-heat','cb-ref','cb-tok','cb-syn','cb-sc','cb-vec','cb-vocnb'].forEach(function(id){
-    document.getElementById(id).addEventListener('change',draw);
+    document.getElementById(id).addEventListener('change', function(){ draw(); });
 });
 
-document.getElementById('sel-mode').addEventListener('change',draw);
+document.getElementById('sel-mode').addEventListener('change', function(){ draw(); });
 document.getElementById('sel-decomp').addEventListener('change',function(){
     autoParams();
     draw();
