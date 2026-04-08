@@ -3632,10 +3632,6 @@ function drawFibreBundle() {
     return;
   }
 
-  // We use D (the main data with deltas) for the deformation grids,
-  // and fibreState.neuronData for the pixel overlay if available.
-  // But the key visualization is the DEFORMED GRID per room.
-
   var nTokens = D.n_real;
   var nLayers = D.n_layers;
   var hiddenDim = D.hidden_dim;
@@ -3650,40 +3646,36 @@ function drawFibreBundle() {
   var showGrid = document.getElementById('cb-grid').checked;
   var showHeat = document.getElementById('cb-heat').checked;
   var showSC = document.getElementById('cb-sc').checked;
+  var mode = document.getElementById('sel-mode').value;  // *** FIXED: read mode ***
 
-  // Use the active deltas based on decomposition selector
   var activeDeltas = getActiveDeltas();
   if (!activeDeltas) activeDeltas = D.deltas;
 
-  // Clamp dims
+  var isEmb = (mode === 'embedding');  // *** FIXED: respect embedding mode ***
+
   dx = Math.min(dx, hiddenDim - 1);
   dy = Math.min(dy, hiddenDim - 1);
 
-  // ---- Layout ----
-  // Columns = tokens (base manifold)
-  // Rows = layers (fibre), bottom = layer 0, top = last layer
-    var margin = 30;
-    var labelW = 35;
-    var labelH = 25;
+  var margin = 30;
+  var labelW = 35;
+  var labelH = 25;
   var availW = (W / zoomLevel) - 2 * margin - labelW;
   var availH = (H / zoomLevel) - 2 * margin - labelH;
 
-    var gapFracX = 0.35;  // gap as fraction of room size
-    var gapFracY = 0.35;
-    var roomW = Math.max(30, Math.floor(availW / (nTokens * (1 + gapFracX))) );
-    var roomH = Math.max(30, Math.floor(availH / (nLayers * (1 + gapFracY))) );
-    var roomSize = Math.min(roomW, roomH);
-    var gapX = Math.max(8, Math.floor(roomSize * gapFracX));
-    var gapY = Math.max(8, Math.floor(roomSize * gapFracY));
+  var gapFracX = 0.35;
+  var gapFracY = 0.35;
+  var roomW = Math.max(30, Math.floor(availW / (nTokens * (1 + gapFracX))));
+  var roomH = Math.max(30, Math.floor(availH / (nLayers * (1 + gapFracY))));
+  var roomSize = Math.min(roomW, roomH);
+  var gapX = Math.max(8, Math.floor(roomSize * gapFracX));
+  var gapY = Math.max(8, Math.floor(roomSize * gapFracY));
 
-  // Precompute fixed positions for the 2 chosen dims
   var fx = new Float64Array(nP), fy = new Float64Array(nP);
   for (var i = 0; i < nP; i++) {
     fx[i] = D.fixed_pos[i][dx];
     fy[i] = D.fixed_pos[i][dy];
   }
 
-  // Compute global range for consistent scaling across all rooms
   var mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
   for (var i = 0; i < nP; i++) {
     if (fx[i] < mnx) mnx = fx[i]; if (fx[i] > mxx) mxx = fx[i];
@@ -3695,8 +3687,6 @@ function drawFibreBundle() {
   var vx0 = cxv - mr * (0.5 + pd), vy0 = cyv - mr * (0.5 + pd);
   var vw = mr * (1 + 2 * pd), vh = vw;
 
-  // Precompute per-layer deltas for each point (in the 2 chosen dims)
-  // edx[layer][point], edy[layer][point]
   var edxAll = [];
   var edyAll = [];
   for (var lay = 0; lay < nLayers; lay++) {
@@ -3710,7 +3700,6 @@ function drawFibreBundle() {
     edyAll.push(edyL);
   }
 
-  // Grid resolution per room
   var N = Math.max(4, Math.min(16, Math.floor(roomSize / 4)));
   var s2i = 1 / (2 * sig * sig);
 
@@ -3721,44 +3710,63 @@ function drawFibreBundle() {
   var startX = margin + labelW;
   var startY = margin;
 
-  // Draw each room
+  // *** FIXED: helper to compute deltas for a given layer index, respecting mode ***
+  function computeEdxEdyForLayer(li) {
+    var edxCum = new Float64Array(nP);
+    var edyCum = new Float64Array(nP);
+    if (isEmb) {
+      // embedding mode: no deformation
+      return { edx: edxCum, edy: edyCum };
+    }
+    if (mode === 'single') {
+      for (var j = 0; j < nP; j++) {
+        edxCum[j] = edxAll[li][j];
+        edyCum[j] = edyAll[li][j];
+      }
+    } else if (mode === 'cumfwd') {
+      for (var cl = 0; cl <= li; cl++) {
+        for (var j = 0; j < nP; j++) {
+          edxCum[j] += edxAll[cl][j];
+          edyCum[j] += edyAll[cl][j];
+        }
+      }
+    } else if (mode === 'cumbwd') {
+      for (var cl = li; cl < nLayers; cl++) {
+        for (var j = 0; j < nP; j++) {
+          edxCum[j] += edxAll[cl][j];
+          edyCum[j] += edyAll[cl][j];
+        }
+      }
+    }
+    return { edx: edxCum, edy: edyCum };
+  }
+
   for (var li = 0; li < nLayers; li++) {
-    // Row position: layer 0 at bottom, last layer at top
     var rowIdx = nLayers - 1 - li;
     var roomCY = startY + rowIdx * (roomSize + gapY);
     var isCurrentLayer = (li === currentLayer);
 
-    // Layer label
     c.font = (isCurrentLayer ? 'bold ' : '') + '9px monospace';
     c.fillStyle = isCurrentLayer ? '#e94560' : '#666';
     c.textAlign = 'right';
     c.fillText('L' + li, startX - 8, roomCY + roomSize / 2 + 3);
 
-    // Get the cumulative deltas up to this layer
-    var edxCum = new Float64Array(nP);
-    var edyCum = new Float64Array(nP);
-    for (var cl = 0; cl <= li; cl++) {
-      for (var j = 0; j < nP; j++) {
-        edxCum[j] += edxAll[cl][j];
-        edyCum[j] += edyAll[cl][j];
-      }
-    }
+    // *** FIXED: use mode-aware delta computation ***
+    var layerDeltas = computeEdxEdyForLayer(li);
+    var edxCum = layerDeltas.edx;
+    var edyCum = layerDeltas.edy;
 
     for (var ti = 0; ti < nTokens; ti++) {
       var roomCX = startX + ti * (roomSize + gapX);
 
-      // Room background
       var bgAlpha = isCurrentLayer ? 0.15 : 0.06;
       c.fillStyle = 'rgba(30,30,60,' + bgAlpha + ')';
       c.fillRect(roomCX, roomCY, roomSize, roomSize);
 
-      // Room border
       c.strokeStyle = isCurrentLayer ? 'rgba(233,69,96,0.6)' : 'rgba(60,60,100,0.25)';
       c.lineWidth = isCurrentLayer ? 1.5 : 0.5;
       c.strokeRect(roomCX, roomCY, roomSize, roomSize);
 
-      // ---- Build deformed grid for this room ----
-      // Map the global embedding space into this room's pixel space
       var nV = (N + 1) * (N + 1);
       var oX = new Float64Array(nV), oY = new Float64Array(nV);
       var gX = new Float64Array(nV), gY = new Float64Array(nV);
@@ -3771,23 +3779,29 @@ function drawFibreBundle() {
         }
       }
 
-      // RBF interpolation of deformation field onto grid
-      for (var gi = 0; gi < nV; gi++) {
-        var px = oX[gi], py = oY[gi];
-        var vvx = 0, vvy = 0, ws = 0;
-        for (var k = 0; k < nP; k++) {
-          var eex = px - fx[k], eey = py - fy[k];
-          var w = Math.exp(-(eex * eex + eey * eey) * s2i);
-          vvx += w * edxCum[k];
-          vvy += w * edyCum[k];
-          ws += w;
+      // *** FIXED: skip RBF interpolation in embedding mode ***
+      if (isEmb) {
+        for (var gi = 0; gi < nV; gi++) {
+          gX[gi] = oX[gi];
+          gY[gi] = oY[gi];
         }
-        if (ws > 1e-15) { vvx /= ws; vvy /= ws; }
-        gX[gi] = px + t * vvx;
-        gY[gi] = py + t * vvy;
+      } else {
+        for (var gi = 0; gi < nV; gi++) {
+          var px = oX[gi], py = oY[gi];
+          var vvx = 0, vvy = 0, ws = 0;
+          for (var k = 0; k < nP; k++) {
+            var eex = px - fx[k], eey = py - fy[k];
+            var w = Math.exp(-(eex * eex + eey * eey) * s2i);
+            vvx += w * edxCum[k];
+            vvy += w * edyCum[k];
+            ws += w;
+          }
+          if (ws > 1e-15) { vvx /= ws; vvy /= ws; }
+          gX[gi] = px + t * vvx;
+          gY[gi] = py + t * vvy;
+        }
       }
 
-      // Compute strain for grid edges
       var sH = new Float64Array(N * (N + 1));
       var sV = new Float64Array((N + 1) * N);
       for (var ey = 0; ey <= N; ey++) {
@@ -3807,14 +3821,12 @@ function drawFibreBundle() {
         }
       }
 
-      // Map from world coords to room pixel coords
       function RX(wx) { return roomCX + ((wx - vx0) / vw) * roomSize; }
       function RY(wy) { return roomCY + ((wy - vy0) / vh) * roomSize; }
       function RXd(wx) { return roomCX + ((wx - vx0) / vw) * roomSize; }
       function RYd(wy) { return roomCY + ((wy - vy0) / vh) * roomSize; }
 
-      // ---- Draw strain heatmap ----
-      if (showHeat) {
+      if (showHeat && !isEmb) {
         for (var hy = 0; hy < N; hy++) {
           for (var hx = 0; hx < N; hx++) {
             var avg = (sH[hy * N + hx] + sH[(hy + 1) * N + hx] +
@@ -3834,10 +3846,8 @@ function drawFibreBundle() {
         }
       }
 
-      // ---- Draw deformed grid lines ----
-      if (showGrid) {
+      if (showGrid && !isEmb) {
         c.lineWidth = 0.6;
-        // Horizontal
         for (var dhy = 0; dhy <= N; dhy++) {
           for (var dhx = 0; dhx < N; dhx++) {
             var di1 = dhy * (N + 1) + dhx, di2 = di1 + 1;
@@ -3854,7 +3864,6 @@ function drawFibreBundle() {
             c.stroke();
           }
         }
-        // Vertical
         for (var dvx = 0; dvx <= N; dvx++) {
           for (var dvy = 0; dvy < N; dvy++) {
             var dvi1 = dvy * (N + 1) + dvx, dvi2 = (dvy + 1) * (N + 1) + dvx;
@@ -3873,34 +3882,51 @@ function drawFibreBundle() {
         }
       }
 
-      // ---- Draw real token dot in this room ----
-      // FIXED: Token dots stay at their ORIGINAL (undeformed) position.
-      // The metric/grid deforms around them, but the points themselves are anchored.
+      // *** FIXED: show reference grid in embedding mode (matching draw2D behavior) ***
+      if (isEmb) {
+        c.strokeStyle = 'rgba(255,255,255,0.15)';
+        c.lineWidth = 0.5;
+        for (var ry2 = 0; ry2 <= N; ry2++) {
+          c.beginPath();
+          for (var rx2 = 0; rx2 <= N; rx2++) {
+            var ri = ry2 * (N + 1) + rx2;
+            if (rx2 === 0) c.moveTo(RXd(oX[ri]), RYd(oY[ri]));
+            else c.lineTo(RXd(oX[ri]), RYd(oY[ri]));
+          }
+          c.stroke();
+        }
+        for (var rx3 = 0; rx3 <= N; rx3++) {
+          c.beginPath();
+          for (var ry3 = 0; ry3 <= N; ry3++) {
+            var ri3 = ry3 * (N + 1) + rx3;
+            if (ry3 === 0) c.moveTo(RXd(oX[ri3]), RYd(oY[ri3]));
+            else c.lineTo(RXd(oX[ri3]), RYd(oY[ri3]));
+          }
+          c.stroke();
+        }
+      }
+
       var tokX = RX(fx[ti]);
       var tokY = RY(fy[ti]);
 
-      // Compute the local strain at this token's position to visualize
-      // how much the metric has changed here (instead of showing displacement)
-      var tokDeformDX = t * edxCum[ti];
-      var tokDeformDY = t * edyCum[ti];
-      var localStrainMag = Math.sqrt(tokDeformDX * tokDeformDX + tokDeformDY * tokDeformDY);
+      // *** FIXED: only show strain ring when not in embedding mode ***
+      if (!isEmb) {
+        var tokDeformDX = t * edxCum[ti];
+        var tokDeformDY = t * edyCum[ti];
+        var localStrainMag = Math.sqrt(tokDeformDX * tokDeformDX + tokDeformDY * tokDeformDY);
 
-      // Draw a strain indicator ring around the fixed point
-      // Ring radius scales with local deformation magnitude — shows metric distortion
-      var strainRadius = Math.min(roomSize / 4, localStrainMag * 0.5);
-      if (strainRadius > 1.5) {
-        // Color the ring by strain: blue = contraction-like, red = expansion-like
-        // Use the deformation magnitude relative to the grid scale
-        var normStrain = Math.min(2.0, localStrainMag / (vw / N + 1e-12));
-        var ringColor = s2c(0.5 + normStrain * 0.5); // map to strain colormap
-        c.beginPath();
-        c.arc(tokX, tokY, strainRadius, 0, Math.PI * 2);
-        c.strokeStyle = 'rgba(' + ringColor[0] + ',' + ringColor[1] + ',' + ringColor[2] + ',0.5)';
-        c.lineWidth = 1.2;
-        c.stroke();
+        var strainRadius = Math.min(roomSize / 4, localStrainMag * 0.5);
+        if (strainRadius > 1.5) {
+          var normStrain = Math.min(2.0, localStrainMag / (vw / N + 1e-12));
+          var ringColor = s2c(0.5 + normStrain * 0.5);
+          c.beginPath();
+          c.arc(tokX, tokY, strainRadius, 0, Math.PI * 2);
+          c.strokeStyle = 'rgba(' + ringColor[0] + ',' + ringColor[1] + ',' + ringColor[2] + ',0.5)';
+          c.lineWidth = 1.2;
+          c.stroke();
+        }
       }
 
-      // Token dot — always at the FIXED original position
       var tc = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71',
                 '#e74c3c','#3498db','#9b59b6','#1abc9c','#e67e22'];
       c.beginPath();
@@ -3911,7 +3937,6 @@ function drawFibreBundle() {
       c.lineWidth = 0.5;
       c.stroke();
 
-      // Token label at bottom (only for bottom row)
       if (li === 0) {
         c.font = 'bold 8px monospace';
         c.fillStyle = '#e94560';
@@ -3925,46 +3950,39 @@ function drawFibreBundle() {
       }
     }
 
-    // ---- Diffeomorphism connections between layers ----
-    if (fibreState.showConnections && li < nLayers - 1) {
+    // *** FIXED: diffeomorphism connections also respect mode ***
+    if (fibreState.showConnections && li < nLayers - 1 && !isEmb) {
       var nextRowIdx = nLayers - 2 - li;
       var nextRoomCY = startY + nextRowIdx * (roomSize + gapY);
 
-      // Compute next layer cumulative deltas
-      var edxNext = new Float64Array(nP);
-      var edyNext = new Float64Array(nP);
-      for (var cl = 0; cl <= li + 1; cl++) {
-        for (var j = 0; j < nP; j++) {
-          edxNext[j] += edxAll[cl][j];
-          edyNext[j] += edyAll[cl][j];
-        }
-      }
+      // Compute next layer deltas using the same mode
+      var nextDeltas = computeEdxEdyForLayer(li + 1);
+      var edxNext = nextDeltas.edx;
+      var edyNext = nextDeltas.edy;
 
       for (var ti = 0; ti < nTokens; ti++) {
         var roomCXt = startX + ti * (roomSize + gapX);
 
-        // Token positions are FIXED (undeformed) — the metric changes, not the points
         var curX = roomCXt + ((fx[ti] - vx0) / vw) * roomSize;
         var curY = roomCY + ((fy[ti] - vy0) / vh) * roomSize;
 
         var nxtX = roomCXt + ((fx[ti] - vx0) / vw) * roomSize;
         var nxtY = nextRoomCY + ((fy[ti] - vy0) / vh) * roomSize;
 
-        // Compute how much the token moved between layers
+        // *** FIXED: compute movement as the DIFFERENCE between this layer's
+        //     and next layer's effective deltas, not just the raw single-layer delta ***
         var moveDist = Math.hypot(
-          edxAll[li + 1][ti],
-          edyAll[li + 1][ti]
+          edxNext[ti] - edxCum[ti],
+          edyNext[ti] - edyCum[ti]
         );
         var moveAlpha = Math.min(0.6, moveDist * 0.01 + 0.05);
 
-        // Connection line from bottom of current room to top of next room
-        var sy1 = roomCY;  // top edge of current room (current is lower on screen)
-        var sy2 = nextRoomCY + roomSize;  // bottom edge of next room (next is higher)
+        var sy1 = roomCY;
+        var sy2 = nextRoomCY + roomSize;
 
         var sx1 = roomCXt + roomSize / 2;
         var sx2 = roomCXt + roomSize / 2;
 
-        // Color by movement magnitude
         if (moveDist > 0.01) {
           c.strokeStyle = 'rgba(233,69,96,' + moveAlpha.toFixed(2) + ')';
         } else {
@@ -3981,7 +3999,6 @@ function drawFibreBundle() {
     }
   }
 
-  // Base manifold label
   c.font = 'bold 10px monospace';
   c.fillStyle = '#53a8b6';
   c.textAlign = 'center';
@@ -3992,7 +4009,6 @@ function drawFibreBundle() {
     startY + nLayers * (roomSize + gapY) + 28
   );
 
-  // Fibre label
   c.save();
   c.translate(startX - 35, startY + nLayers * (roomSize + gapY) / 2);
   c.rotate(-Math.PI / 2);
@@ -4004,7 +4020,6 @@ function drawFibreBundle() {
 
   c.restore();
 
-  // HUD
   drawFibreBundleHUD(c, W, H, nTokens, nLayers, hiddenDim, currentLayer);
 }
 
