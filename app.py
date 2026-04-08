@@ -1219,6 +1219,7 @@ Tokens: <span id="i-tok">-</span>
 <h3>View Mode</h3>
 <div class="view-toggle">
 <button id="btn-fibre" onclick="setViewMode('fibre')">Fibre Bundle</button>
+<button id="btn-fibrekelp" onclick="setViewMode('fibrekelp')">Fibre Kelp</button>
 <button id="btn-2d" class="active" onclick="setViewMode('2d')">2D</button>
 <button id="btn-3d" onclick="setViewMode('3d')">3D</button>
 </div>
@@ -3476,19 +3477,28 @@ var fibreState = {
 // Extend setViewMode to handle fibre
 var _origSetViewMode = setViewMode;
 setViewMode = function(mode) {
-  if (mode === 'fibre') {
+  if (mode === 'fibrekelp') {
+    viewMode = 'fibrekelp';
+    document.getElementById('btn-2d').className = '';
+    document.getElementById('btn-3d').className = '';
+    document.getElementById('btn-fibre').className = '';
+    document.getElementById('btn-fibrekelp').className = 'active';
+    document.getElementById('dz-row').style.display = 'none';
+    draw();
+  } else if (mode === 'fibre') {
     viewMode = 'fibre';
     document.getElementById('btn-2d').className = '';
     document.getElementById('btn-3d').className = '';
     document.getElementById('btn-fibre').className = 'active';
-    document.getElementById('dz-row').style.display = 'none'; // fibre is 2D — hide Z
-    // Auto-fetch neuron data if we have D but no neuron data
+    document.getElementById('btn-fibrekelp').className = '';
+    document.getElementById('dz-row').style.display = 'none';
     if (D && !fibreState.neuronData && !fibreState.loading) {
       fetchFibreNeuronData();
     }
     draw();
   } else {
     document.getElementById('btn-fibre').className = '';
+    document.getElementById('btn-fibrekelp').className = '';
     _origSetViewMode(mode);
   }
 };
@@ -3528,7 +3538,7 @@ var _origOnData3 = onData;
 onData = function() {
   fibreState.neuronData = null;
   _origOnData3();
-  if (viewMode === 'fibre' && D) {
+  if (viewMode.startsWith('fibre') && D) {
     fetchFibreNeuronData();
   }
 };
@@ -3536,6 +3546,10 @@ onData = function() {
 // Extend draw() to handle fibre mode
 var _origDraw2 = draw;
 draw = function() {
+  if (viewMode === 'fibrekelp') {
+    drawFibreBundleKelp();
+    return;
+  }
   if (viewMode === 'fibre') {
     drawFibreBundle();
     return;
@@ -3546,7 +3560,7 @@ draw = function() {
 // Extend key handler for fibre-specific controls
 var _origOnKey = onKey;
 onKey = function(e) {
-  if (viewMode === 'fibre') {
+  if (viewMode === 'fibre' || viewMode === 'fibrekelp') {
     onKeyFibre(e);
     return;
   }
@@ -3708,6 +3722,515 @@ function drawTransportFrame(c, cx, cy, edx, edy, fx, fy, tokenIdx, nP, sig, fram
     c.arc(cx, cy, 2, 0, Math.PI * 2);
     c.fillStyle = 'rgba(255,255,255,0.6)';
     c.fill();
+}
+
+function drawFibreBundleKelp() {
+    var cv = document.getElementById('cv');
+    var c = cv.getContext('2d');
+    var W = cv.width, H = cv.height;
+    c.clearRect(0, 0, W, H);
+
+    if (!D) {
+        c.font = '14px monospace';
+        c.fillStyle = '#555';
+        c.fillText('Run a prompt first', W / 2 - 80, H / 2);
+        return;
+    }
+
+    var nTokens = D.n_real;
+    var nLayers = D.n_layers;
+    var hiddenDim = D.hidden_dim;
+    var nP = D.n_points;
+
+    var dxDim = +document.getElementById('sl-dx').value;
+    var dyDim = +document.getElementById('sl-dy').value;
+    var amp = +document.getElementById('sl-amp').value;
+    var t = +document.getElementById('sl-t').value;
+    var sig = +document.getElementById('sl-sig').value;
+    var currentLayer = +document.getElementById('sl-layer').value;
+    var showGrid = document.getElementById('cb-grid').checked;
+    var showHeat = document.getElementById('cb-heat').checked;
+    var showSC = document.getElementById('cb-sc').checked;
+    var mode = document.getElementById('sel-mode').value;
+
+    var activeDeltas = getActiveDeltas();
+    if (!activeDeltas) activeDeltas = D.deltas;
+    var attnDeltas = D.attn_deltas || null;
+    var mlpDeltas = D.mlp_deltas || null;
+    var isEmb = (mode === 'embedding');
+
+    dxDim = Math.min(dxDim, hiddenDim - 1);
+    dyDim = Math.min(dyDim, hiddenDim - 1);
+
+    // Extract 2D base positions for all points
+    var fx = new Float64Array(nP), fy = new Float64Array(nP);
+    for (var i = 0; i < nP; i++) {
+        fx[i] = D.fixed_pos[i][dxDim];
+        fy[i] = D.fixed_pos[i][dyDim];
+    }
+
+    // View bounds in world space
+    var mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
+    for (var i = 0; i < nP; i++) {
+        if (fx[i] < mnx) mnx = fx[i]; if (fx[i] > mxx) mxx = fx[i];
+        if (fy[i] < mny) mny = fy[i]; if (fy[i] > mxy) mxy = fy[i];
+    }
+    var mr = Math.max(mxx - mnx, mxy - mny) || 1;
+    var cxv = (mnx + mxx) / 2, cyv = (mny + mxy) / 2;
+    var pd = 0.15;
+    var vx0 = cxv - mr * (0.5 + pd), vy0 = cyv - mr * (0.5 + pd);
+    var vw = mr * (1 + 2 * pd), vh = vw;
+
+    var s2i = 1 / (2 * sig * sig);
+
+    // Layout: the entire canvas is one vertical column.
+    // Y axis = layer depth (layer 0 at bottom, layer N-1 at top)
+    // X axis = world-space position projected from hidden dims
+    var margin = 40;
+    var plotW = W / zoomLevel - 2 * margin;
+    var plotH = H / zoomLevel - 2 * margin;
+    var layerH = plotH / nLayers;
+
+    c.save();
+    c.translate(panX, panY);
+    c.scale(zoomLevel, zoomLevel);
+
+    // World-to-screen transforms
+    function SX(wx) { return margin + ((wx - vx0) / vw) * plotW; }
+    function LY(layerIdx) { return margin + (nLayers - 1 - layerIdx) * layerH + layerH * 0.5; }
+
+    // ================================================================
+    // PRECOMPUTE: For each real token, compute its world-space position
+    // at each layer under the current mode (cumfwd/cumbwd/single).
+    // This IS the parallel transport — the path through the fibre.
+    // ================================================================
+    var tokenWorldX = []; // [ti][li] = world x at layer li
+    var tokenWorldY = []; // [ti][li] = world y at layer li
+    var tokenAttnDx = []; // [ti][li] = attention push in x
+    var tokenAttnDy = [];
+    var tokenMlpDx = [];
+    var tokenMlpDy = [];
+
+    for (var ti = 0; ti < nTokens; ti++) {
+        var wxArr = [], wyArr = [];
+        var adxArr = [], adyArr = [], mdxArr = [], mdyArr = [];
+
+        for (var li = 0; li < nLayers; li++) {
+            var cumDx = 0, cumDy = 0;
+            if (isEmb) {
+                // No deformation
+            } else if (mode === 'single') {
+                cumDx = activeDeltas[li][ti][dxDim] * amp * t;
+                cumDy = activeDeltas[li][ti][dyDim] * amp * t;
+            } else if (mode === 'cumfwd') {
+                for (var cl = 0; cl <= li; cl++) {
+                    cumDx += activeDeltas[cl][ti][dxDim] * amp * t;
+                    cumDy += activeDeltas[cl][ti][dyDim] * amp * t;
+                }
+            } else { // cumbwd
+                for (var cl = li; cl < nLayers; cl++) {
+                    cumDx += activeDeltas[cl][ti][dxDim] * amp * t;
+                    cumDy += activeDeltas[cl][ti][dyDim] * amp * t;
+                }
+            }
+
+            wxArr.push(fx[ti] + cumDx);
+            wyArr.push(fy[ti] + cumDy);
+
+            // Decomposed forces at this layer
+            var adx = 0, ady = 0, mdx = 0, mdy = 0;
+            if (attnDeltas && !isEmb) {
+                adx = attnDeltas[li][ti][dxDim] * amp * t;
+                ady = attnDeltas[li][ti][dyDim] * amp * t;
+            }
+            if (mlpDeltas && !isEmb) {
+                mdx = mlpDeltas[li][ti][dxDim] * amp * t;
+                mdy = mlpDeltas[li][ti][dyDim] * amp * t;
+            }
+            adxArr.push(adx); adyArr.push(ady);
+            mdxArr.push(mdx); mdyArr.push(mdy);
+        }
+
+        tokenWorldX.push(wxArr);
+        tokenWorldY.push(wyArr);
+        tokenAttnDx.push(adxArr); tokenAttnDy.push(adyArr);
+        tokenMlpDx.push(mdxArr); tokenMlpDy.push(mdyArr);
+    }
+
+    // ================================================================
+    // PASS 1: BACKGROUND DEFORMED GRIDS per layer (light, contextual)
+    // Shows how the entire space deforms at each layer
+    // ================================================================
+    if (showGrid && !isEmb) {
+        var N = Math.max(8, Math.min(25, Math.floor(plotW / 20)));
+
+        for (var li = 0; li < nLayers; li++) {
+            var ly = LY(li);
+            var bandTop = ly - layerH * 0.4;
+            var bandBot = ly + layerH * 0.4;
+            var bandH = bandBot - bandTop;
+            var isActive = (li === currentLayer);
+
+            // Compute cumulative deltas for all points at this layer
+            var edxCum = new Float64Array(nP);
+            var edyCum = new Float64Array(nP);
+            for (var j = 0; j < nP; j++) {
+                if (mode === 'single') {
+                    edxCum[j] = activeDeltas[li][j][dxDim] * amp;
+                    edyCum[j] = activeDeltas[li][j][dyDim] * amp;
+                } else if (mode === 'cumfwd') {
+                    for (var cl = 0; cl <= li; cl++) {
+                        edxCum[j] += activeDeltas[cl][j][dxDim] * amp;
+                        edyCum[j] += activeDeltas[cl][j][dyDim] * amp;
+                    }
+                } else {
+                    for (var cl = li; cl < nLayers; cl++) {
+                        edxCum[j] += activeDeltas[cl][j][dxDim] * amp;
+                        edyCum[j] += activeDeltas[cl][j][dyDim] * amp;
+                    }
+                }
+            }
+
+            // Build deformed grid
+            var nV = (N + 1) * (N + 1);
+            var oX = new Float64Array(nV), oY = new Float64Array(nV);
+            var gX = new Float64Array(nV), gY = new Float64Array(nV);
+
+            for (var gy = 0; gy <= N; gy++) {
+                for (var gx = 0; gx <= N; gx++) {
+                    var gi = gy * (N + 1) + gx;
+                    oX[gi] = vx0 + (gx / N) * vw;
+                    oY[gi] = vy0 + (gy / N) * vh;
+                }
+            }
+
+            for (var gi = 0; gi < nV; gi++) {
+                var px = oX[gi], py = oY[gi];
+                var vvx = 0, vvy = 0, ws = 0;
+                for (var k = 0; k < nP; k++) {
+                    var eex = px - fx[k], eey = py - fy[k];
+                    var w = Math.exp(-(eex * eex + eey * eey) * s2i);
+                    vvx += w * edxCum[k]; vvy += w * edyCum[k]; ws += w;
+                }
+                if (ws > 1e-15) { vvx /= ws; vvy /= ws; }
+                gX[gi] = px + t * vvx;
+                gY[gi] = py + t * vvy;
+            }
+
+            // Compute strain for coloring
+            var sH = new Float64Array(N * (N + 1));
+            for (var ey = 0; ey <= N; ey++) {
+                for (var ex = 0; ex < N; ex++) {
+                    var a = ey * (N + 1) + ex, b = a + 1;
+                    var od = Math.hypot(oX[b] - oX[a], oY[b] - oY[a]);
+                    var dd = Math.hypot(gX[b] - gX[a], gY[b] - gY[a]);
+                    sH[ey * N + ex] = od > 1e-12 ? dd / od : 1;
+                }
+            }
+            var sV = new Float64Array((N + 1) * N);
+            for (var ey = 0; ey < N; ey++) {
+                for (var ex = 0; ex <= N; ex++) {
+                    var a = ey * (N + 1) + ex, b = (ey + 1) * (N + 1) + ex;
+                    var od = Math.hypot(oX[b] - oX[a], oY[b] - oY[a]);
+                    var dd = Math.hypot(gX[b] - gX[a], gY[b] - gY[a]);
+                    sV[ey * (N + 1) + ex] = od > 1e-12 ? dd / od : 1;
+                }
+            }
+
+            // Map grid world-X to screen-X, grid world-Y to a narrow band
+            function GSX(wx) { return margin + ((wx - vx0) / vw) * plotW; }
+            function GSY(wy) { return bandTop + ((wy - vy0) / vh) * bandH; }
+
+            // Strain heatmap
+            if (showHeat) {
+                for (var hy = 0; hy < N; hy++) {
+                    for (var hx = 0; hx < N; hx++) {
+                        var avg = (sH[hy * N + hx] + sH[(hy + 1) * N + hx] +
+                                   sV[hy * (N + 1) + hx] + sV[hy * (N + 1) + hx + 1]) / 4;
+                        var co = s2c(avg);
+                        var i00 = hy * (N + 1) + hx, i10 = i00 + 1;
+                        var i01 = (hy + 1) * (N + 1) + hx, i11 = i01 + 1;
+                        c.beginPath();
+                        c.moveTo(GSX(gX[i00]), GSY(gY[i00]));
+                        c.lineTo(GSX(gX[i10]), GSY(gY[i10]));
+                        c.lineTo(GSX(gX[i11]), GSY(gY[i11]));
+                        c.lineTo(GSX(gX[i01]), GSY(gY[i01]));
+                        c.closePath();
+                        c.fillStyle = 'rgba(' + co[0] + ',' + co[1] + ',' + co[2] + ',' + (isActive ? 0.2 : 0.07) + ')';
+                        c.fill();
+                    }
+                }
+            }
+
+            // Grid lines
+            var gridAlpha = isActive ? 0.3 : 0.08;
+            c.lineWidth = isActive ? 0.7 : 0.3;
+            for (var dhy = 0; dhy <= N; dhy++) {
+                for (var dhx = 0; dhx < N; dhx++) {
+                    var di1 = dhy * (N + 1) + dhx, di2 = di1 + 1;
+                    if (showSC) {
+                        var es = sH[dhy * N + dhx];
+                        var ec = s2c(es);
+                        c.strokeStyle = 'rgba(' + ec[0] + ',' + ec[1] + ',' + ec[2] + ',' + gridAlpha + ')';
+                    } else {
+                        c.strokeStyle = 'rgba(200,200,200,' + gridAlpha + ')';
+                    }
+                    c.beginPath();
+                    c.moveTo(GSX(gX[di1]), GSY(gY[di1]));
+                    c.lineTo(GSX(gX[di2]), GSY(gY[di2]));
+                    c.stroke();
+                }
+            }
+            for (var dvx = 0; dvx <= N; dvx++) {
+                for (var dvy = 0; dvy < N; dvy++) {
+                    var dvi1 = dvy * (N + 1) + dvx, dvi2 = (dvy + 1) * (N + 1) + dvx;
+                    if (showSC) {
+                        var vs = sV[dvy * (N + 1) + dvx];
+                        var vc = s2c(vs);
+                        c.strokeStyle = 'rgba(' + vc[0] + ',' + vc[1] + ',' + vc[2] + ',' + gridAlpha + ')';
+                    } else {
+                        c.strokeStyle = 'rgba(200,200,200,' + gridAlpha + ')';
+                    }
+                    c.beginPath();
+                    c.moveTo(GSX(gX[dvi1]), GSY(gY[dvi1]));
+                    c.lineTo(GSX(gX[dvi2]), GSY(gY[dvi2]));
+                    c.stroke();
+                }
+            }
+
+            // Layer label
+            c.font = (isActive ? 'bold ' : '') + '10px monospace';
+            c.fillStyle = isActive ? '#e94560' : '#444';
+            c.textAlign = 'right';
+            c.fillText('L' + li, margin - 8, ly + 3);
+
+            // Thin separator
+            c.strokeStyle = 'rgba(60,60,100,' + (isActive ? 0.3 : 0.1) + ')';
+            c.lineWidth = 0.5;
+            c.beginPath();
+            c.moveTo(margin, ly + layerH * 0.48);
+            c.lineTo(margin + plotW, ly + layerH * 0.48);
+            c.stroke();
+        }
+    }
+
+    // ================================================================
+    // PASS 2: TOKEN PATHLINES — the parallel transport made visible
+    // Each token traces a smooth curve from layer 0 (bottom) to
+    // layer N-1 (top). The X position shifts based on the cumulative
+    // deformation. This IS the parallel transport.
+    // ================================================================
+    var tc = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71',
+              '#e74c3c','#3498db','#9b59b6','#1abc9c','#e67e22'];
+
+    for (var ti = 0; ti < nTokens; ti++) {
+        var col = tc[ti % tc.length];
+        var r = parseInt(col.slice(1, 3), 16);
+        var g = parseInt(col.slice(3, 5), 16);
+        var b = parseInt(col.slice(5, 7), 16);
+
+        // Build screen-space path
+        var path = [];
+        for (var li = 0; li < nLayers; li++) {
+            path.push({
+                x: SX(tokenWorldX[ti][li]),
+                y: LY(li)
+            });
+        }
+
+        // Outer glow
+        c.strokeStyle = 'rgba(' + r + ',' + g + ',' + b + ',0.06)';
+        c.lineWidth = 10;
+        c.lineJoin = 'round';
+        c.lineCap = 'round';
+        c.beginPath();
+        c.moveTo(path[0].x, path[0].y);
+        for (var li = 1; li < nLayers; li++) {
+            var prev = path[li - 1], curr = path[li];
+            c.quadraticCurveTo(prev.x, (prev.y + curr.y) / 2, curr.x, curr.y);
+        }
+        c.stroke();
+
+        // Main pathline
+        c.strokeStyle = 'rgba(' + r + ',' + g + ',' + b + ',0.7)';
+        c.lineWidth = 2.5;
+        c.beginPath();
+        c.moveTo(path[0].x, path[0].y);
+        for (var li = 1; li < nLayers; li++) {
+            var prev = path[li - 1], curr = path[li];
+            c.quadraticCurveTo(prev.x, (prev.y + curr.y) / 2, curr.x, curr.y);
+        }
+        c.stroke();
+
+        // ============================================================
+        // PASS 3: FORCE DECOMPOSITION at each layer node
+        // Cyan arrow = attention push, Orange arrow = MLP push
+        // These branch off the pathline showing WHY it bends
+        // ============================================================
+        for (var li = 0; li < nLayers; li++) {
+            var pt = path[li];
+            var isActive = (li === currentLayer);
+            var pixPerWorld = plotW / vw;
+            var maxArrow = layerH * 0.35;
+            var arrowAlpha = isActive ? 0.85 : 0.3;
+
+            // Attention arrow (cyan) — horizontal component only for clarity
+            if (attnDeltas && !isEmb) {
+                var avx = tokenAttnDx[ti][li] * pixPerWorld;
+                var avy = 0; // keep arrows horizontal so they don't overlap pathline
+                var aLen = Math.abs(avx);
+                if (aLen > 1.5) {
+                    if (aLen > maxArrow) avx *= maxArrow / aLen;
+                    drawFlowArrow(c, pt.x, pt.y - 3, avx, avy,
+                        'rgba(0,200,255,' + arrowAlpha + ')', maxArrow);
+                }
+            }
+
+            // MLP arrow (orange)
+            if (mlpDeltas && !isEmb) {
+                var mvx = tokenMlpDx[ti][li] * pixPerWorld;
+                var mvy = 0;
+                var mLen = Math.abs(mvx);
+                if (mLen > 1.5) {
+                    if (mLen > maxArrow) mvx *= maxArrow / mLen;
+                    drawFlowArrow(c, pt.x, pt.y + 3, mvx, mvy,
+                        'rgba(255,165,0,' + arrowAlpha + ')', maxArrow);
+                }
+            }
+
+            // ============================================================
+            // PASS 4: TRANSPORT FRAME at each layer node
+            // Shows local coordinate rotation = parallel transport
+            // ============================================================
+            if (fibreState.showTransportFrame && !isEmb) {
+                // Compute Jacobian of the deformation field at this token's position
+                var edxCumTF = new Float64Array(nP);
+                var edyCumTF = new Float64Array(nP);
+                for (var j = 0; j < nP; j++) {
+                    if (mode === 'single') {
+                        edxCumTF[j] = activeDeltas[li][j][dxDim] * amp;
+                        edyCumTF[j] = activeDeltas[li][j][dyDim] * amp;
+                    } else if (mode === 'cumfwd') {
+                        for (var cl = 0; cl <= li; cl++) {
+                            edxCumTF[j] += activeDeltas[cl][j][dxDim] * amp;
+                            edyCumTF[j] += activeDeltas[cl][j][dyDim] * amp;
+                        }
+                    } else {
+                        for (var cl = li; cl < nLayers; cl++) {
+                            edxCumTF[j] += activeDeltas[cl][j][dxDim] * amp;
+                            edyCumTF[j] += activeDeltas[cl][j][dyDim] * amp;
+                        }
+                    }
+                }
+
+                var eps = sig * 0.1;
+                function interpTF(px, py) {
+                    var vvx = 0, vvy = 0, ws = 0;
+                    for (var k = 0; k < nP; k++) {
+                        var eex = px - fx[k], eey = py - fy[k];
+                        var w = Math.exp(-(eex * eex + eey * eey) * s2i);
+                        vvx += w * edxCumTF[k]; vvy += w * edyCumTF[k]; ws += w;
+                    }
+                    if (ws > 1e-15) { vvx /= ws; vvy /= ws; }
+                    return [vvx, vvy];
+                }
+
+                var bpx = fx[ti], bpy = fy[ti];
+                var v0 = interpTF(bpx, bpy);
+                var vR = interpTF(bpx + eps, bpy);
+                var vU = interpTF(bpx, bpy + eps);
+
+                // Jacobian
+                var J00 = 1 + (vR[0] - v0[0]) / eps;
+                var J01 = (vU[0] - v0[0]) / eps;
+                var J10 = (vR[1] - v0[1]) / eps;
+                var J11 = 1 + (vU[1] - v0[1]) / eps;
+
+                var fSize = Math.min(layerH * 0.2, 12);
+                var e1x = J00 * fSize * pixPerWorld * 0.015;
+                var e1y = J10 * fSize * pixPerWorld * 0.015;
+                var e2x = J01 * fSize * pixPerWorld * 0.015;
+                var e2y = J11 * fSize * pixPerWorld * 0.015;
+
+                // Clamp
+                var maxF = fSize * 2;
+                var e1L = Math.hypot(e1x, e1y);
+                var e2L = Math.hypot(e2x, e2y);
+                if (e1L > maxF) { e1x *= maxF / e1L; e1y *= maxF / e1L; }
+                if (e2L > maxF) { e2x *= maxF / e2L; e2y *= maxF / e2L; }
+
+                var frameAlpha = isActive ? 0.7 : 0.2;
+                c.globalAlpha = frameAlpha;
+                drawFlowArrow(c, pt.x, pt.y, e1x, e1y, 'rgba(255,255,100,0.9)', maxF);
+                drawFlowArrow(c, pt.x, pt.y, e2x, e2y, 'rgba(255,100,255,0.9)', maxF);
+                c.globalAlpha = 1.0;
+            }
+
+            // Node dot
+            var dotR = isActive ? 5 : 3;
+            c.beginPath();
+            c.arc(pt.x, pt.y, dotR, 0, Math.PI * 2);
+            c.fillStyle = col;
+            c.fill();
+            if (isActive) {
+                c.strokeStyle = '#fff';
+                c.lineWidth = 1.5;
+                c.stroke();
+            }
+        }
+
+        // Token label at bottom (layer 0)
+        c.font = 'bold 10px monospace';
+        c.fillStyle = col;
+        c.textAlign = 'center';
+        c.fillText('[' + ti + '] ' + D.tokens[ti], path[0].x, path[0].y + 16);
+    }
+
+    // ================================================================
+    // LEGEND
+    // ================================================================
+    var legX = margin + plotW + 10;
+    var legY = margin + 10;
+    c.font = '9px monospace';
+    c.textAlign = 'left';
+
+    c.fillStyle = '#888';
+    c.fillText('Parallel Transport', legX, legY); legY += 14;
+
+    c.strokeStyle = 'rgba(233,69,96,0.6)';
+    c.lineWidth = 2.5;
+    c.beginPath(); c.moveTo(legX, legY); c.lineTo(legX + 20, legY); c.stroke();
+    c.fillStyle = '#a0a0c0';
+    c.fillText('Token path', legX + 26, legY + 3); legY += 16;
+
+    if (attnDeltas) {
+        drawFlowArrow(c, legX, legY, 18, 0, 'rgba(0,200,255,0.8)', 20);
+        c.fillStyle = 'rgba(0,200,255,0.8)';
+        c.fillText('Attention push', legX + 26, legY + 3); legY += 14;
+    }
+    if (mlpDeltas) {
+        drawFlowArrow(c, legX, legY, 18, 0, 'rgba(255,165,0,0.8)', 20);
+        c.fillStyle = 'rgba(255,165,0,0.8)';
+        c.fillText('MLP push', legX + 26, legY + 3); legY += 14;
+    }
+    if (fibreState.showTransportFrame) {
+        drawFlowArrow(c, legX, legY, 14, 0, 'rgba(255,255,100,0.8)', 16);
+        c.fillStyle = 'rgba(255,255,100,0.8)';
+        c.fillText('Frame e1', legX + 26, legY + 3); legY += 12;
+        drawFlowArrow(c, legX, legY, 0, -12, 'rgba(255,100,255,0.8)', 14);
+        c.fillStyle = 'rgba(255,100,255,0.8)';
+        c.fillText('Frame e2', legX + 26, legY + 3); legY += 16;
+    }
+
+    c.fillStyle = '#555';
+    c.font = '8px monospace';
+    c.fillText('Path bends = information flow', legX, legY); legY += 10;
+    c.fillText('Frame rotation = holonomy', legX, legY);
+
+    c.restore();
+
+    // HUD
+    drawFibreBundleHUD(c, W, H, nTokens, nLayers, hiddenDim, currentLayer);
 }
 
 function drawFibreBundle() {
