@@ -278,6 +278,46 @@ def get_probe_texts():
         "spring summer autumn winter january february march april may june july",
         "dollar euro pound yen bitcoin price cost value money bank trade",
         "hello goodbye please thanks sorry yes no maybe okay sure right wrong",
+        # 282: Abstract Philosophy & Logic
+        "truth justice freedom peace ethics morality logic reason paradox reality existence",
+        # 283: Advanced Technology & AI
+        "quantum algorithm neural network robotics hardware software database cloud encryption privacy",
+        # 284: Culinary & Taste
+        "sweet sour bitter salty spicy delicious tasty breakfast lunch dinner recipe kitchen",
+        # 285: Medical & Biology
+        "dna cell blood heart brain medicine health disease virus bacteria surgery doctor hospital",
+        # 286: Spanish (Romance Language / Latin Script)
+        "hola mundo gracias por todo el sol brilla mucho en la ciudad de madrid",
+        # 287: French (Romance Language / Diacritics)
+        "le château est magnifique l'été arrive bientôt avec des fleurs épanouies",
+        # 288: German (Compound words / Grammar)
+        "die geschwindigkeit der entschleunigung ist für das wohlbefinden sehr wichtig heute",
+        # 289: Chinese (Logographic / Simplified)
+        "你好世界和平进步学习进步身体健康万事如意中文字符测试",
+        # 290: Japanese (Mixed Scripts - Kanji/Hiragana/Katakana)
+        "こんにちは世界プログラミングは楽しいです桜の花が綺麗に咲いています",
+        # 291: Russian (Cyrillic Script)
+        "привет мир доброе утро спокойной ночи прекрасный день русский язык тест",
+        # 292: Arabic (Abjad / Right-to-Left)
+        "السلام عليكم مرحبا كيف حالك اليوم الطقس جميل جدا في المدينة",
+        # 293: Hindi (Devanagari Script)
+        "नमस्ते दुनिया आप कैसे हैं आज का दिन बहुत अच्छा है भारत महान देश है",
+        # 294: Code Syntax (Python/General)
+        "def main(): return [x for x in range(10) if x % 2 == 0] lambda try except",
+        # 295: Code Syntax (Web/HTML/CSS)
+        "<html> <head> <style> .container { display: flex; } </style> <body> <div>",
+        # 296: Mathematical Symbols & Notation
+        "summation integral derivative infinity plus minus multiply divide equal percent root",
+        # 297: Common Punctuation & Special Characters
+        "! @ # $ % ^ & * ( ) _ + - = { } [ ] : ; \" ' < > ? / | \\ ~ `",
+        # 298: Legal & Formal
+        "contract agreement witness signature policy regulation compliance law court judge justice",
+        # 299: Travel & Geography
+        "airport passport luggage flight ticket hotel map tourism vacation border continent island",
+        # 300: Astronomy & Space
+        "galaxy planet orbit telescope gravity astronaut nebula comet meteor vacuum alien universe",
+        # 301: Nonsense/Stress Test (Tokenization check)
+        "qwertyuiop asdfghjkl zxcvbnm foo bar baz qux lorem ipsum dolor sit amet"
     ]
 
 
