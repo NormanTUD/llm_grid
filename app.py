@@ -6173,8 +6173,8 @@ class Handler(BaseHTTPRequestHandler):
 
         handler_map = {
             "/run": handle_post_run,
-            "/diffeomorphism_spectrum": handle_diffeomorphism_spectrum,       # NEW
-            "/contrastive_spectrum": handle_contrastive_spectrum,             # NEW
+            "/diffeomorphism_spectrum": handle_diffeomorphism_spectrum,
+            "/contrastive_spectrum": handle_contrastive_spectrum,
             "/compare": handle_compare,
             "/sae_features": handle_sae_features,
             "/sae_intervene": handle_sae_intervene,
