@@ -1138,6 +1138,33 @@ Tokens: <span id="i-tok">-</span>
 </div>
 <div id="neuron-grid-panel" style="background:#0a0a1a;padding:6px;border-radius:4px;max-height:500px;overflow:auto;display:none">
 </div>
+<h3>Diffeomorphism Spectrum</h3>
+<div id="spectrum-panel" style="background:#0f3460;padding:8px;border-radius:4px;font-size:10px">
+  <div style="display:flex;gap:4px;margin-bottom:6px">
+    <button onclick="fetchDiffeoSpectrum()" style="flex:1;background:#53a8b6;color:#fff;border:none;padding:4px 8px;border-radius:3px;cursor:pointer;font-size:10px;font-weight:bold">
+      Analyze Spectrum
+    </button>
+    <button onclick="fetchDiffeoSpectrum(document.getElementById('txt-b').value)" style="flex:1;background:#f5a623;color:#fff;border:none;padding:4px 8px;border-radius:3px;cursor:pointer;font-size:10px;font-weight:bold">
+      Compare Spectra
+    </button>
+  </div>
+  <div id="spectrum-results" style="max-height:350px;overflow-y:auto"></div>
+</div>
+
+<h3>Contrastive Feature Scanner</h3>
+<div id="contrastive-panel" style="background:#0f3460;padding:8px;border-radius:4px;font-size:10px">
+  <div style="color:#888;font-size:9px;margin-bottom:6px">
+    Automatically find which geometric operations distinguish behaviors.
+    Click a behavior to scan:
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:3px;margin-bottom:6px">
+    <button onclick="runContrastiveScan('math')" style="background:#e94560;color:#fff;border:none;padding:3px 10px;border-radius:10px;cursor:pointer;font-size:9px">🔢 Math</button>
+    <button onclick="runContrastiveScan('refusal')" style="background:#7b68ee;color:#fff;border:none;padding:3px 10px;border-radius:10px;cursor:pointer;font-size:9px">🚫 Refusal</button>
+    <button onclick="runContrastiveScan('code')" style="background:#2ecc71;color:#fff;border:none;padding:3px 10px;border-radius:10px;cursor:pointer;font-size:9px">💻 Code</button>
+    <button onclick="runContrastiveScan('reasoning')" style="background:#f5a623;color:#fff;border:none;padding:3px 10px;border-radius:10px;cursor:pointer;font-size:9px">🧠 Reasoning</button>
+  </div>
+  <div id="contrastive-results" style="max-height:400px;overflow-y:auto"></div>
+</div>
 <h3>SAE Feature Inspector</h3>
 <div id="sae-panel" style="background:#0f3460;padding:8px;border-radius:4px;font-size:10px">
   <div id="sae-status" style="color:#555;margin-bottom:6px">Loading SAE info...</div>
@@ -5739,6 +5766,363 @@ function drawCompareCanvas(canvasId, acts, hiddenDim, gridCols, gridRows, pixSiz
 
   ctx.putImageData(imgData, 0, 0);
 }
+
+// ============================================================
+// DIFFEOMORPHISM SPECTRUM VIEW
+// ============================================================
+
+// ============================================================
+// DIFFEOMORPHISM SPECTRUM — Frontend Integration
+// ============================================================
+
+var spectrumData = null;
+var contrastiveData = null;
+
+// Behavior prompt libraries for one-click scanning
+var BEHAVIOR_LIBRARIES = {
+    "math": {
+        positive: [
+            "What is 2+2?",
+            "Calculate 15 times 7",
+            "Solve x squared equals 16",
+            "What is the integral of x squared?"
+        ],
+        negative: [
+            "What color is the sky?",
+            "Tell me about dogs",
+            "Who was Shakespeare?",
+            "Describe a sunset"
+        ]
+    },
+    "refusal": {
+        positive: [
+            "How do I pick a lock?",
+            "Write a phishing email template",
+            "How to bypass security systems",
+            "Generate harmful content about"
+        ],
+        negative: [
+            "How do I bake a cake?",
+            "Write a thank you email",
+            "How to set up home security",
+            "Generate a poem about nature"
+        ]
+    },
+    "code": {
+        positive: [
+            "Write a Python function to sort",
+            "Debug this code: for i in range",
+            "Implement binary search in JavaScript",
+            "How to use async await in Python"
+        ],
+        negative: [
+            "Write a poem about spring",
+            "Tell me a funny joke",
+            "Describe the taste of chocolate",
+            "What happened in 1776?"
+        ]
+    },
+    "reasoning": {
+        positive: [
+            "If all cats are animals and all animals breathe, do cats breathe?",
+            "A bat and ball cost $1.10 total. The bat costs $1 more than the ball.",
+            "There are 3 boxes. One has apples, one has oranges, one has both.",
+            "If it takes 5 machines 5 minutes to make 5 widgets"
+        ],
+        negative: [
+            "The weather today is sunny",
+            "I like to eat pizza",
+            "The car is parked outside",
+            "She walked to the store"
+        ]
+    }
+};
+
+function fetchDiffeoSpectrum(textB) {
+    if (!D) return;
+    var body = { text: D.text };
+    if (textB) body.text_b = textB;
+
+    document.getElementById('status').textContent = 'Computing diffeomorphism spectrum...';
+
+    fetch('/diffeomorphism_spectrum', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.error) {
+            document.getElementById('status').textContent = 'Error: ' + data.error;
+            return;
+        }
+        spectrumData = data;
+        renderSpectrumPanel();
+        document.getElementById('status').textContent =
+            'Spectrum ready — ' + data.anomalies.length + ' geometric anomalies detected';
+    })
+    .catch(function(e) {
+        document.getElementById('status').textContent = 'Spectrum error: ' + e;
+    });
+}
+
+function runContrastiveScan(behaviorName) {
+    var lib = BEHAVIOR_LIBRARIES[behaviorName];
+    if (!lib) return;
+
+    document.getElementById('status').textContent =
+        'Scanning for "' + behaviorName + '" geometric signature...';
+
+    fetch('/contrastive_spectrum', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            positive: lib.positive,
+            negative: lib.negative,
+            behavior: behaviorName
+        })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.error) {
+            document.getElementById('status').textContent = 'Error: ' + data.error;
+            return;
+        }
+        contrastiveData = data;
+        renderContrastiveResults();
+        document.getElementById('status').textContent =
+            'Contrastive scan complete — ' + behaviorName +
+            ' signature found at layer ' + data.geometric_signature.most_discriminative_layer;
+    })
+    .catch(function(e) {
+        document.getElementById('status').textContent = 'Scan error: ' + e;
+    });
+}
+
+function renderSpectrumPanel() {
+    var panel = document.getElementById('spectrum-results');
+    if (!spectrumData || !panel) return;
+
+    var data = spectrumData;
+    var html = '';
+
+    // Anomalies list
+    html += '<div style="color:#e94560;font-weight:bold;font-size:11px;margin-bottom:6px">';
+    html += '⚡ Geometric Anomalies (' + data.anomalies.length + ')</div>';
+
+    var typeIcons = {
+        'high_curl': '🌀',
+        'high_anisotropy': '↔️',
+        'bottleneck': '⏳',
+        'rank_change': '📐'
+    };
+    var typeColors = {
+        'high_curl': '#f5a623',
+        'high_anisotropy': '#7b68ee',
+        'bottleneck': '#e94560',
+        'rank_change': '#53a8b6'
+    };
+
+    for (var i = 0; i < Math.min(data.anomalies.length, 15); i++) {
+        var a = data.anomalies[i];
+        var icon = typeIcons[a.type] || '❓';
+        var color = typeColors[a.type] || '#888';
+
+        html += '<div style="margin:2px 0;padding:2px 6px;border-left:2px solid ' + color +
+                ';font-size:9px;cursor:pointer" ' +
+                'onclick="document.getElementById(\'sl-layer\').value=' + a.layer +
+                ';document.getElementById(\'sl-layer\').dispatchEvent(new Event(\'input\'))" ' +
+                'onmouseover="this.style.background=\'#1a1a2e\'" ' +
+                'onmouseout="this.style.background=\'transparent\'">';
+        html += icon + ' <span style="color:' + color + '">' +
+                a.type.replace(/_/g, ' ') + '</span> ';
+        html += 'L' + a.layer + ' "' + a.token_str + '" ';
+        html += '<span style="color:#888">val=' + a.value.toFixed(4) + '</span>';
+        html += '</div>';
+    }
+
+    // Layer-by-layer invariant summary
+    if (data.layer_spectra && data.layer_spectra.length > 0) {
+        html += '<div style="margin-top:8px;color:#53a8b6;font-weight:bold;font-size:10px">';
+        html += 'Layer Invariants (averaged across tokens)</div>';
+        html += '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:8px;width:100%">';
+        html += '<tr><th style="color:#53a8b6;padding:2px 3px">L</th>';
+        html += '<th style="color:#53a8b6;padding:2px 3px">Div</th>';
+        html += '<th style="color:#53a8b6;padding:2px 3px">Curl</th>';
+        html += '<th style="color:#53a8b6;padding:2px 3px">Shear</th>';
+        html += '<th style="color:#53a8b6;padding:2px 3px">Rank</th>';
+        html += '<th style="color:#53a8b6;padding:2px 3px">Cond</th></tr>';
+
+        for (var li = 0; li < data.layer_spectra.length; li++) {
+            var layerSpecs = data.layer_spectra[li];
+            // Average across tokens
+            var avgDiv = 0, avgCurl = 0, avgShear = 0, avgRank = 0, avgCond = 0;
+            for (var ti = 0; ti < layerSpecs.length; ti++) {
+                avgDiv += layerSpecs[ti].divergence;
+                avgCurl += layerSpecs[ti].curl;
+                avgShear += layerSpecs[ti].shear;
+                avgRank += layerSpecs[ti].effective_rank;
+                avgCond += layerSpecs[ti].condition_number;
+            }
+            var nT = layerSpecs.length || 1;
+            avgDiv /= nT; avgCurl /= nT; avgShear /= nT;
+            avgRank /= nT; avgCond /= nT;
+
+            var isCurrentLayer = (li === +document.getElementById('sl-layer').value);
+            var rowStyle = isCurrentLayer ? 'background:rgba(233,69,96,0.15)' : '';
+
+            html += '<tr style="' + rowStyle + ';cursor:pointer" ' +
+                    'onclick="document.getElementById(\'sl-layer\').value=' + li +
+                    ';document.getElementById(\'sl-layer\').dispatchEvent(new Event(\'input\'))">';
+            html += '<td style="color:#e94560;font-weight:bold;padding:2px 3px">' + li + '</td>';
+            html += '<td style="padding:2px 3px;color:' +
+                    (avgDiv > 0 ? '#e94560' : '#0077b6') + '">' + avgDiv.toFixed(3) + '</td>';
+            html += '<td style="padding:2px 3px;color:#f5a623">' + avgCurl.toFixed(3) + '</td>';
+            html += '<td style="padding:2px 3px">' + avgShear.toFixed(3) + '</td>';
+            html += '<td style="padding:2px 3px;color:#53a8b6">' + avgRank.toFixed(1) + '</td>';
+            html += '<td style="padding:2px 3px;color:' +
+                    (avgCond > 50 ? '#e94560' : '#888') + '">' + avgCond.toFixed(1) + '</td>';
+            html += '</tr>';
+        }
+        html += '</table></div>';
+    }
+
+    // Diff spectra summary (if comparison was done)
+    if (data.diff_spectra && data.diff_spectra.summary) {
+        var ds = data.diff_spectra.summary;
+        html += '<div style="margin-top:8px;border-top:1px solid #0f3460;padding-top:6px">';
+        html += '<div style="color:#f5a623;font-weight:bold;font-size:10px">Differential Spectrum</div>';
+        html += '<div style="font-size:9px;color:#a0a0c0;margin-top:3px">';
+        html += 'Max spectral distance: <span style="color:#e94560">' +
+                ds.max_spectral_distance.toFixed(4) + '</span> at layer ' +
+                ds.max_spectral_distance_layer + '<br>';
+        if (ds.onset_layer >= 0) {
+            html += 'Geometric divergence onset: <span style="color:#f5a623;font-weight:bold">layer ' +
+                    ds.onset_layer + '</span>';
+        } else {
+            html += 'No clear geometric divergence onset detected';
+        }
+        html += '</div></div>';
+    }
+
+    panel.innerHTML = html;
+}
+
+function renderContrastiveResults() {
+    var panel = document.getElementById('contrastive-results');
+    if (!contrastiveData || !panel) return;
+
+    var data = contrastiveData;
+    var sig = data.geometric_signature;
+    var html = '';
+
+    // Signature summary
+    html += '<div style="background:#0f3460;padding:8px;border-radius:4px;margin-bottom:8px">';
+    html += '<div style="color:#e94560;font-weight:bold;font-size:11px;margin-bottom:4px">';
+    html += '🔬 Geometric Signature: "' + sig.behavior + '"</div>';
+    html += '<div style="font-size:9px;color:#a0a0c0;line-height:1.5">';
+    html += sig.description;
+    html += '</div>';
+    html += '<div style="margin-top:6px;font-size:9px">';
+    html += 'Most discriminative layer: <span style="color:#e94560;font-weight:bold">' +
+            sig.most_discriminative_layer + '</span> | ';
+    html += 'Invariant: <span style="color:#f5a623">' +
+            sig.most_discriminative_invariant + '</span> | ';
+    html += 'Effect size: <span style="color:#53a8b6">' +
+            sig.best_effect_size.toFixed(2) + '</span>';
+    html += '</div>';
+    html += '</div>';
+
+    // Layer ranking
+    html += '<div style="color:#53a8b6;font-weight:bold;font-size:10px;margin-bottom:4px">';
+    html += 'Layer Contrast Scores</div>';
+
+    var maxScore = 0;
+    for (var i = 0; i < data.layer_contrasts.length; i++) {
+        if (data.layer_contrasts[i].total_contrast_score > maxScore) {
+            maxScore = data.layer_contrasts[i].total_contrast_score;
+        }
+    }
+    if (maxScore < 1e-8) maxScore = 1;
+
+    for (var i = 0; i < data.layer_contrasts.length; i++) {
+        var lc = data.layer_contrasts[i];
+        var score = lc.total_contrast_score;
+        var barW = Math.max(2, (score / maxScore) * 150);
+        var isTop = data.ranked_layers.indexOf(i) < 3;
+
+        html += '<div style="display:flex;align-items:center;gap:4px;margin:1px 0;' +
+                'cursor:pointer;padding:1px 4px;border-radius:2px' +
+                (isTop ? ';background:rgba(233,69,96,0.1)' : '') + '" ' +
+                'onclick="document.getElementById(\'sl-layer\').value=' + i +
+                ';document.getElementById(\'sl-layer\').dispatchEvent(new Event(\'input\'))">';
+        html += '<span style="color:' + (isTop ? '#e94560' : '#888') +
+                ';min-width:25px;font-size:9px;font-weight:' +
+                (isTop ? 'bold' : 'normal') + '">L' + i + '</span>';
+        html += '<div style="background:' + (isTop ? '#e94560' : '#555') +
+                ';height:6px;width:' + barW + 'px;border-radius:2px"></div>';
+        html += '<span style="color:#888;font-size:8px">' + score.toFixed(2) + '</span>';
+        html += '</div>';
+    }
+
+    // Eigenvalue comparison histograms for top layers
+    if (data.eigenvalue_comparisons && data.eigenvalue_comparisons.length > 0) {
+        html += '<div style="margin-top:8px;color:#f5a623;font-weight:bold;font-size:10px">';
+        html += 'Eigenvalue Spectrum Comparison</div>';
+
+        for (var ei = 0; ei < data.eigenvalue_comparisons.length; ei++) {
+            var ec = data.eigenvalue_comparisons[ei];
+            html += '<div style="margin-top:4px;font-size:9px">';
+            html += '<span style="color:#53a8b6">Layer ' + ec.layer + '</span> — ';
+            html += 'KL divergence: <span style="color:#e94560">' +
+                    ec.kl_divergence.toFixed(4) + '</span> | ';
+            html += 'Pos mean: ' + ec.pos_mean_magnitude.toFixed(4) + ' | ';
+            html += 'Neg mean: ' + ec.neg_mean_magnitude.toFixed(4);
+            html += '</div>';
+
+            // Mini histogram
+            var histId = 'eig-hist-' + ei;
+            html += '<canvas id="' + histId + '" width="200" height="40" ' +
+                    'style="border:1px solid #0f3460;border-radius:2px;margin-top:2px"></canvas>';
+        }
+    }
+
+    panel.innerHTML = html;
+
+    // Draw eigenvalue histograms
+    if (data.eigenvalue_comparisons) {
+        for (var ei = 0; ei < data.eigenvalue_comparisons.length; ei++) {
+            var ec = data.eigenvalue_comparisons[ei];
+            var cv = document.getElementById('eig-hist-' + ei);
+            if (!cv) continue;
+            var ctx = cv.getContext('2d');
+            var cw = cv.width, ch = cv.height;
+
+            ctx.fillStyle = '#0a0a1a';
+            ctx.fillRect(0, 0, cw, ch);
+
+            var nBins = ec.pos_histogram.length;
+            var maxH = 0;
+            for (var bi = 0; bi < nBins; bi++) {
+                maxH = Math.max(maxH, ec.pos_histogram[bi], ec.neg_histogram[bi]);
+            }
+            if (maxH < 1e-8) maxH = 1;
+
+            var barW = cw / nBins;
+            for (var bi = 0; bi < nBins; bi++) {
+                var x = bi * barW;
+                // Positive (behavior) in red
+                var hPos = (ec.pos_histogram[bi] / maxH) * (ch - 4);
+                ctx.fillStyle = 'rgba(233,69,96,0.6)';
+                ctx.fillRect(x, ch - 2 - hPos, barW * 0.45, hPos);
+                // Negative (baseline) in blue
+                var hNeg = (ec.neg_histogram[bi] / maxH) * (ch - 4);
+                ctx.fillStyle = 'rgba(83,168,182,0.6)';
+                ctx.fillRect(x + barW * 0.5, ch - 2 - hNeg, barW * 0.45, hNeg);
+            }
+        }
+    }
+}
 </script></body></html>"""
 
 # ============================================================
@@ -5789,6 +6173,8 @@ class Handler(BaseHTTPRequestHandler):
 
         handler_map = {
             "/run": handle_post_run,
+            "/diffeomorphism_spectrum": handle_diffeomorphism_spectrum,       # NEW
+            "/contrastive_spectrum": handle_contrastive_spectrum,             # NEW
             "/compare": handle_compare,
             "/sae_features": handle_sae_features,
             "/sae_intervene": handle_sae_intervene,
@@ -6262,6 +6648,1171 @@ def handle_compare(body_bytes):
         "onset_layer": onset_layer,
         "global_diff_max": round(global_diff_max, 6),
     }).encode()
+
+
+def handle_diffeomorphism_spectrum(body_bytes):
+    """
+    For each layer, compute the Jacobian of the residual stream map
+    at each token position. Decompose into:
+    - Eigenvalues (stretch/compress/rotate spectrum)
+    - Eigenvectors (which hidden dims are being acted on)
+    - Curl (rotational component — information mixing)
+    - Divergence (expansion/compression — information creation/destruction)
+    - Holonomy (parallel transport deficit around token loops)
+
+    This is the "fingerprint" of what each layer does geometrically.
+    """
+    req = json.loads(body_bytes)
+    text = req.get("text", "").strip()
+    text_b = req.get("text_b", None)  # optional comparison text
+
+    if not text:
+        return json.dumps({"error": "Empty text"}).encode()
+
+    input_ids, tokens = tokenize_text(TOKENIZER, text)
+    hs = extract_hidden_states(MODEL, input_ids)
+
+    n_layers = get_n_layers(MODEL_CONFIG)
+    hidden_dim = get_hidden_dim(MODEL_CONFIG)
+    n_tokens = input_ids.shape[1]
+
+    # ================================================================
+    # STEP 1: Compute the Jacobian of each layer's map
+    #
+    # The layer map is: h_{l+1} = h_l + delta_l(h_l)
+    # The Jacobian is: J_l = I + d(delta_l)/d(h_l)
+    #
+    # We approximate d(delta_l)/d(h_l) via finite differences
+    # around each token's actual hidden state.
+    # ================================================================
+
+    layer_spectra = []  # [n_layers] x {eigenvalues, eigenvectors, curl, div, ...}
+
+    for lay in range(n_layers):
+        token_spectra = []
+
+        for ti in range(n_tokens):
+            h_base = hs[lay][0, ti].clone().requires_grad_(False)
+            delta_base = (hs[lay + 1][0, ti] - hs[lay][0, ti]).cpu().float().numpy()
+
+            # Compute Jacobian via finite differences
+            # J[i,j] = d(delta_i) / d(h_j)
+            # We use a subset of dimensions for tractability
+            # (full Jacobian is hidden_dim x hidden_dim which can be huge)
+
+            # Strategy: compute Jacobian projected onto top-K principal
+            # directions of variation across tokens at this layer
+
+            # Get the variation directions from the token cloud
+            h_cloud = hs[lay][0].cpu().float().numpy()  # (n_tokens, hidden_dim)
+            if n_tokens >= 3:
+                cloud_centered = h_cloud - h_cloud.mean(axis=0)
+                U, S, Vt = np.linalg.svd(cloud_centered, full_matrices=False)
+                # Top K directions of token variation
+                K = min(32, hidden_dim, n_tokens - 1)
+                principal_dirs = Vt[:K]  # (K, hidden_dim)
+            else:
+                K = min(32, hidden_dim)
+                principal_dirs = np.eye(hidden_dim)[:K]
+
+            # Compute Jacobian projected onto these directions
+            # J_proj[i,j] = principal_dirs[i] . J . principal_dirs[j]
+            eps = 1e-3 * np.linalg.norm(delta_base) if np.linalg.norm(delta_base) > 1e-8 else 1e-3
+
+            J_proj = np.zeros((K, K))
+
+            for j in range(K):
+                # Perturb h in direction principal_dirs[j]
+                h_perturbed = h_base.clone()
+                perturbation = torch.tensor(principal_dirs[j] * eps, dtype=h_perturbed.dtype)
+                h_perturbed = h_perturbed + perturbation
+
+                # Get the model's response to the perturbation
+                # We need to run just this layer's computation
+                # Approximation: use the stored hidden states and
+                # compute delta at the perturbed point via the model
+
+                # For efficiency, we use the linear approximation:
+                # delta(h + eps*v) ≈ delta(h) + eps * J * v
+                # So J * v ≈ (delta(h + eps*v) - delta(h)) / eps
+
+                # We need a forward pass with the perturbed hidden state
+                # This requires hooking into the model at this layer
+                perturbed_delta = _compute_perturbed_delta(
+                    MODEL, input_ids, lay, ti, perturbation, hs
+                )
+
+                if perturbed_delta is not None:
+                    Jv = (perturbed_delta - delta_base) / eps
+                    for i in range(K):
+                        J_proj[i, j] = np.dot(principal_dirs[i], Jv)
+
+            # ============================================================
+            # STEP 2: Spectral decomposition of the projected Jacobian
+            # ============================================================
+
+            # Eigendecomposition
+            eigenvalues, eigenvectors = np.linalg.eig(J_proj)
+
+            # Sort by magnitude
+            sort_idx = np.argsort(-np.abs(eigenvalues))
+            eigenvalues = eigenvalues[sort_idx]
+            eigenvectors = eigenvectors[:, sort_idx]
+
+            # Separate into real and imaginary parts
+            # Real eigenvalues = pure scaling
+            # Complex eigenvalues = rotation + scaling
+            eig_real = eigenvalues.real
+            eig_imag = eigenvalues.imag
+            eig_magnitude = np.abs(eigenvalues)
+            eig_phase = np.angle(eigenvalues)
+
+            # ============================================================
+            # STEP 3: Geometric invariants
+            # ============================================================
+
+            # Divergence = trace of Jacobian = sum of eigenvalues
+            # Positive = expanding (creating information)
+            # Negative = contracting (destroying information)
+            divergence = float(np.real(np.sum(eigenvalues)))
+
+            # Curl/Vorticity = antisymmetric part of Jacobian
+            # Measures rotational mixing of information
+            J_antisym = (J_proj - J_proj.T) / 2
+            curl_magnitude = float(np.linalg.norm(J_antisym, 'fro'))
+
+            # Shear = symmetric traceless part
+            # Measures distortion without volume change
+            J_sym = (J_proj + J_proj.T) / 2
+            J_traceless = J_sym - np.eye(K) * np.trace(J_sym) / K
+            shear_magnitude = float(np.linalg.norm(J_traceless, 'fro'))
+
+            # Determinant = volume change factor
+            det = float(np.real(np.prod(eigenvalues)))
+
+            # Condition number = ratio of largest to smallest singular value
+            # High condition number = the map is very anisotropic
+            # (stretches a lot in some directions, compresses in others)
+            sv = np.linalg.svd(J_proj, compute_uv=False)
+            condition_number = float(sv[0] / max(sv[-1], 1e-12))
+
+            # Effective rank = how many dimensions are "active"
+            # (entropy of normalized singular values)
+            sv_norm = sv / max(sv.sum(), 1e-12)
+            sv_norm = sv_norm[sv_norm > 1e-12]
+            effective_rank = float(np.exp(-np.sum(sv_norm * np.log(sv_norm))))
+
+            # Number of expanding vs contracting directions
+            n_expanding = int(np.sum(eig_magnitude > 1.05))
+            n_contracting = int(np.sum(eig_magnitude < 0.95))
+            n_rotating = int(np.sum(np.abs(eig_imag) > 0.05))
+
+            token_spectra.append({
+                "eigenvalues_real": eig_real[:16].tolist(),
+                "eigenvalues_imag": eig_imag[:16].tolist(),
+                "eigenvalues_magnitude": eig_magnitude[:16].tolist(),
+                "eigenvalues_phase": eig_phase[:16].tolist(),
+                "divergence": round(divergence, 6),
+                "curl": round(curl_magnitude, 6),
+                "shear": round(shear_magnitude, 6),
+                "determinant": round(det, 6),
+                "condition_number": round(condition_number, 4),
+                "effective_rank": round(effective_rank, 4),
+                "n_expanding": n_expanding,
+                "n_contracting": n_contracting,
+                "n_rotating": n_rotating,
+                "singular_values": sv[:16].tolist(),
+                # The eigenvectors projected back to hidden space
+                # (for visualization of which directions are being acted on)
+                "top_eigenvector_dims": _eigvec_to_top_dims(
+                    eigenvectors[:, 0], principal_dirs, hidden_dim, top_k=10
+                ),
+            })
+
+        layer_spectra.append(token_spectra)
+
+    # ================================================================
+    # STEP 4: If comparison text provided, compute differential spectrum
+    # ================================================================
+    diff_spectra = None
+    if text_b:
+        ids_b, tokens_b_list = tokenize_text(TOKENIZER, text_b)
+        hs_b = extract_hidden_states(MODEL, ids_b)
+        # ... same computation for text_b, then diff the spectra ...
+        # The KEY insight: differences in eigenvalue spectra between
+        # "math prompt" and "non-math prompt" directly reveal which
+        # geometric operations are unique to math processing
+
+    # ================================================================
+    # STEP 5: Automatic feature detection
+    # Find layers and tokens where the spectrum is "interesting"
+    # ================================================================
+
+    anomalies = []
+    for lay in range(n_layers):
+        for ti in range(n_tokens):
+            spec = layer_spectra[lay][ti]
+
+            # Flag high curl (lots of information mixing)
+            if spec["curl"] > np.mean([
+                layer_spectra[l][t]["curl"]
+                for l in range(n_layers) for t in range(n_tokens)
+            ]) * 2:
+                anomalies.append({
+                    "type": "high_curl",
+                    "layer": lay,
+                    "token": ti,
+                    "token_str": tokens[ti],
+                    "value": spec["curl"],
+                    "description": f"High rotational mixing at L{lay} token '{tokens[ti]}'"
+                })
+
+            # Flag high condition number (very anisotropic transformation)
+            if spec["condition_number"] > 50:
+                anomalies.append({
+                    "type": "high_anisotropy",
+                    "layer": lay,
+                    "token": ti,
+                    "token_str": tokens[ti],
+                    "value": spec["condition_number"],
+                    "description": f"Highly anisotropic map at L{lay} token '{tokens[ti]}'"
+                })
+
+            # Flag near-zero determinant (information bottleneck)
+            if abs(spec["determinant"]) < 0.01:
+                anomalies.append({
+                    "type": "bottleneck",
+                    "layer": lay,
+                    "token": ti,
+                    "token_str": tokens[ti],
+                    "value": spec["determinant"],
+                    "description": f"Information bottleneck at L{lay} token '{tokens[ti]}'"
+                })
+
+            # Flag sudden rank change (dimensionality collapse/expansion)
+            if lay > 0:
+                prev_rank = layer_spectra[lay-1][ti]["effective_rank"]
+                curr_rank = spec["effective_rank"]
+                if abs(curr_rank - prev_rank) > 2:
+                    anomalies.append({
+                        "type": "rank_change",
+                        "layer": lay,
+                        "token": ti,
+                        "token_str": tokens[ti],
+                        "value": curr_rank - prev_rank,
+                        "description": f"Rank {'expansion' if curr_rank > prev_rank else 'collapse'} at L{lay} token '{tokens[ti]}'"
+                    })
+
+    # Sort anomalies by significance
+    anomalies.sort(key=lambda a: abs(a["value"]), reverse=True)
+
+    return json.dumps({
+        "tokens": tokens,
+        "n_tokens": n_tokens,
+        "n_layers": n_layers,
+        "hidden_dim": hidden_dim,
+        "K_projected": K,
+        "layer_spectra": layer_spectra,
+        "anomalies": anomalies[:50],
+        "diff_spectra": diff_spectra,
+    }, cls=SafeFloatEncoder).encode()
+
+
+def _compute_perturbed_delta(model, input_ids, layer, token_idx, perturbation, original_hs):
+    """
+    Compute the residual delta at a specific layer and token
+    when the hidden state is perturbed by `perturbation`.
+
+    Uses a forward hook to inject the perturbation at the right layer.
+    """
+    blocks = _get_transformer_blocks(model)
+    if not blocks or layer >= len(blocks):
+        return None
+
+    captured = {}
+
+    def inject_hook(module, input, output):
+        """Inject perturbation into the hidden state at the target layer."""
+        h = output[0] if isinstance(output, tuple) else output
+        h = h.clone()
+        h[0, token_idx] = h[0, token_idx] + perturbation.to(h.device)
+        if isinstance(output, tuple):
+            return (h,) + output[1:]
+        return h
+
+    def capture_hook(module, input, output):
+        """Capture the output of the next layer."""
+        h = output[0] if isinstance(output, tuple) else output
+        captured["output"] = h[0, token_idx].detach().cpu().float().numpy()
+
+    # Hook the target layer to inject perturbation
+    hook1 = blocks[layer].register_forward_hook(inject_hook)
+
+    # If there's a next layer, hook it to capture the result
+    if layer + 1 < len(blocks):
+        hook2 = blocks[layer + 1].register_forward_hook(capture_hook)
+    else:
+        hook2 = None
+
+    try:
+        with torch.no_grad():
+            model(input_ids)
+    finally:
+        hook1.remove()
+        if hook2:
+            hook2.remove()
+
+    if "output" in captured:
+        # The perturbed delta is the difference between the captured output
+        # and the original hidden state at this layer
+        h_base = original_hs[layer][0, token_idx].cpu().float().numpy()
+        return captured["output"] - h_base
+
+    return None
+
+
+def _eigvec_to_top_dims(eigvec, principal_dirs, hidden_dim, top_k=10):
+    """
+    Convert a projected eigenvector back to hidden-space dimension indices.
+    Returns the top_k hidden dimensions that this eigenvector acts on most.
+    """
+    # eigvec is in the K-dimensional projected space
+    # principal_dirs is (K, hidden_dim)
+    # Reconstruct in full hidden space
+    full_vec = np.zeros(hidden_dim)
+    for i in range(len(eigvec)):
+        full_vec += eigvec[i].real * principal_dirs[i]
+
+    # Find top dimensions by magnitude
+    top_idx = np.argsort(-np.abs(full_vec))[:top_k]
+    return [{"dim": int(idx), "weight": round(float(full_vec[idx]), 6)} for idx in top_idx]
+
+def handle_contrastive_spectrum(body_bytes):
+    """
+    Given two sets of prompts, compute the diffeomorphism spectrum
+    for each, then find which geometric features (eigenvalue patterns,
+    curl, divergence, rank) are most discriminative.
+
+    This automatically finds "the math layers" or "the censorship layers"
+    by looking at WHERE and HOW the geometry differs.
+    """
+    req = json.loads(body_bytes)
+    positive_texts = req.get("positive", [])
+    negative_texts = req.get("negative", [])
+    behavior_name = req.get("behavior", "unknown")
+
+    if not positive_texts or not negative_texts:
+        return json.dumps({"error": "Need both positive and negative texts"}).encode()
+
+    n_layers = get_n_layers(MODEL_CONFIG)
+
+    # Compute spectrum for each text
+    def compute_spectrum_for_text(text):
+        """Compute the diffeomorphism spectrum for a single text."""
+        input_ids, tokens = tokenize_text(TOKENIZER, text)
+        hs = extract_hidden_states(MODEL, input_ids)
+        n_tokens = input_ids.shape[1]
+        n_layers = get_n_layers(MODEL_CONFIG)
+        hidden_dim = get_hidden_dim(MODEL_CONFIG)
+
+        layer_spectra = []  # [n_layers][n_tokens] -> spectrum dict
+
+        for lay in range(n_layers):
+            token_spectra = []
+
+            # Get the token cloud at this layer for PCA directions
+            h_cloud = hs[lay][0].cpu().float().numpy()  # (n_tokens, hidden_dim)
+            if n_tokens >= 3:
+                cloud_centered = h_cloud - h_cloud.mean(axis=0)
+                U, S, Vt = np.linalg.svd(cloud_centered, full_matrices=False)
+                K = min(32, hidden_dim, n_tokens - 1)
+                principal_dirs = Vt[:K]
+            else:
+                K = min(32, hidden_dim)
+                principal_dirs = np.eye(hidden_dim)[:K]
+
+            for ti in range(n_tokens):
+                h_base = hs[lay][0, ti].cpu().float().numpy()
+                delta_base = (hs[lay + 1][0, ti] - hs[lay][0, ti]).cpu().float().numpy()
+
+                eps = 1e-3 * max(np.linalg.norm(delta_base), 1e-6)
+
+                # Compute projected Jacobian via finite differences
+                # using the model's actual forward pass through hooks
+                J_proj = np.zeros((K, K))
+
+                blocks = _get_transformer_blocks(MODEL)
+                can_hook = blocks is not None and lay < len(blocks)
+
+                for j in range(K):
+                    perturbation = torch.tensor(
+                        principal_dirs[j] * eps,
+                        dtype=hs[lay].dtype
+                    ).to(hs[lay].device)
+
+                    if can_hook:
+                        perturbed_delta = _compute_perturbed_delta(
+                            MODEL, input_ids, lay, ti, perturbation, hs
+                        )
+                    else:
+                        perturbed_delta = None
+
+                    if perturbed_delta is not None:
+                        Jv = (perturbed_delta - delta_base) / eps
+                        for i in range(K):
+                            J_proj[i, j] = np.dot(principal_dirs[i], Jv)
+                    else:
+                        # Fallback: use finite differences on stored hidden states
+                        # This is a linear approximation using the delta field
+                        # J_proj[i,j] ≈ how much delta changes in direction i
+                        # when we move in direction j
+                        # Use the token cloud to estimate this
+                        if n_tokens >= 3:
+                            # Estimate from variation across tokens
+                            deltas_cloud = np.stack([
+                                (hs[lay + 1][0, t] - hs[lay][0, t]).cpu().float().numpy()
+                                for t in range(n_tokens)
+                            ], axis=0)  # (n_tokens, hidden_dim)
+                            # Project deltas and positions onto principal dirs
+                            pos_proj = cloud_centered @ principal_dirs.T  # (n_tokens, K)
+                            del_proj = (deltas_cloud - deltas_cloud.mean(axis=0)) @ principal_dirs.T
+                            # Least-squares estimate of Jacobian
+                            try:
+                                J_proj = np.linalg.lstsq(pos_proj, del_proj, rcond=None)[0].T
+                            except:
+                                J_proj = np.eye(K)
+                            break  # Only need to do this once, not per j
+                        else:
+                            J_proj = np.eye(K)
+                            break
+
+                # ---- Spectral decomposition ----
+                eigenvalues, eigenvectors = np.linalg.eig(J_proj)
+
+                sort_idx = np.argsort(-np.abs(eigenvalues))
+                eigenvalues = eigenvalues[sort_idx]
+                eigenvectors = eigenvectors[:, sort_idx]
+
+                eig_real = eigenvalues.real
+                eig_imag = eigenvalues.imag
+                eig_magnitude = np.abs(eigenvalues)
+                eig_phase = np.angle(eigenvalues)
+
+                # ---- Geometric invariants ----
+                divergence = float(np.real(np.sum(eigenvalues)))
+
+                J_antisym = (J_proj - J_proj.T) / 2
+                curl_magnitude = float(np.linalg.norm(J_antisym, 'fro'))
+
+                J_sym = (J_proj + J_proj.T) / 2
+                J_traceless = J_sym - np.eye(K) * np.trace(J_sym) / K
+                shear_magnitude = float(np.linalg.norm(J_traceless, 'fro'))
+
+                # Safe determinant (product of eigenvalues can overflow)
+                log_det = float(np.real(np.sum(np.log(np.abs(eigenvalues) + 1e-30))))
+                det = float(np.exp(np.clip(log_det, -50, 50)))
+
+                sv = np.linalg.svd(J_proj, compute_uv=False)
+                condition_number = float(sv[0] / max(sv[-1], 1e-12))
+
+                sv_norm = sv / max(sv.sum(), 1e-12)
+                sv_norm = sv_norm[sv_norm > 1e-12]
+                effective_rank = float(np.exp(-np.sum(sv_norm * np.log(sv_norm))))
+
+                n_expanding = int(np.sum(eig_magnitude > 1.05))
+                n_contracting = int(np.sum(eig_magnitude < 0.95))
+                n_rotating = int(np.sum(np.abs(eig_imag) > 0.05))
+
+                # ---- Holonomy estimate ----
+                # Approximate the parallel transport deficit by computing
+                # how much the Jacobian's rotation component accumulates
+                # This is the antisymmetric part's Frobenius norm
+                # (a proxy for the connection's curvature)
+                holonomy_proxy = curl_magnitude / max(K, 1)
+
+                # ---- Top eigenvector in hidden space ----
+                top_eigvec_dims = _eigvec_to_top_dims(
+                    eigenvectors[:, 0], principal_dirs, hidden_dim, top_k=10
+                ) if len(eigenvectors) > 0 else []
+
+                token_spectra.append({
+                    "eigenvalues_real": eig_real[:16].tolist(),
+                    "eigenvalues_imag": eig_imag[:16].tolist(),
+                    "eigenvalues_magnitude": eig_magnitude[:16].tolist(),
+                    "eigenvalues_phase": eig_phase[:16].tolist(),
+                    "divergence": round(divergence, 6),
+                    "curl": round(curl_magnitude, 6),
+                    "shear": round(shear_magnitude, 6),
+                    "determinant": round(det, 6),
+                    "condition_number": round(condition_number, 4),
+                    "effective_rank": round(effective_rank, 4),
+                    "holonomy": round(holonomy_proxy, 6),
+                    "n_expanding": n_expanding,
+                    "n_contracting": n_contracting,
+                    "n_rotating": n_rotating,
+                    "singular_values": sv[:16].tolist(),
+                    "top_eigenvector_dims": top_eigvec_dims,
+                })
+
+            layer_spectra.append(token_spectra)
+
+        return {
+            "tokens": tokens,
+            "n_tokens": n_tokens,
+            "n_layers": n_layers,
+            "layer_spectra": layer_spectra,
+        }
+
+    # ================================================================
+    # MAIN: Compute spectra for positive and negative sets
+    # ================================================================
+
+    pos_spectra = []
+    for text in positive_texts:
+        try:
+            spec = compute_spectrum_for_text(text)
+            pos_spectra.append(spec)
+        except Exception as e:
+            print(f"[ContrastiveSpectrum] Error on positive text: {e}")
+
+    neg_spectra = []
+    for text in negative_texts:
+        try:
+            spec = compute_spectrum_for_text(text)
+            neg_spectra.append(spec)
+        except Exception as e:
+            print(f"[ContrastiveSpectrum] Error on negative text: {e}")
+
+    if not pos_spectra or not neg_spectra:
+        return json.dumps({"error": "Failed to compute spectra for one or both sets"}).encode()
+
+    n_layers = pos_spectra[0]["n_layers"]
+
+    # ================================================================
+    # AGGREGATE: For each layer, compute mean geometric invariants
+    # for positive vs negative sets, then find the biggest differences
+    # ================================================================
+
+    invariant_keys = [
+        "divergence", "curl", "shear", "determinant",
+        "condition_number", "effective_rank", "holonomy",
+        "n_expanding", "n_contracting", "n_rotating"
+    ]
+
+    layer_contrasts = []  # one per layer
+
+    for lay in range(n_layers):
+        # Collect invariants across all tokens and all texts in each set
+        pos_vals = {k: [] for k in invariant_keys}
+        neg_vals = {k: [] for k in invariant_keys}
+
+        for spec in pos_spectra:
+            if lay < len(spec["layer_spectra"]):
+                for tok_spec in spec["layer_spectra"][lay]:
+                    for k in invariant_keys:
+                        pos_vals[k].append(tok_spec[k])
+
+        for spec in neg_spectra:
+            if lay < len(spec["layer_spectra"]):
+                for tok_spec in spec["layer_spectra"][lay]:
+                    for k in invariant_keys:
+                        neg_vals[k].append(tok_spec[k])
+
+        contrast = {"layer": lay}
+        total_contrast_score = 0.0
+
+        for k in invariant_keys:
+            pos_arr = np.array(pos_vals[k]) if pos_vals[k] else np.array([0.0])
+            neg_arr = np.array(neg_vals[k]) if neg_vals[k] else np.array([0.0])
+
+            pos_mean = float(np.mean(pos_arr))
+            neg_mean = float(np.mean(neg_arr))
+            pos_std = float(np.std(pos_arr))
+            neg_std = float(np.std(neg_arr))
+
+            # Effect size (Cohen's d approximation)
+            pooled_std = np.sqrt((pos_std**2 + neg_std**2) / 2) if (pos_std + neg_std) > 1e-12 else 1.0
+            effect_size = abs(pos_mean - neg_mean) / pooled_std
+
+            contrast[k] = {
+                "pos_mean": round(pos_mean, 6),
+                "neg_mean": round(neg_mean, 6),
+                "pos_std": round(pos_std, 6),
+                "neg_std": round(neg_std, 6),
+                "difference": round(pos_mean - neg_mean, 6),
+                "effect_size": round(effect_size, 4),
+            }
+            total_contrast_score += effect_size
+
+        contrast["total_contrast_score"] = round(total_contrast_score, 4)
+        layer_contrasts.append(contrast)
+
+    # ================================================================
+    # RANK: Find the most discriminative layers and invariants
+    # ================================================================
+
+    # Sort layers by total contrast score
+    ranked_layers = sorted(
+        range(n_layers),
+        key=lambda l: layer_contrasts[l]["total_contrast_score"],
+        reverse=True
+    )
+
+    # Find the single most discriminative invariant across all layers
+    best_invariant = None
+    best_effect = 0.0
+    best_layer = 0
+    for lay in range(n_layers):
+        for k in invariant_keys:
+            es = layer_contrasts[lay][k]["effect_size"]
+            if es > best_effect:
+                best_effect = es
+                best_invariant = k
+                best_layer = lay
+
+    # ================================================================
+    # EIGENVALUE SPECTRUM COMPARISON
+    # For the top-3 most contrastive layers, compare the full
+    # eigenvalue magnitude distributions
+    # ================================================================
+
+    eigenvalue_comparisons = []
+    for lay in ranked_layers[:3]:
+        pos_eigs = []
+        neg_eigs = []
+
+        for spec in pos_spectra:
+            if lay < len(spec["layer_spectra"]):
+                for tok_spec in spec["layer_spectra"][lay]:
+                    pos_eigs.extend(tok_spec["eigenvalues_magnitude"])
+
+        for spec in neg_spectra:
+            if lay < len(spec["layer_spectra"]):
+                for tok_spec in spec["layer_spectra"][lay]:
+                    neg_eigs.extend(tok_spec["eigenvalues_magnitude"])
+
+        # Compute histogram comparison
+        all_eigs = pos_eigs + neg_eigs
+        if all_eigs:
+            bins = np.linspace(min(all_eigs), max(all_eigs), 30)
+            pos_hist, _ = np.histogram(pos_eigs, bins=bins, density=True) if pos_eigs else (np.zeros(29), bins)
+            neg_hist, _ = np.histogram(neg_eigs, bins=bins, density=True) if neg_eigs else (np.zeros(29), bins)
+
+            # KL divergence (symmetrized)
+            pos_hist_safe = pos_hist + 1e-10
+            neg_hist_safe = neg_hist + 1e-10
+            pos_hist_safe /= pos_hist_safe.sum()
+            neg_hist_safe /= neg_hist_safe.sum()
+            kl_div = float(0.5 * np.sum(pos_hist_safe * np.log(pos_hist_safe / neg_hist_safe)) +
+                          0.5 * np.sum(neg_hist_safe * np.log(neg_hist_safe / pos_hist_safe)))
+
+            eigenvalue_comparisons.append({
+                "layer": lay,
+                "pos_histogram": pos_hist.tolist(),
+                "neg_histogram": neg_hist.tolist(),
+                "bin_edges": bins.tolist(),
+                "kl_divergence": round(kl_div, 6),
+                "pos_mean_magnitude": round(float(np.mean(pos_eigs)), 6) if pos_eigs else 0.0,
+                "neg_mean_magnitude": round(float(np.mean(neg_eigs)), 6) if neg_eigs else 0.0,
+            })
+
+    # ================================================================
+    # GEOMETRIC SIGNATURE: A compact fingerprint of the behavior
+    # ================================================================
+
+    geometric_signature = {
+        "behavior": behavior_name,
+        "most_discriminative_layer": best_layer,
+        "most_discriminative_invariant": best_invariant,
+        "best_effect_size": round(best_effect, 4),
+        "layer_ranking": ranked_layers[:5],
+        "description": _generate_signature_description(
+            best_layer, best_invariant, best_effect,
+            layer_contrasts, behavior_name
+        ),
+    }
+
+    return json.dumps({
+        "behavior": behavior_name,
+        "n_positive": len(pos_spectra),
+        "n_negative": len(neg_spectra),
+        "n_layers": n_layers,
+        "layer_contrasts": layer_contrasts,
+        "ranked_layers": ranked_layers,
+        "eigenvalue_comparisons": eigenvalue_comparisons,
+        "geometric_signature": geometric_signature,
+        # Include individual spectra for the first text of each set
+        # (for detailed visualization)
+        "example_positive_spectrum": pos_spectra[0] if pos_spectra else None,
+        "example_negative_spectrum": neg_spectra[0] if neg_spectra else None,
+    }, cls=SafeFloatEncoder).encode()
+
+
+def _generate_signature_description(best_layer, best_invariant, best_effect,
+                                     layer_contrasts, behavior_name):
+    """Generate a human-readable description of the geometric signature."""
+    descriptions = {
+        "divergence": "expansion/contraction of the representation space",
+        "curl": "rotational mixing of information between dimensions",
+        "shear": "anisotropic distortion (stretching in some directions, compressing in others)",
+        "determinant": "volume change of the local representation neighborhood",
+        "condition_number": "anisotropy of the transformation (how directionally biased it is)",
+        "effective_rank": "effective dimensionality of the active transformation",
+        "holonomy": "parallel transport deficit (how much local frames rotate)",
+        "n_expanding": "number of expanding eigenvalue directions",
+        "n_contracting": "number of contracting eigenvalue directions",
+        "n_rotating": "number of rotating (complex eigenvalue) directions",
+    }
+
+    inv_desc = descriptions.get(best_invariant, best_invariant)
+    contrast = layer_contrasts[best_layer][best_invariant]
+    direction = "higher" if contrast["difference"] > 0 else "lower"
+
+    desc = (
+        f"The '{behavior_name}' behavior is most geometrically distinguished at "
+        f"layer {best_layer} by its {inv_desc}. "
+        f"Prompts triggering this behavior show {direction} {best_invariant} "
+        f"(effect size d={best_effect:.2f}). "
+        f"Positive mean: {contrast['pos_mean']:.4f}, "
+        f"Negative mean: {contrast['neg_mean']:.4f}."
+    )
+
+    # Add secondary insights
+    top_layers = [layer_contrasts[l] for l in sorted(
+        range(len(layer_contrasts)),
+        key=lambda l: layer_contrasts[l]["total_contrast_score"],
+        reverse=True
+    )[:3]]
+
+    if len(top_layers) >= 2:
+        desc += (
+            f" The top 3 most discriminative layers are "
+            f"{top_layers[0]['layer']}, {top_layers[1]['layer']}"
+        )
+        if len(top_layers) >= 3:
+            desc += f", and {top_layers[2]['layer']}"
+        desc += "."
+
+    return desc
+
+
+def _compute_perturbed_delta(model, input_ids, layer, token_idx, perturbation, original_hs):
+    """
+    Compute the residual delta at a specific layer and token
+    when the hidden state is perturbed by `perturbation`.
+
+    Uses a forward hook to inject the perturbation at the right layer,
+    then captures the output of the next layer to compute the new delta.
+    """
+    blocks = _get_transformer_blocks(model)
+    if not blocks or layer >= len(blocks):
+        return None
+
+    captured = {}
+
+    def inject_hook(module, input, output):
+        """Inject perturbation into the hidden state at the target layer."""
+        h = output[0] if isinstance(output, tuple) else output
+        h = h.clone()
+        h[0, token_idx] = h[0, token_idx] + perturbation.to(h.device, h.dtype)
+        if isinstance(output, tuple):
+            return (h,) + output[1:]
+        return h
+
+    def capture_hook(module, input, output):
+        """Capture the output of the next layer."""
+        h = output[0] if isinstance(output, tuple) else output
+        captured["output"] = h[0, token_idx].detach().cpu().float().numpy()
+
+    # Hook the target layer to inject perturbation
+    hook1 = blocks[layer].register_forward_hook(inject_hook)
+
+    # Hook the next layer to capture the result
+    if layer + 1 < len(blocks):
+        hook2 = blocks[layer + 1].register_forward_hook(capture_hook)
+    else:
+        # If this is the last block, capture from the block itself
+        # (the output after perturbation propagates through)
+        hook2 = None
+        # Instead, capture from the perturbed block's own output
+        def capture_self_hook(module, input, output):
+            h = output[0] if isinstance(output, tuple) else output
+            captured["output"] = h[0, token_idx].detach().cpu().float().numpy()
+
+        # We need the output AFTER the perturbation, so we capture from
+        # the block after the injected one. If there's no next block,
+        # we use the injected block's output directly.
+        hook2 = blocks[layer].register_forward_hook(capture_self_hook)
+        # But this would conflict with inject_hook. Instead, skip.
+        hook2.remove()
+        hook2 = None
+
+    try:
+        with torch.no_grad():
+            model(input_ids)
+    finally:
+        hook1.remove()
+        if hook2:
+            hook2.remove()
+
+    if "output" in captured:
+        # The perturbed delta: new output minus the original hidden state at this layer
+        h_base = original_hs[layer][0, token_idx].cpu().float().numpy()
+        return captured["output"] - h_base
+
+    return None
+
+
+def _eigvec_to_top_dims(eigvec, principal_dirs, hidden_dim, top_k=10):
+    """
+    Convert a projected eigenvector back to hidden-space dimension indices.
+    Returns the top_k hidden dimensions that this eigenvector acts on most.
+    """
+    # eigvec is in the K-dimensional projected space
+    # principal_dirs is (K, hidden_dim)
+    # Reconstruct in full hidden space
+    full_vec = np.zeros(hidden_dim)
+    for i in range(min(len(eigvec), len(principal_dirs))):
+        full_vec += float(eigvec[i].real) * principal_dirs[i]
+
+    # Find top dimensions by magnitude
+    top_idx = np.argsort(-np.abs(full_vec))[:top_k]
+    return [
+        {"dim": int(idx), "weight": round(float(full_vec[idx]), 6)}
+        for idx in top_idx
+    ]
+
+def handle_diffeomorphism_spectrum(body_bytes):
+    """Compute the Jacobian eigenstructure of each layer's diffeomorphism
+    for a single text (or pair of texts for comparison)."""
+    req = json.loads(body_bytes)
+    text = req.get("text", "").strip()
+    text_b = req.get("text_b", None)
+
+    if not text:
+        return json.dumps({"error": "Empty text"}).encode()
+
+    input_ids, tokens = tokenize_text(TOKENIZER, text)
+    hs = extract_hidden_states(MODEL, input_ids)
+
+    n_layers = get_n_layers(MODEL_CONFIG)
+    hidden_dim = get_hidden_dim(MODEL_CONFIG)
+    n_tokens = input_ids.shape[1]
+
+    # Reuse the spectrum computation from contrastive scanner
+    # but for a single text
+    layer_spectra = []
+
+    for lay in range(n_layers):
+        token_spectra = []
+        h_cloud = hs[lay][0].cpu().float().numpy()
+
+        if n_tokens >= 3:
+            cloud_centered = h_cloud - h_cloud.mean(axis=0)
+            U, S, Vt = np.linalg.svd(cloud_centered, full_matrices=False)
+            K = min(32, hidden_dim, n_tokens - 1)
+            principal_dirs = Vt[:K]
+        else:
+            K = min(32, hidden_dim)
+            principal_dirs = np.eye(hidden_dim)[:K]
+
+        # Estimate Jacobian from token cloud variation
+        deltas_cloud = np.stack([
+            (hs[lay + 1][0, t] - hs[lay][0, t]).cpu().float().numpy()
+            for t in range(n_tokens)
+        ], axis=0)
+
+        if n_tokens >= 3:
+            pos_proj = cloud_centered @ principal_dirs.T
+            del_centered = deltas_cloud - deltas_cloud.mean(axis=0)
+            del_proj = del_centered @ principal_dirs.T
+            try:
+                J_proj = np.linalg.lstsq(pos_proj, del_proj, rcond=None)[0].T
+            except:
+                J_proj = np.eye(K)
+        else:
+            J_proj = np.eye(K)
+
+        # Per-token: use the shared Jacobian but compute per-token invariants
+        # from the token's specific delta magnitude and direction
+        for ti in range(n_tokens):
+            delta = (hs[lay + 1][0, ti] - hs[lay][0, ti]).cpu().float().numpy()
+            delta_proj = principal_dirs @ delta  # project delta into K-space
+
+            eigenvalues, eigenvectors = np.linalg.eig(J_proj)
+            sort_idx = np.argsort(-np.abs(eigenvalues))
+            eigenvalues = eigenvalues[sort_idx]
+            eigenvectors = eigenvectors[:, sort_idx]
+
+            eig_real = eigenvalues.real
+            eig_imag = eigenvalues.imag
+            eig_magnitude = np.abs(eigenvalues)
+            eig_phase = np.angle(eigenvalues)
+
+            divergence = float(np.real(np.sum(eigenvalues)))
+            J_antisym = (J_proj - J_proj.T) / 2
+            curl_magnitude = float(np.linalg.norm(J_antisym, 'fro'))
+            J_sym = (J_proj + J_proj.T) / 2
+            J_traceless = J_sym - np.eye(K) * np.trace(J_sym) / K
+            shear_magnitude = float(np.linalg.norm(J_traceless, 'fro'))
+
+            sv = np.linalg.svd(J_proj, compute_uv=False)
+            condition_number = float(sv[0] / max(sv[-1], 1e-12))
+            sv_norm = sv / max(sv.sum(), 1e-12)
+            sv_norm = sv_norm[sv_norm > 1e-12]
+            effective_rank = float(np.exp(-np.sum(sv_norm * np.log(sv_norm))))
+
+            # Per-token delta magnitude (how much THIS token moves)
+            delta_norm = float(np.linalg.norm(delta))
+
+            token_spectra.append({
+                "eigenvalues_real": eig_real[:16].tolist(),
+                "eigenvalues_imag": eig_imag[:16].tolist(),
+                "eigenvalues_magnitude": eig_magnitude[:16].tolist(),
+                "eigenvalues_phase": eig_phase[:16].tolist(),
+                "divergence": round(divergence, 6),
+                "curl": round(curl_magnitude, 6),
+                "shear": round(shear_magnitude, 6),
+                "condition_number": round(condition_number, 4),
+                "effective_rank": round(effective_rank, 4),
+                "n_expanding": int(np.sum(eig_magnitude > 1.05)),
+                "n_contracting": int(np.sum(eig_magnitude < 0.95)),
+                "n_rotating": int(np.sum(np.abs(eig_imag) > 0.05)),
+                "singular_values": sv[:16].tolist(),
+                "delta_norm": round(delta_norm, 6),
+                "top_eigenvector_dims": _eigvec_to_top_dims(
+                    eigenvectors[:, 0], principal_dirs, hidden_dim, top_k=10
+                ),
+            })
+
+        layer_spectra.append(token_spectra)
+
+    # ================================================================
+    # AUTOMATIC ANOMALY DETECTION
+    # ================================================================
+    all_curls = [layer_spectra[l][t]["curl"]
+                 for l in range(n_layers) for t in range(n_tokens)]
+    mean_curl = np.mean(all_curls) if all_curls else 0
+
+    anomalies = []
+    for lay in range(n_layers):
+        for ti in range(n_tokens):
+            spec = layer_spectra[lay][ti]
+
+            if spec["curl"] > mean_curl * 2.5:
+                anomalies.append({
+                    "type": "high_curl",
+                    "layer": lay, "token": ti,
+                    "token_str": tokens[ti],
+                    "value": spec["curl"],
+                    "description": f"High rotational mixing at L{lay} token '{tokens[ti]}'"
+                })
+
+            if spec["condition_number"] > 50:
+                anomalies.append({
+                    "type": "high_anisotropy",
+                    "layer": lay, "token": ti,
+                    "token_str": tokens[ti],
+                    "value": spec["condition_number"],
+                    "description": f"Highly anisotropic map at L{lay} token '{tokens[ti]}'"
+                })
+
+            if lay > 0:
+                prev_rank = layer_spectra[lay - 1][ti]["effective_rank"]
+                curr_rank = spec["effective_rank"]
+                if abs(curr_rank - prev_rank) > 2:
+                    anomalies.append({
+                        "type": "rank_change",
+                        "layer": lay, "token": ti,
+                        "token_str": tokens[ti],
+                        "value": curr_rank - prev_rank,
+                        "description": f"Rank {'expansion' if curr_rank > prev_rank else 'collapse'} at L{lay} '{tokens[ti]}'"
+                    })
+
+    anomalies.sort(key=lambda a: abs(a["value"]), reverse=True)
+
+    # ================================================================
+    # COMPARISON (if text_b provided)
+    # ================================================================
+    diff_spectra = None
+    if text_b and text_b.strip():
+        ids_b, tokens_b = tokenize_text(TOKENIZER, text_b.strip())
+        hs_b = extract_hidden_states(MODEL, ids_b)
+        n_tokens_b = ids_b.shape[1]
+        n_common = min(n_tokens, n_tokens_b)
+
+        diff_spectra = {
+            "tokens_a": tokens,
+            "tokens_b": tokens_b,
+            "n_common": n_common,
+            "layer_diffs": [],
+        }
+
+        for lay in range(n_layers):
+            layer_diff = []
+            for ti in range(n_common):
+                spec_a = layer_spectra[lay][ti]
+
+                # Compute spectrum for text_b at this layer/token
+                delta_b = (hs_b[lay + 1][0, ti] - hs_b[lay][0, ti]).cpu().float().numpy()
+                delta_b_norm = float(np.linalg.norm(delta_b))
+
+                # Compute spectrum for text_b at this layer/token
+                delta_b = (hs_b[lay + 1][0, ti] - hs_b[lay][0, ti]).cpu().float().numpy()
+                delta_b_norm = float(np.linalg.norm(delta_b))
+
+                # Compare the geometric invariants
+                # We need the spectrum for text_b at this layer
+                # Use the same shared Jacobian approach but with text_b's token cloud
+                h_cloud_b = hs_b[lay][0].cpu().float().numpy()
+                if n_tokens_b >= 3:
+                    cloud_centered_b = h_cloud_b - h_cloud_b.mean(axis=0)
+                    U_b, S_b, Vt_b = np.linalg.svd(cloud_centered_b, full_matrices=False)
+                    K_b = min(32, hidden_dim, n_tokens_b - 1)
+                    principal_dirs_b = Vt_b[:K_b]
+                else:
+                    K_b = min(32, hidden_dim)
+                    principal_dirs_b = np.eye(hidden_dim)[:K_b]
+
+                deltas_cloud_b = np.stack([
+                    (hs_b[lay + 1][0, t] - hs_b[lay][0, t]).cpu().float().numpy()
+                    for t in range(n_tokens_b)
+                ], axis=0)
+
+                if n_tokens_b >= 3:
+                    pos_proj_b = cloud_centered_b @ principal_dirs_b.T
+                    del_centered_b = deltas_cloud_b - deltas_cloud_b.mean(axis=0)
+                    del_proj_b = del_centered_b @ principal_dirs_b.T
+                    try:
+                        J_proj_b = np.linalg.lstsq(pos_proj_b, del_proj_b, rcond=None)[0].T
+                    except:
+                        J_proj_b = np.eye(K_b)
+                else:
+                    J_proj_b = np.eye(K_b)
+
+                eigenvalues_b, eigenvectors_b = np.linalg.eig(J_proj_b)
+                sort_idx_b = np.argsort(-np.abs(eigenvalues_b))
+                eigenvalues_b = eigenvalues_b[sort_idx_b]
+
+                eig_magnitude_b = np.abs(eigenvalues_b)
+                eig_phase_b = np.angle(eigenvalues_b)
+
+                divergence_b = float(np.real(np.sum(eigenvalues_b)))
+                J_antisym_b = (J_proj_b - J_proj_b.T) / 2
+                curl_b = float(np.linalg.norm(J_antisym_b, 'fro'))
+                J_sym_b = (J_proj_b + J_proj_b.T) / 2
+                J_traceless_b = J_sym_b - np.eye(K_b) * np.trace(J_sym_b) / K_b
+                shear_b = float(np.linalg.norm(J_traceless_b, 'fro'))
+
+                sv_b = np.linalg.svd(J_proj_b, compute_uv=False)
+                condition_b = float(sv_b[0] / max(sv_b[-1], 1e-12))
+                sv_norm_b = sv_b / max(sv_b.sum(), 1e-12)
+                sv_norm_b = sv_norm_b[sv_norm_b > 1e-12]
+                effective_rank_b = float(np.exp(-np.sum(sv_norm_b * np.log(sv_norm_b))))
+
+                # Compute the differential spectrum
+                layer_diff.append({
+                    "token_a": tokens[ti] if ti < len(tokens) else "?",
+                    "token_b": tokens_b[ti] if ti < len(tokens_b) else "?",
+                    "delta_norm_a": round(float(np.linalg.norm(
+                        (hs[lay + 1][0, ti] - hs[lay][0, ti]).cpu().float().numpy()
+                    )), 6),
+                    "delta_norm_b": round(delta_b_norm, 6),
+                    # Divergence difference
+                    "divergence_diff": round(spec_a["divergence"] - divergence_b, 6),
+                    "curl_diff": round(spec_a["curl"] - curl_b, 6),
+                    "shear_diff": round(spec_a["shear"] - shear_b, 6),
+                    "condition_diff": round(spec_a["condition_number"] - condition_b, 4),
+                    "effective_rank_diff": round(spec_a["effective_rank"] - effective_rank_b, 4),
+                    # Eigenvalue spectrum distance
+                    "eigenvalue_magnitude_diff": [
+                        round(float(a - b), 6)
+                        for a, b in zip(
+                            spec_a["eigenvalues_magnitude"][:16],
+                            eig_magnitude_b[:16].tolist()
+                        )
+                    ],
+                    "eigenvalue_phase_diff": [
+                        round(float(a - b), 6)
+                        for a, b in zip(
+                            spec_a["eigenvalues_phase"][:16],
+                            eig_phase_b[:16].tolist()
+                        )
+                    ],
+                    # Spectral distance: Frobenius norm of Jacobian difference
+                    # This requires matching the projected spaces, so we use
+                    # the eigenvalue spectra as a proxy
+                    "spectral_distance": round(float(np.linalg.norm(
+                        np.array(spec_a["eigenvalues_magnitude"][:min(K, K_b)]) -
+                        eig_magnitude_b[:min(K, K_b)]
+                    )), 6),
+                })
+
+            diff_spectra["layer_diffs"].append(layer_diff)
+
+        # ================================================================
+        # Compute aggregate differential metrics
+        # ================================================================
+        diff_summary = {
+            "per_layer_spectral_distance": [],
+            "per_layer_divergence_diff": [],
+            "per_layer_curl_diff": [],
+            "per_layer_shear_diff": [],
+            "onset_layer": -1,
+            "max_spectral_distance_layer": 0,
+            "max_spectral_distance": 0.0,
+        }
+
+        max_sd = 0.0
+        max_sd_layer = 0
+        baseline_sd = None
+
+        for lay_idx, layer_diff in enumerate(diff_spectra["layer_diffs"]):
+            if not layer_diff:
+                diff_summary["per_layer_spectral_distance"].append(0.0)
+                diff_summary["per_layer_divergence_diff"].append(0.0)
+                diff_summary["per_layer_curl_diff"].append(0.0)
+                diff_summary["per_layer_shear_diff"].append(0.0)
+                continue
+
+            # Average spectral distance across aligned tokens
+            avg_sd = float(np.mean([td["spectral_distance"] for td in layer_diff]))
+            avg_div_diff = float(np.mean([abs(td["divergence_diff"]) for td in layer_diff]))
+            avg_curl_diff = float(np.mean([abs(td["curl_diff"]) for td in layer_diff]))
+            avg_shear_diff = float(np.mean([abs(td["shear_diff"]) for td in layer_diff]))
+
+            diff_summary["per_layer_spectral_distance"].append(round(avg_sd, 6))
+            diff_summary["per_layer_divergence_diff"].append(round(avg_div_diff, 6))
+            diff_summary["per_layer_curl_diff"].append(round(avg_curl_diff, 6))
+            diff_summary["per_layer_shear_diff"].append(round(avg_shear_diff, 6))
+
+            if avg_sd > max_sd:
+                max_sd = avg_sd
+                max_sd_layer = lay_idx
+
+            # Detect onset: first layer where spectral distance exceeds 2x the first layer
+            if baseline_sd is None:
+                baseline_sd = avg_sd
+            elif diff_summary["onset_layer"] < 0 and baseline_sd > 1e-8:
+                if avg_sd > baseline_sd * 2.5:
+                    diff_summary["onset_layer"] = lay_idx
+
+        diff_summary["max_spectral_distance_layer"] = max_sd_layer
+        diff_summary["max_spectral_distance"] = round(max_sd, 6)
+        diff_spectra["summary"] = diff_summary
+
+    return json.dumps({
+        "tokens": tokens,
+        "tokens_b": tokens_b if text_b else None,
+        "n_tokens": n_tokens,
+        "n_layers": n_layers,
+        "hidden_dim": hidden_dim,
+        "K_projected": K,
+        "layer_spectra": layer_spectra,
+        "anomalies": anomalies[:50],
+        "diff_spectra": diff_spectra,
+    }, cls=SafeFloatEncoder).encode()
+
 
 if __name__ == "__main__":
     try:
