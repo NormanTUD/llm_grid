@@ -186,7 +186,7 @@ class TestTokenization(unittest.TestCase):
 class TestProbeSentences(unittest.TestCase):
     """Tests for Section 5: get_probe_texts, tokenize_probes."""
 
-   def test_tokenize_probes_flags_all_false(self):
+    def test_tokenize_probes_flags_all_false(self):
         """All probe tokens should have is_real=False."""
         import torch
         tok = MagicMock()
