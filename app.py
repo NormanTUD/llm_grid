@@ -26,12 +26,10 @@ from scipy.stats import wasserstein_distance
 from urllib.parse import urlparse
 from datetime import datetime, timedelta, UTC
 from scipy.stats import pearsonr, spearmanr
-
-SAE_AVAILABLE = True
-
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 
+SAE_AVAILABLE = True
 
 def visualize_curvature_landscape(curvature_data, tokens, save_path=None):
     """
