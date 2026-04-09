@@ -247,14 +247,14 @@ def correlate_metric_with_surprisal(curvature_data, hidden_states, tokenizer, mo
     best_layer = 0
     best_abs_r = 0.0
 
-    for l in range(n_layers_plus_one):
-        log_det_l = log_det[l]
+    for lay in range(n_layers_plus_one):
+        log_det_l = log_det[lay]
 
         # Remove any NaN/Inf
         valid = np.isfinite(log_det_l) & np.isfinite(surprisal)
         if valid.sum() < 3:
             correlations.append({
-                'layer': l,
+                'layer': lay,
                 'pearson_r': 0.0, 'pearson_p': 1.0,
                 'spearman_rho': 0.0, 'spearman_p': 1.0,
             })
@@ -276,7 +276,7 @@ def correlate_metric_with_surprisal(curvature_data, hidden_states, tokenizer, mo
             sr, sp = 0.0, 1.0
 
         correlations.append({
-            'layer': l,
+            'layer': lay,
             'pearson_r': round(float(pr), 4),
             'pearson_p': round(float(pp), 6),
             'spearman_rho': round(float(sr), 4),
@@ -285,7 +285,7 @@ def correlate_metric_with_surprisal(curvature_data, hidden_states, tokenizer, mo
 
         if abs(pr) > best_abs_r:
             best_abs_r = abs(pr)
-            best_layer = l
+            best_layer = lay
 
     # ================================================================
     # Generate summary
@@ -345,7 +345,6 @@ def decode_curvature_singularities(curvature_data, tokens, surprisal=None, top_k
     procrustes = curvature_data['procrustes_deviation']  # (n_layers, seq_len)
 
     n_layers = scalar.shape[0]
-    seq_len = scalar.shape[1]
 
     # Align ORC to layer-only dimensions (skip embedding layer)
     orc_layers = orc[1:, :] if orc.shape[0] > n_layers else orc[:n_layers, :]
@@ -500,8 +499,6 @@ def visualize_metric_surprisal_correlation(correlation_data, tokens, save_path=N
     correlations = correlation_data['correlations']
     best_layer = correlation_data['best_layer']
     seq_len = len(surprisal)
-
-    n_layers_plus_one = log_det.shape[0]
 
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     fig.suptitle('Holographic Decoding: Metric Determinant vs. Information Content',
@@ -8776,7 +8773,7 @@ def estimate_fiber_curvature(hidden_states, k_neighbors=8, pca_d=16):
 
     # Convert all hidden states to numpy: [n_layers+1, seq_len, hidden_dim]
     H = np.stack([
-        hidden_states[l][0].cpu().float().numpy() for l in range(n_layers_plus_one)
+        hidden_states[lay][0].cpu().float().numpy() for lay in range(n_layers_plus_one)
     ], axis=0)  # (n_layers+1, seq_len, hidden_dim)
 
     k = min(k_neighbors, seq_len - 1)
@@ -8790,15 +8787,15 @@ def estimate_fiber_curvature(hidden_states, k_neighbors=8, pca_d=16):
     metric_eigenvalues = []   # [n_layers+1][seq_len] -> eigenvalue arrays
     metric_log_det = np.zeros((n_layers_plus_one, seq_len))
 
-    for l in range(n_layers_plus_one):
+    for lay in range(n_layers_plus_one):
         layer_eigs = []
         # Pairwise distances for this layer
-        dists = cdist(H[l], H[l], metric='euclidean')  # (seq_len, seq_len)
+        dists = cdist(H[lay], H[lay], metric='euclidean')  # (seq_len, seq_len)
 
         for i in range(seq_len):
             # k-NN neighborhood (exclude self)
             neighbor_idx = np.argsort(dists[i])[1:k + 1]
-            neighborhood = H[l][neighbor_idx]  # (k, hidden_dim)
+            neighborhood = H[lay][neighbor_idx]  # (k, hidden_dim)
 
             # Local covariance (Gram) matrix
             centered = neighborhood - neighborhood.mean(axis=0, keepdims=True)
@@ -8813,7 +8810,7 @@ def estimate_fiber_curvature(hidden_states, k_neighbors=8, pca_d=16):
 
             # log(det(g)) ≈ sum of log(eigenvalues) — the local volume element
             eigs_safe = np.clip(eigs, 1e-30, None)
-            metric_log_det[l, i] = np.sum(np.log(eigs_safe))
+            metric_log_det[lay, i] = np.sum(np.log(eigs_safe))
 
         metric_eigenvalues.append(layer_eigs)
 
@@ -8825,13 +8822,13 @@ def estimate_fiber_curvature(hidden_states, k_neighbors=8, pca_d=16):
     procrustes_deviation = np.zeros((n_layers, seq_len))
     procrustes_rotations = []  # store for sectional curvature
 
-    for l in range(n_layers):
+    for lay in range(n_layers):
         layer_rotations = []
-        dists_l = cdist(H[l], H[l], metric='euclidean')
-        dists_l1 = cdist(H[l + 1], H[l + 1], metric='euclidean')
+        dists_l = cdist(H[lay], H[lay], metric='euclidean')
+        dists_l1 = cdist(H[lay + 1], H[lay + 1], metric='euclidean')
 
         for i in range(seq_len):
-            # Get neighborhoods at layer l and l+1
+            # Get neighborhoods at layer lay and lay+1
             nb_l = np.argsort(dists_l[i])[1:k + 1]
             nb_l1 = np.argsort(dists_l1[i])[1:k + 1]
 
@@ -8839,17 +8836,17 @@ def estimate_fiber_curvature(hidden_states, k_neighbors=8, pca_d=16):
             # (parallel transport along the "layer" direction)
             common_nb = np.intersect1d(nb_l, nb_l1)
             if len(common_nb) < d:
-                # Fall back to using the layer-l neighborhood
+                # Fall back to using the layer-lay neighborhood
                 common_nb = nb_l[:max(d, len(common_nb))]
 
             if len(common_nb) < 2:
                 layer_rotations.append(np.eye(d))
-                procrustes_deviation[l, i] = 0.0
+                procrustes_deviation[lay, i] = 0.0
                 continue
 
             # Local tangent spaces via PCA
-            cloud_l = H[l][common_nb] - H[l][i]
-            cloud_l1 = H[l + 1][common_nb] - H[l + 1][i]
+            cloud_l = H[lay][common_nb] - H[lay][i]
+            cloud_l1 = H[lay + 1][common_nb] - H[lay + 1][i]
 
             def get_tangent_basis(cloud, dim):
                 if cloud.shape[0] < 2:
@@ -8868,7 +8865,7 @@ def estimate_fiber_curvature(hidden_states, k_neighbors=8, pca_d=16):
             n_use = min(proj_l.shape[0], proj_l1.shape[0], d)
             if n_use < 2:
                 layer_rotations.append(np.eye(d))
-                procrustes_deviation[l, i] = 0.0
+                procrustes_deviation[lay, i] = 0.0
                 continue
 
             proj_l_use = proj_l[:n_use, :d]
@@ -8883,7 +8880,7 @@ def estimate_fiber_curvature(hidden_states, k_neighbors=8, pca_d=16):
             layer_rotations.append(R)
 
             # Deviation from identity = magnitude of the connection
-            procrustes_deviation[l, i] = np.linalg.norm(R - np.eye(d), 'fro')
+            procrustes_deviation[lay, i] = np.linalg.norm(R - np.eye(d), 'fro')
 
         procrustes_rotations.append(layer_rotations)
 
@@ -8895,8 +8892,8 @@ def estimate_fiber_curvature(hidden_states, k_neighbors=8, pca_d=16):
     # ================================================================
     ollivier_ricci = np.zeros((n_layers_plus_one, seq_len))
 
-    for l in range(n_layers_plus_one):
-        dists = cdist(H[l], H[l], metric='euclidean')
+    for lay in range(n_layers_plus_one):
+        dists = cdist(H[lay], H[lay], metric='euclidean')
 
         # Build softmax-weighted distributions for each token
         # mu_i(j) = softmax(-dists[i] / temperature) — a "lazy random walk"
@@ -8938,7 +8935,7 @@ def estimate_fiber_curvature(hidden_states, k_neighbors=8, pca_d=16):
                 orc = 1.0 - w1 / d_ij
                 orc_vals.append(orc)
 
-            ollivier_ricci[l, i] = np.mean(orc_vals) if orc_vals else 0.0
+            ollivier_ricci[lay, i] = np.mean(orc_vals) if orc_vals else 0.0
 
     # ================================================================
     # STAGE 3b: Scalar Curvature Proxy (Volumetric Strain)
@@ -8946,19 +8943,19 @@ def estimate_fiber_curvature(hidden_states, k_neighbors=8, pca_d=16):
     # ================================================================
     scalar_curvature = np.zeros((n_layers, seq_len))
 
-    for l in range(n_layers):
+    for lay in range(n_layers):
         for i in range(seq_len):
-            dists_l = cdist(H[l], H[l], metric='euclidean')
+            dists_l = cdist(H[lay], H[lay], metric='euclidean')
             nb = np.argsort(dists_l[i])[1:d + 2]  # d+1 neighbors for a d-simplex
 
             if len(nb) < 2:
-                scalar_curvature[l, i] = 0.0
+                scalar_curvature[lay, i] = 0.0
                 continue
 
-            # Simplex at layer l
-            simplex_l = H[l][nb] - H[l][i]
-            # Simplex at layer l+1
-            simplex_l1 = H[l + 1][nb] - H[l + 1][i]
+            # Simplex at layer lay
+            simplex_l = H[lay][nb] - H[lay][i]
+            # Simplex at layer lay+1
+            simplex_l1 = H[lay + 1][nb] - H[lay + 1][i]
 
             # Volume proxy: det of Gram matrix (or its log)
             def log_volume(vecs):
@@ -8970,7 +8967,7 @@ def estimate_fiber_curvature(hidden_states, k_neighbors=8, pca_d=16):
             vol_l1 = log_volume(simplex_l1)
 
             # Volumetric strain = change in log-volume
-            scalar_curvature[l, i] = vol_l1 - vol_l
+            scalar_curvature[lay, i] = vol_l1 - vol_l
 
     # ================================================================
     # STAGE 3c: Sectional Curvature Proxy
@@ -8980,24 +8977,24 @@ def estimate_fiber_curvature(hidden_states, k_neighbors=8, pca_d=16):
     # ================================================================
     sectional_curvature = np.zeros((n_layers, seq_len))
 
-    for l in range(n_layers):
+    for lay in range(n_layers):
         for i in range(seq_len):
-            R_l = procrustes_rotations[l][i] if l < len(procrustes_rotations) else np.eye(d)
+            R_l = procrustes_rotations[lay][i] if lay < len(procrustes_rotations) else np.eye(d)
 
             # Use the Procrustes deviation directly as a curvature proxy
             # (the antisymmetric part of R encodes the local rotation = curvature)
             R_antisym = (R_l - R_l.T) / 2
-            sectional_curvature[l, i] = np.linalg.norm(R_antisym, 'fro')
+            sectional_curvature[lay, i] = np.linalg.norm(R_antisym, 'fro')
 
             # If we have two consecutive layers, compute the commutator
-            if l + 1 < n_layers and l + 1 < len(procrustes_rotations):
-                R_l1 = procrustes_rotations[l + 1][i] if i < len(procrustes_rotations[l + 1]) else np.eye(d)
+            if lay + 1 < n_layers and lay + 1 < len(procrustes_rotations):
+                R_l1 = procrustes_rotations[lay + 1][i] if i < len(procrustes_rotations[lay + 1]) else np.eye(d)
                 # Ensure compatible shapes
                 min_d = min(R_l.shape[0], R_l1.shape[0])
                 R_l_sub = R_l[:min_d, :min_d]
                 R_l1_sub = R_l1[:min_d, :min_d]
                 commutator = R_l_sub @ R_l1_sub - R_l1_sub @ R_l_sub
-                sectional_curvature[l, i] += np.linalg.norm(commutator, 'fro')
+                sectional_curvature[lay, i] += np.linalg.norm(commutator, 'fro')
 
     return {
         'ollivier_ricci': ollivier_ricci,           # [n_layers+1, seq_len]
