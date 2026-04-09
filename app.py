@@ -22,6 +22,27 @@ from datetime import datetime, timedelta, UTC
 
 SAE_AVAILABLE = True
 
+class SafeFloatEncoder(json.JSONEncoder):
+    """JSON encoder that replaces inf/-inf/nan with 0.0 instead of crashing."""
+    def default(self, obj):
+        return super().default(obj)
+
+    def encode(self, o):
+        return super().encode(self._sanitize(o))
+
+    def _sanitize(self, obj):
+        if isinstance(obj, float):
+            if obj != obj:  # NaN
+                return 0.0
+            if obj == float('inf') or obj == float('-inf'):
+                return 0.0
+            return obj
+        if isinstance(obj, dict):
+            return {k: self._sanitize(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [self._sanitize(v) for v in obj]
+        return obj
+
 # ============================================================
 # 3b. SAE LOADING (per-layer sparse autoencoders)
 # ============================================================
@@ -260,70 +281,6 @@ def decode_token_ids(tokenizer, token_ids):
 # 5. PROBE SENTENCES
 # ============================================================
 
-def get_probe_texts():
-    """Return a list of diverse probe sentences for embedding coverage."""
-    return [
-        "zero one two three four five six seven eight nine ten eleven twelve",
-        "the a an and or but if then else while for each every some",
-        "red blue green yellow purple orange black white pink gray brown",
-        "happy sad angry calm excited tired hungry cold hot fast slow quiet",
-        "dog cat bird fish horse cow pig sheep duck mouse rabbit snake",
-        "water fire earth wind light dark sun moon star rain snow ice",
-        "run walk jump fly swim climb fall push pull throw catch hold",
-        "big small tall short wide narrow deep shallow thick thin long",
-        "house tree road river mountain city forest ocean desert lake field",
-        "king queen prince knight wizard dragon castle sword shield gold silver",
-        "computer science math physics chemistry biology history music art language",
-        "morning evening night today tomorrow yesterday always never often sometimes",
-        "love hate fear hope dream think know believe want need feel see",
-        "north south east west up down left right front back inside outside",
-        "eat drink sleep wake work play read write speak listen learn teach",
-        "mother father sister brother daughter son friend enemy teacher student",
-        "car train plane boat bicycle truck bus ship rocket helicopter engine",
-        "spring summer autumn winter january february march april may june july",
-        "dollar euro pound yen bitcoin price cost value money bank trade",
-        "hello goodbye please thanks sorry yes no maybe okay sure right wrong",
-        # 282: Abstract Philosophy & Logic
-        "truth justice freedom peace ethics morality logic reason paradox reality existence",
-        # 283: Advanced Technology & AI
-        "quantum algorithm neural network robotics hardware software database cloud encryption privacy",
-        # 284: Culinary & Taste
-        "sweet sour bitter salty spicy delicious tasty breakfast lunch dinner recipe kitchen",
-        # 285: Medical & Biology
-        "dna cell blood heart brain medicine health disease virus bacteria surgery doctor hospital",
-        # 286: Spanish (Romance Language / Latin Script)
-        "hola mundo gracias por todo el sol brilla mucho en la ciudad de madrid",
-        # 287: French (Romance Language / Diacritics)
-        "le château est magnifique l'été arrive bientôt avec des fleurs épanouies",
-        # 288: German (Compound words / Grammar)
-        "die geschwindigkeit der entschleunigung ist für das wohlbefinden sehr wichtig heute",
-        # 289: Chinese (Logographic / Simplified)
-        "你好世界和平进步学习进步身体健康万事如意中文字符测试",
-        # 290: Japanese (Mixed Scripts - Kanji/Hiragana/Katakana)
-        "こんにちは世界プログラミングは楽しいです桜の花が綺麗に咲いています",
-        # 291: Russian (Cyrillic Script)
-        "привет мир доброе утро спокойной ночи прекрасный день русский язык тест",
-        # 292: Arabic (Abjad / Right-to-Left)
-        "السلام عليكم مرحبا كيف حالك اليوم الطقس جميل جدا في المدينة",
-        # 293: Hindi (Devanagari Script)
-        "नमस्ते दुनिया आप कैसे हैं आज का दिन बहुत अच्छा है भारत महान देश है",
-        # 294: Code Syntax (Python/General)
-        "def main(): return [x for x in range(10) if x % 2 == 0] lambda try except",
-        # 295: Code Syntax (Web/HTML/CSS)
-        "<html> <head> <style> .container { display: flex; } </style> <body> <div>",
-        # 296: Mathematical Symbols & Notation
-        "summation integral derivative infinity plus minus multiply divide equal percent root",
-        # 297: Common Punctuation & Special Characters
-        "! @ # $ % ^ & * ( ) _ + - = { } [ ] : ; \" ' < > ? / | \\ ~ `",
-        # 298: Legal & Formal
-        "contract agreement witness signature policy regulation compliance law court judge justice",
-        # 299: Travel & Geography
-        "airport passport luggage flight ticket hotel map tourism vacation border continent island",
-        # 300: Astronomy & Space
-        "galaxy planet orbit telescope gravity astronaut nebula comet meteor vacuum alien universe",
-        # 301: Nonsense/Stress Test (Tokenization check)
-        "qwertyuiop asdfghjkl zxcvbnm foo bar baz qux lorem ipsum dolor sit amet"
-    ]
 
 
 def tokenize_probes(tokenizer, probe_texts):
@@ -702,9 +659,12 @@ def compute_pca_basis(layer0_mat, hidden_dim):
 def compute_grid_range(proj, pad_frac=0.3):
     """Compute padded min/max for a 1-D projection array."""
     mn, mx = float(proj.min()), float(proj.max())
-    r = mx - mn if mx - mn > 1e-6 else 1.0
+    r = mx - mn
+    if r < 1e-8:
+        r = 1.0
+        mn = mn - 0.5
+        mx = mx + 0.5
     return mn - pad_frac * r, mx + pad_frac * r, r
-
 
 def make_grid_coords(g1, g2):
     """Return list of (v1, v2) pairs for a 2-D grid."""
@@ -716,29 +676,38 @@ def make_grid_coords(g1, g2):
 
 
 def interpolate_grid_embedding(v1, v2, centroid, pc1, pc2):
-    """Reconstruct a high-dim embedding from PCA coordinates."""
-    return centroid + v1 * pc1 + v2 * pc2
-
+    """Reconstruct a high-dim embedding from PCA coordinates, sanitized."""
+    emb = centroid + v1 * pc1 + v2 * pc2
+    emb = np.nan_to_num(emb, nan=0.0, posinf=0.0, neginf=0.0)
+    emb = np.clip(emb, -1e6, 1e6)
+    return emb
 
 def compute_grid_weights(v1, v2, existing_proj, sigma_nn):
     """Compute RBF weights for a grid point relative to existing projections."""
+    sigma_nn = max(sigma_nn, 1e-6)  # prevent division by zero
     dists = (existing_proj[:, 0] - v1) ** 2 + (existing_proj[:, 1] - v2) ** 2
-    weights = np.exp(-dists / (2 * sigma_nn ** 2))
-    weights /= weights.sum() + 1e-15
+    # Clamp exponent to prevent overflow
+    exponents = -dists / (2 * sigma_nn ** 2)
+    exponents = np.clip(exponents, -500, 0)
+    weights = np.exp(exponents)
+    w_sum = weights.sum()
+    if w_sum < 1e-30:
+        weights = np.ones_like(weights) / len(weights)
+    else:
+        weights /= w_sum
     return weights
 
-
 def interpolate_deltas(weights, all_deltas_per_point, n_layers, hidden_dim):
-    """Weighted-average the deltas from all points for one grid point."""
+    """Weighted-average the deltas from all points for one grid point, sanitized."""
     n_total = len(all_deltas_per_point)
     point_deltas = []
     for lay in range(n_layers):
         d = np.zeros(hidden_dim)
         for pi in range(n_total):
             d += weights[pi] * all_deltas_per_point[pi][lay]
+        d = np.nan_to_num(d, nan=0.0, posinf=0.0, neginf=0.0)
         point_deltas.append(d)
     return point_deltas
-
 
 def create_grid_probes(centroid, pc1, pc2, proj1, proj2, existing_proj,
                        all_deltas_per_point, n_layers, hidden_dim, n_side=10, pad_frac=0.3,
@@ -782,20 +751,24 @@ def create_grid_probes(centroid, pc1, pc2, proj1, proj2, existing_proj,
 # ============================================================
 
 def build_fixed_pos(all_layer0):
-    """Convert list of numpy arrays to list of lists for JSON."""
-    return [v.tolist() for v in all_layer0]
-
+    """Convert list of numpy arrays to list of lists for JSON, sanitizing NaN/Inf."""
+    result = []
+    for v in all_layer0:
+        v_safe = np.nan_to_num(np.array(v, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0)
+        result.append(v_safe.tolist())
+    return result
 
 def build_deltas_array(all_deltas_per_point, n_layers, n_points):
-    """Reshape per-point deltas into per-layer arrays for JSON."""
+    """Reshape per-point deltas into per-layer arrays for JSON, sanitizing NaN/Inf."""
     deltas = []
     for lay in range(n_layers):
         layer_d = []
         for p in range(n_points):
-            layer_d.append(all_deltas_per_point[p][lay].tolist())
+            v = np.array(all_deltas_per_point[p][lay], dtype=np.float64)
+            v = np.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
+            layer_d.append(v.tolist())
         deltas.append(layer_d)
     return deltas
-
 
 def build_output_data(all_labels, all_is_real, n_layers, n_total, n_real,
                       hidden_dim, fixed_pos, deltas, model_name, text, neighbors,
@@ -907,25 +880,15 @@ def process_text(text, model_name=None):
     hidden_dim = get_hidden_dim(MODEL_CONFIG)
     n_layers = get_n_layers(MODEL_CONFIG)
 
-    # Tokenize real input
+    # Tokenize real input ONLY — no probe sentences
     real_ids, tokens_clean = tokenize_text(TOKENIZER, text)
     n_real = real_ids.shape[1]
     print(f"[Model] Tokens ({n_real}): {tokens_clean}")
 
-    # Tokenize probes
-    probe_texts = get_probe_texts()
-    probe_seqs, probe_labels, probe_is_real = tokenize_probes(TOKENIZER, probe_texts)
-
-    # Combine sequences
-    all_seqs = [real_ids] + probe_seqs
-    all_labels = list(tokens_clean) + probe_labels
-    all_is_real = [True] * n_real + probe_is_real
-
-    print(f"[Model] Running {len(all_seqs)} sequences through model (with component decomposition)...")
-
-    # Extract hidden states WITH component decomposition
+    # Run ONLY the real sequence through the model (with component decomposition)
+    print(f"[Model] Running real sequence through model (with component decomposition)...")
     all_layer0, all_deltas_per_point, all_attn_deltas, all_mlp_deltas = \
-        run_all_sequences_with_components(MODEL, all_seqs, n_layers, hidden_dim)
+        run_all_sequences_with_components(MODEL, [real_ids], n_layers, hidden_dim)
 
     decomposition_available = all_attn_deltas is not None and all_mlp_deltas is not None
     if decomposition_available:
@@ -933,11 +896,13 @@ def process_text(text, model_name=None):
     else:
         print("[Model] Component decomposition: UNAVAILABLE for this architecture")
 
-    n_total = len(all_layer0)
-    n_synth = n_total - n_real
-    print(f"[Model] {n_total} points ({n_real} real + {n_synth} probes)")
+    all_labels = list(tokens_clean)
+    all_is_real = [True] * n_real
 
-    # Compute neighbors
+    n_total = len(all_layer0)
+    print(f"[Model] {n_total} real points")
+
+    # Compute neighbors among real tokens only
     real_embeddings = np.stack(all_layer0[:n_real], axis=0)
     all_embeddings = np.stack(all_layer0, axis=0)
     neighbors = compute_neighbors(real_embeddings, all_embeddings, all_labels, all_is_real, k=10)
@@ -950,9 +915,14 @@ def process_text(text, model_name=None):
     print("[Model] Finding vocabulary neighbors...")
     vocab_neighbors = find_vocab_neighbors(TOKENIZER, MODEL, all_layer0[:n_real], n_real, k=5)
 
-    # PCA + grid probes
-    print("[Model] Creating grid intersection probes...")
+    # PCA on real points only, then generate systematic grid probes
+    print("[Model] Creating systematic grid probes around real points...")
     layer0_mat = np.stack(all_layer0, axis=0)
+
+    # Safety: need at least 2 points for meaningful PCA
+    if n_real < 2:
+        print("[Model] WARNING: fewer than 2 real tokens, grid probes will be trivial")
+
     centroid, centered, pc1, pc2, proj1, proj2 = compute_pca_basis(layer0_mat, hidden_dim)
     existing_proj = np.stack([proj1, proj2], axis=1)
 
@@ -965,9 +935,9 @@ def process_text(text, model_name=None):
     )
 
     n_grid = len(grid_layer0)
-    print(f"[Model] Added {n_grid} grid intersection probes")
+    print(f"[Model] Added {n_grid} systematic grid probes")
 
-    # Append grid probes
+    # Append grid probes as the ONLY synthetic points
     for gi in range(n_grid):
         all_layer0.append(grid_layer0[gi])
         all_deltas_per_point.append(grid_deltas[gi])
@@ -979,7 +949,7 @@ def process_text(text, model_name=None):
 
     n_total_final = len(all_layer0)
 
-    # Compute strain statistics (on real tokens only, before grid appended)
+    # Compute strain statistics (on real tokens only)
     print("[Model] Computing strain statistics...")
     strain_stats = compute_strain_stats(all_layer0, all_deltas_per_point, n_layers, n_real, hidden_dim)
     # Find most active layer
@@ -1007,10 +977,9 @@ def process_text(text, model_name=None):
         strain_stats=strain_stats,
     )
 
-    json_str = json.dumps(data)
+    json_str = json.dumps(data, cls=SafeFloatEncoder)
     print(f"[Model] JSON: {len(json_str)/1024/1024:.1f} MB")
     return json_str
-
 
 # ============================================================
 # 12. HTML PAGE WITH 2D/3D TOGGLE + DECOMPOSITION + STRAIN STATS
