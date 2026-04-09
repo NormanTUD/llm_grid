@@ -599,7 +599,7 @@ def find_vocab_neighbors(tokenizer, model, layer0_vecs, n_real, k=5):
             print("[Model] Could not find embedding matrix for vocab neighbors")
             return [[] for _ in range(n_real)]
 
-        vocab_size = emb_matrix.shape[0]
+        emb_matrix.shape[0]
         results = []
         for ri in range(n_real):
             vec = layer0_vecs[ri]
@@ -6837,7 +6837,7 @@ def handle_diffeomorphism_spectrum(body_bytes):
     diff_spectra = None
     if text_b:
         ids_b, tokens_b_list = tokenize_text(TOKENIZER, text_b)
-        hs_b = extract_hidden_states(MODEL, ids_b)
+        extract_hidden_states(MODEL, ids_b)
         # ... same computation for text_b, then diff the spectra ...
         # The KEY insight: differences in eigenvalue spectra between
         # "math prompt" and "non-math prompt" directly reveal which
@@ -7032,7 +7032,7 @@ def handle_contrastive_spectrum(body_bytes):
                 principal_dirs = np.eye(hidden_dim)[:K]
 
             for ti in range(n_tokens):
-                h_base = hs[lay][0, ti].cpu().float().numpy()
+                hs[lay][0, ti].cpu().float().numpy()
                 delta_base = (hs[lay + 1][0, ti] - hs[lay][0, ti]).cpu().float().numpy()
 
                 eps = 1e-3 * max(np.linalg.norm(delta_base), 1e-6)
@@ -7537,7 +7537,7 @@ def handle_diffeomorphism_spectrum(body_bytes):
         # from the token's specific delta magnitude and direction
         for ti in range(n_tokens):
             delta = (hs[lay + 1][0, ti] - hs[lay][0, ti]).cpu().float().numpy()
-            delta_proj = principal_dirs @ delta  # project delta into K-space
+            principal_dirs @ delta  # project delta into K-space
 
             eigenvalues, eigenvectors = np.linalg.eig(J_proj)
             sort_idx = np.argsort(-np.abs(eigenvalues))
