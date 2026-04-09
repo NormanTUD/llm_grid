@@ -18,7 +18,6 @@ import sys
 import json
 import threading
 from urllib.parse import urlparse
-from sae_lens import SAE
 from datetime import datetime, timedelta, UTC
 
 SAE_AVAILABLE = True
@@ -121,6 +120,8 @@ def load_saes(model_name, n_layers):
 
     for layer in range(n_layers):
         sae_id = f"blocks.{layer}.hook_resid_post"
+        from sae_lens import SAE
+
         try:
             # SAE.from_pretrained returns (sae, cfg_dict, sparsity)
             sae, cfg_dict, sparsity = SAE.from_pretrained(
