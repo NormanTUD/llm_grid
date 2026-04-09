@@ -7108,7 +7108,7 @@ def _generate_signature_description(best_layer, best_invariant, best_effect,
     )
 
     # Add secondary insights
-    top_layers = [layer_contrasts[l] for l in sorted(
+    top_layers = [layer_contrasts[lx] for lx in sorted(
         range(len(layer_contrasts)),
         key=lambda lll: layer_contrasts[lll]["total_contrast_score"],
         reverse=True
@@ -7320,8 +7320,8 @@ def handle_diffeomorphism_spectrum(body_bytes):
     # ================================================================
     # AUTOMATIC ANOMALY DETECTION
     # ================================================================
-    all_curls = [layer_spectra[l][t]["curl"]
-                 for l in range(n_layers) for t in range(n_tokens)]
+    all_curls = [layer_spectra[lx][t]["curl"]
+                 for lx in range(n_layers) for t in range(n_tokens)]
     mean_curl = np.mean(all_curls) if all_curls else 0
 
     anomalies = []
