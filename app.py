@@ -25,14 +25,12 @@ from scipy.linalg import orthogonal_procrustes
 from scipy.stats import wasserstein_distance
 from urllib.parse import urlparse
 from datetime import datetime, timedelta, UTC
-import numpy as np
 from scipy.stats import pearsonr, spearmanr
 
 SAE_AVAILABLE = True
 
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
-import numpy as np
 
 
 def visualize_curvature_landscape(curvature_data, tokens, save_path=None):
@@ -71,10 +69,43 @@ def visualize_curvature_landscape(curvature_data, tokens, save_path=None):
 
     token_labels = [f'[{i}] {t}' for i, t in enumerate(tokens)]
 
+    # ---- Helper: build a safe TwoSlopeNorm centered at 0 ----
+    def safe_two_slope_norm(data_min, data_max, vcenter=0.0):
+        """
+        Build a TwoSlopeNorm that is guaranteed to satisfy vmin < vcenter < vmax.
+        Falls back to a simple Normalize if the data doesn't straddle vcenter.
+        """
+        dmin = float(data_min)
+        dmax = float(data_max)
+
+        # Ensure we have finite values
+        if not np.isfinite(dmin):
+            dmin = -1.0
+        if not np.isfinite(dmax):
+            dmax = 1.0
+
+        # Case 1: data straddles vcenter — normal TwoSlopeNorm
+        if dmin < vcenter < dmax:
+            return mcolors.TwoSlopeNorm(vmin=dmin, vcenter=vcenter, vmax=dmax)
+
+        # Case 2: all data >= vcenter (e.g. all ORC values are positive)
+        if dmin >= vcenter:
+            # Push vmin below vcenter
+            margin = max(dmax - vcenter, 0.01) * 0.1
+            return mcolors.TwoSlopeNorm(vmin=vcenter - margin, vcenter=vcenter, vmax=max(dmax, vcenter + 0.01))
+
+        # Case 3: all data <= vcenter (e.g. all ORC values are negative)
+        if dmax <= vcenter:
+            margin = max(vcenter - dmin, 0.01) * 0.1
+            return mcolors.TwoSlopeNorm(vmin=min(dmin, vcenter - 0.01), vcenter=vcenter, vmax=vcenter + margin)
+
+        # Fallback: shouldn't reach here, but just in case
+        return mcolors.Normalize(vmin=dmin, vmax=dmax)
+
     # ---- Panel 1: Ollivier-Ricci Curvature ----
     ax = axes[0, 0]
     cmap_orc = plt.cm.RdBu_r
-    norm_orc = mcolors.TwoSlopeNorm(vmin=orc.min(), vcenter=0, vmax=max(orc.max(), 0.01))
+    norm_orc = safe_two_slope_norm(orc.min(), orc.max(), vcenter=0.0)
     im1 = ax.imshow(orc, aspect='auto', cmap=cmap_orc, norm=norm_orc, interpolation='nearest')
     ax.set_title('Ollivier-Ricci Curvature', color='#e94560', fontsize=11, fontweight='bold')
     ax.set_ylabel('Layer', color='#a0a0c0')
@@ -85,8 +116,7 @@ def visualize_curvature_landscape(curvature_data, tokens, save_path=None):
 
     # ---- Panel 2: Scalar Curvature (Volumetric Strain) ----
     ax = axes[0, 1]
-    vmax_sc = max(abs(scalar.min()), abs(scalar.max()), 0.01)
-    norm_sc = mcolors.TwoSlopeNorm(vmin=-vmax_sc, vcenter=0, vmax=vmax_sc)
+    norm_sc = safe_two_slope_norm(scalar.min(), scalar.max(), vcenter=0.0)
     im2 = ax.imshow(scalar, aspect='auto', cmap='coolwarm', norm=norm_sc, interpolation='nearest')
     ax.set_title('Scalar Curvature (Volumetric Strain)', color='#53a8b6', fontsize=11, fontweight='bold')
     ax.set_ylabel('Layer', color='#a0a0c0')
@@ -129,7 +159,10 @@ def visualize_curvature_landscape(curvature_data, tokens, save_path=None):
     ax = axes[2, 1]
     # Combine ORC and sectional curvature to find singularities
     # Use the layer-aligned portion of ORC (skip embedding layer for alignment)
-    orc_layers = orc[1:, :]  # (n_layers, seq_len) — skip embedding
+    if orc.shape[0] > n_layers:
+        orc_layers = orc[1:, :]  # (n_layers, seq_len) — skip embedding
+    else:
+        orc_layers = orc[:n_layers, :]
     combined = np.abs(orc_layers) + sectional  # both are (n_layers, seq_len)
 
     # Find top singularities
@@ -140,8 +173,9 @@ def visualize_curvature_landscape(curvature_data, tokens, save_path=None):
     for sl, st in zip(sing_layers, sing_tokens):
         ax.plot(st, sl, 'o', markersize=8, markeredgecolor='cyan',
                 markerfacecolor='none', markeredgewidth=2)
-        ax.annotate(f'{tokens[st]}', (st, sl), textcoords="offset points",
-                    xytext=(5, -10), fontsize=7, color='cyan', fontweight='bold')
+        if st < len(tokens):
+            ax.annotate(f'{tokens[st]}', (st, sl), textcoords="offset points",
+                        xytext=(5, -10), fontsize=7, color='cyan', fontweight='bold')
 
     ax.set_title('Curvature Singularities (|ORC| + Sectional)', color='#e94560',
                  fontsize=11, fontweight='bold')
@@ -157,7 +191,6 @@ def visualize_curvature_landscape(curvature_data, tokens, save_path=None):
         print(f"[Curvature] Saved landscape to {save_path}")
 
     return fig
-
 
 def correlate_metric_with_surprisal(curvature_data, hidden_states, tokenizer, model, input_ids):
     """
@@ -279,7 +312,6 @@ def correlate_metric_with_surprisal(curvature_data, hidden_states, tokenizer, mo
         'summary': summary,
     }
 
-import numpy as np
 
 
 def decode_curvature_singularities(curvature_data, tokens, surprisal=None, top_k=10):
@@ -451,8 +483,6 @@ def decode_curvature_singularities(curvature_data, tokens, surprisal=None, top_k
 
     return singularities
 
-import matplotlib.pyplot as plt
-import numpy as np
 
 
 def visualize_metric_surprisal_correlation(correlation_data, tokens, save_path=None):
