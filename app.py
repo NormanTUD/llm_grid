@@ -6809,7 +6809,7 @@ def handle_contrastive_spectrum(body_bytes):
                             # Least-squares estimate of Jacobian
                             try:
                                 J_proj = np.linalg.lstsq(pos_proj, del_proj, rcond=None)[0].T
-                            except:
+                            except Exception:
                                 J_proj = np.eye(K)
                             break  # Only need to do this once, not per j
                         else:
@@ -7258,7 +7258,7 @@ def handle_diffeomorphism_spectrum(body_bytes):
             del_proj = del_centered @ principal_dirs.T
             try:
                 J_proj = np.linalg.lstsq(pos_proj, del_proj, rcond=None)[0].T
-            except:
+            except Exception:
                 J_proj = np.eye(K)
         else:
             J_proj = np.eye(K)
@@ -7415,7 +7415,7 @@ def handle_diffeomorphism_spectrum(body_bytes):
                     del_proj_b = del_centered_b @ principal_dirs_b.T
                     try:
                         J_proj_b = np.linalg.lstsq(pos_proj_b, del_proj_b, rcond=None)[0].T
-                    except:
+                    except Exception:
                         J_proj_b = np.eye(K_b)
                 else:
                     J_proj_b = np.eye(K_b)
