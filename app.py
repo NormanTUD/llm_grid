@@ -886,7 +886,6 @@ def process_text(text, model_name=None):
     print(f"[Model] Tokens ({n_real}): {tokens_clean}")
 
     # Run ONLY the real sequence through the model (with component decomposition)
-    print(f"[Model] Running real sequence through model (with component decomposition)...")
     all_layer0, all_deltas_per_point, all_attn_deltas, all_mlp_deltas = \
         run_all_sequences_with_components(MODEL, [real_ids], n_layers, hidden_dim)
 
