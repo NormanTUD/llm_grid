@@ -7254,7 +7254,7 @@ def handle_contrastive_spectrum(body_bytes):
     # Sort layers by total contrast score
     ranked_layers = sorted(
         range(n_layers),
-        key=lambda l: layer_contrasts[l]["total_contrast_score"],
+        key=lambda lll: layer_contrasts[lll]["total_contrast_score"],
         reverse=True
     )
 
@@ -7380,7 +7380,7 @@ def _generate_signature_description(best_layer, best_invariant, best_effect,
     # Add secondary insights
     top_layers = [layer_contrasts[l] for l in sorted(
         range(len(layer_contrasts)),
-        key=lambda l: layer_contrasts[l]["total_contrast_score"],
+        key=lambda lll: layer_contrasts[lll]["total_contrast_score"],
         reverse=True
     )[:3]]
 
