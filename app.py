@@ -18,7 +18,7 @@ import sys
 import json
 import threading
 from urllib.parse import urlparse
-from sae_lens import SAE  # or your own SAE class
+from sae_lens import SAE
 from datetime import datetime, timedelta, UTC
 
 SAE_AVAILABLE = True
