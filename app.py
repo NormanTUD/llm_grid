@@ -2,6 +2,7 @@
 # /// script
 # dependencies = [
 #   "torch",
+#   "matplotlib",
 #   "transformers",
 #   "tiktoken",
 #   "sentencepiece",
@@ -17,10 +18,665 @@ import os
 import sys
 import json
 import threading
+import numpy as np
+import traceback
+from scipy.spatial.distance import cdist
+from scipy.linalg import orthogonal_procrustes
+from scipy.stats import wasserstein_distance
 from urllib.parse import urlparse
 from datetime import datetime, timedelta, UTC
+import numpy as np
+from scipy.stats import pearsonr, spearmanr
 
 SAE_AVAILABLE = True
+
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+import numpy as np
+
+
+def visualize_curvature_landscape(curvature_data, tokens, save_path=None):
+    """
+    Render the Curvature Landscape across the model's depth.
+
+    Args:
+        curvature_data: dict returned by estimate_fiber_curvature().
+        tokens: list of token strings.
+        save_path: if provided, save figure to this path instead of showing.
+
+    Returns:
+        matplotlib Figure object.
+    """
+    orc = curvature_data['ollivier_ricci']           # [n_layers+1, seq_len]
+    scalar = curvature_data['scalar_curvature']       # [n_layers, seq_len]
+    log_det = curvature_data['metric_log_det']        # [n_layers+1, seq_len]
+    procrustes = curvature_data['procrustes_deviation']  # [n_layers, seq_len]
+    sectional = curvature_data['sectional_curvature']    # [n_layers, seq_len]
+
+    n_layers_orc, seq_len = orc.shape
+    n_layers = scalar.shape[0]
+
+    fig, axes = plt.subplots(3, 2, figsize=(18, 14))
+    fig.suptitle('Holographic Curvature Landscape', fontsize=16, fontweight='bold', color='white')
+    fig.patch.set_facecolor('#1a1a2e')
+
+    for ax_row in axes:
+        for ax in ax_row:
+            ax.set_facecolor('#0d1117')
+            ax.tick_params(colors='#a0a0c0', labelsize=8)
+            ax.spines['bottom'].set_color('#0f3460')
+            ax.spines['top'].set_color('#0f3460')
+            ax.spines['left'].set_color('#0f3460')
+            ax.spines['right'].set_color('#0f3460')
+
+    token_labels = [f'[{i}] {t}' for i, t in enumerate(tokens)]
+
+    # ---- Panel 1: Ollivier-Ricci Curvature ----
+    ax = axes[0, 0]
+    cmap_orc = plt.cm.RdBu_r
+    norm_orc = mcolors.TwoSlopeNorm(vmin=orc.min(), vcenter=0, vmax=max(orc.max(), 0.01))
+    im1 = ax.imshow(orc, aspect='auto', cmap=cmap_orc, norm=norm_orc, interpolation='nearest')
+    ax.set_title('Ollivier-Ricci Curvature', color='#e94560', fontsize=11, fontweight='bold')
+    ax.set_ylabel('Layer', color='#a0a0c0')
+    ax.set_xlabel('Token', color='#a0a0c0')
+    ax.set_xticks(range(seq_len))
+    ax.set_xticklabels(token_labels, rotation=45, ha='right', fontsize=7)
+    fig.colorbar(im1, ax=ax, shrink=0.8, label='ORC')
+
+    # ---- Panel 2: Scalar Curvature (Volumetric Strain) ----
+    ax = axes[0, 1]
+    vmax_sc = max(abs(scalar.min()), abs(scalar.max()), 0.01)
+    norm_sc = mcolors.TwoSlopeNorm(vmin=-vmax_sc, vcenter=0, vmax=vmax_sc)
+    im2 = ax.imshow(scalar, aspect='auto', cmap='coolwarm', norm=norm_sc, interpolation='nearest')
+    ax.set_title('Scalar Curvature (Volumetric Strain)', color='#53a8b6', fontsize=11, fontweight='bold')
+    ax.set_ylabel('Layer', color='#a0a0c0')
+    ax.set_xlabel('Token', color='#a0a0c0')
+    ax.set_xticks(range(seq_len))
+    ax.set_xticklabels(token_labels, rotation=45, ha='right', fontsize=7)
+    fig.colorbar(im2, ax=ax, shrink=0.8, label='ΔlogVol')
+
+    # ---- Panel 3: Procrustes Deviation (Connection Strength) ----
+    ax = axes[1, 0]
+    im3 = ax.imshow(procrustes, aspect='auto', cmap='magma', interpolation='nearest')
+    ax.set_title('Procrustes Deviation ||R - I||_F (Connection)', color='#f5a623', fontsize=11, fontweight='bold')
+    ax.set_ylabel('Layer', color='#a0a0c0')
+    ax.set_xlabel('Token', color='#a0a0c0')
+    ax.set_xticks(range(seq_len))
+    ax.set_xticklabels(token_labels, rotation=45, ha='right', fontsize=7)
+    fig.colorbar(im3, ax=ax, shrink=0.8, label='||R-I||')
+
+    # ---- Panel 4: Sectional Curvature ----
+    ax = axes[1, 1]
+    im4 = ax.imshow(sectional, aspect='auto', cmap='inferno', interpolation='nearest')
+    ax.set_title('Sectional Curvature (Holonomy Proxy)', color='#7b68ee', fontsize=11, fontweight='bold')
+    ax.set_ylabel('Layer', color='#a0a0c0')
+    ax.set_xlabel('Token', color='#a0a0c0')
+    ax.set_xticks(range(seq_len))
+    ax.set_xticklabels(token_labels, rotation=45, ha='right', fontsize=7)
+    fig.colorbar(im4, ax=ax, shrink=0.8, label='Sectional κ')
+
+    # ---- Panel 5: log(det(g)) — Metric Determinant ----
+    ax = axes[2, 0]
+    im5 = ax.imshow(log_det, aspect='auto', cmap='viridis', interpolation='nearest')
+    ax.set_title('log det(g) — Metric Volume Element', color='#2ecc71', fontsize=11, fontweight='bold')
+    ax.set_ylabel('Layer', color='#a0a0c0')
+    ax.set_xlabel('Token', color='#a0a0c0')
+    ax.set_xticks(range(seq_len))
+    ax.set_xticklabels(token_labels, rotation=45, ha='right', fontsize=7)
+    fig.colorbar(im5, ax=ax, shrink=0.8, label='log det(g)')
+
+    # ---- Panel 6: Curvature Singularity Detection ----
+    ax = axes[2, 1]
+    # Combine ORC and sectional curvature to find singularities
+    # Use the layer-aligned portion of ORC (skip embedding layer for alignment)
+    orc_layers = orc[1:, :]  # (n_layers, seq_len) — skip embedding
+    combined = np.abs(orc_layers) + sectional  # both are (n_layers, seq_len)
+
+    # Find top singularities
+    flat_idx = np.argsort(combined.ravel())[::-1][:10]
+    sing_layers, sing_tokens = np.unravel_index(flat_idx, combined.shape)
+
+    ax.imshow(combined, aspect='auto', cmap='hot', interpolation='nearest')
+    for sl, st in zip(sing_layers, sing_tokens):
+        ax.plot(st, sl, 'o', markersize=8, markeredgecolor='cyan',
+                markerfacecolor='none', markeredgewidth=2)
+        ax.annotate(f'{tokens[st]}', (st, sl), textcoords="offset points",
+                    xytext=(5, -10), fontsize=7, color='cyan', fontweight='bold')
+
+    ax.set_title('Curvature Singularities (|ORC| + Sectional)', color='#e94560',
+                 fontsize=11, fontweight='bold')
+    ax.set_ylabel('Layer', color='#a0a0c0')
+    ax.set_xlabel('Token', color='#a0a0c0')
+    ax.set_xticks(range(seq_len))
+    ax.set_xticklabels(token_labels, rotation=45, ha='right', fontsize=7)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight', facecolor=fig.get_facecolor())
+        print(f"[Curvature] Saved landscape to {save_path}")
+
+    return fig
+
+
+def correlate_metric_with_surprisal(curvature_data, hidden_states, tokenizer, model, input_ids):
+    """
+    Compute the correlation between det(g) (metric determinant) and
+    token surprisal (information content = -log P(token)).
+
+    Args:
+        curvature_data: dict from estimate_fiber_curvature().
+        hidden_states: tuple of hidden state tensors.
+        tokenizer: the tokenizer.
+        model: the LM model (with language modeling head).
+        input_ids: tensor of input token IDs, shape (1, seq_len).
+
+    Returns:
+        dict with:
+            'surprisal': np.ndarray of shape (seq_len,) — per-token surprisal
+            'log_det_g_per_layer': np.ndarray of shape (n_layers+1, seq_len)
+            'correlations': list of dicts per layer with pearson_r, spearman_rho, p_values
+            'best_layer': int — layer with strongest correlation
+            'summary': str — human-readable summary
+    """
+    log_det = curvature_data['metric_log_det']  # (n_layers+1, seq_len)
+    n_layers_plus_one, seq_len = log_det.shape
+
+    # ================================================================
+    # Compute surprisal: -log2 P(token_i | token_{<i})
+    # ================================================================
+    surprisal = np.zeros(seq_len)
+
+    try:
+        with torch.no_grad():
+            outputs = model(input_ids)
+            logits = outputs.logits[0]  # (seq_len, vocab_size)
+            log_probs = torch.log_softmax(logits, dim=-1)
+
+        # For token i, surprisal = -log2 P(token_i | context)
+        # Token 0 has no context, so we assign surprisal = 0 or use uniform prior
+        for i in range(1, seq_len):
+            token_id = input_ids[0, i].item()
+            # The prediction for token i comes from position i-1
+            log_p = log_probs[i - 1, token_id].item()
+            surprisal[i] = -log_p / np.log(2)  # convert to bits
+
+        # Token 0: use uniform prior over vocab
+        vocab_size = logits.shape[-1]
+        surprisal[0] = np.log2(vocab_size)
+
+    except Exception as e:
+        print(f"[Curvature] Could not compute surprisal: {e}")
+        surprisal = np.ones(seq_len) * np.log2(50257)  # fallback: uniform GPT-2 vocab
+
+    # ================================================================
+    # Compute correlations between log_det(g) and surprisal at each layer
+    # ================================================================
+    correlations = []
+    best_layer = 0
+    best_abs_r = 0.0
+
+    for l in range(n_layers_plus_one):
+        log_det_l = log_det[l]
+
+        # Remove any NaN/Inf
+        valid = np.isfinite(log_det_l) & np.isfinite(surprisal)
+        if valid.sum() < 3:
+            correlations.append({
+                'layer': l,
+                'pearson_r': 0.0, 'pearson_p': 1.0,
+                'spearman_rho': 0.0, 'spearman_p': 1.0,
+            })
+            continue
+
+        ld_valid = log_det_l[valid]
+        s_valid = surprisal[valid]
+
+        # Pearson correlation
+        try:
+            pr, pp = pearsonr(ld_valid, s_valid)
+        except Exception:
+            pr, pp = 0.0, 1.0
+
+        # Spearman rank correlation
+        try:
+            sr, sp = spearmanr(ld_valid, s_valid)
+        except Exception:
+            sr, sp = 0.0, 1.0
+
+        correlations.append({
+            'layer': l,
+            'pearson_r': round(float(pr), 4),
+            'pearson_p': round(float(pp), 6),
+            'spearman_rho': round(float(sr), 4),
+            'spearman_p': round(float(sp), 6),
+        })
+
+        if abs(pr) > best_abs_r:
+            best_abs_r = abs(pr)
+            best_layer = l
+
+    # ================================================================
+    # Generate summary
+    # ================================================================
+    best_corr = correlations[best_layer]
+    direction = "positive" if best_corr['pearson_r'] > 0 else "negative"
+
+    summary = (
+        f"Strongest correlation between log det(g) and surprisal found at layer {best_layer}: "
+        f"Pearson r = {best_corr['pearson_r']:.4f} (p = {best_corr['pearson_p']:.2e}), "
+        f"Spearman ρ = {best_corr['spearman_rho']:.4f} (p = {best_corr['spearman_p']:.2e}). "
+        f"This {direction} correlation suggests that tokens with "
+        f"{'larger' if direction == 'positive' else 'smaller'} local metric volume "
+        f"tend to carry {'more' if direction == 'positive' else 'less'} information content."
+    )
+
+    return {
+        'surprisal': surprisal,
+        'log_det_g_per_layer': log_det,
+        'correlations': correlations,
+        'best_layer': best_layer,
+        'summary': summary,
+    }
+
+import numpy as np
+
+
+def decode_curvature_singularities(curvature_data, tokens, surprisal=None, top_k=10):
+    """
+    Identify curvature singularities and map them back to input tokens.
+    Classify each singularity as a syntactic junction, entropy collapse,
+    or gravitational source.
+
+    Args:
+        curvature_data: dict from estimate_fiber_curvature().
+        tokens: list of token strings.
+        surprisal: optional np.ndarray of shape (seq_len,) — per-token surprisal.
+        top_k: number of top singularities to return.
+
+    Returns:
+        list of dicts, each describing a curvature singularity:
+            {
+                'token_idx': int,
+                'token': str,
+                'layer': int,
+                'orc': float,
+                'sectional': float,
+                'scalar': float,
+                'procrustes': float,
+                'combined_score': float,
+                'classification': str,  — 'syntactic_junction', 'entropy_collapse', 'gravitational_source'
+                'description': str,
+            }
+    """
+    orc = curvature_data['ollivier_ricci']            # (n_layers+1, seq_len)
+    sectional = curvature_data['sectional_curvature']  # (n_layers, seq_len)
+    scalar = curvature_data['scalar_curvature']        # (n_layers, seq_len)
+    procrustes = curvature_data['procrustes_deviation']  # (n_layers, seq_len)
+
+    n_layers = scalar.shape[0]
+    seq_len = scalar.shape[1]
+
+    # Align ORC to layer-only dimensions (skip embedding layer)
+    orc_layers = orc[1:, :] if orc.shape[0] > n_layers else orc[:n_layers, :]
+
+    # Compute a combined curvature score for singularity detection
+    # Normalize each component to [0, 1] range before combining
+    def safe_normalize(arr):
+        arr_min = arr.min()
+        arr_max = arr.max()
+        rng = arr_max - arr_min
+        if rng < 1e-15:
+            return np.zeros_like(arr)
+        return (arr - arr_min) / rng
+
+    orc_norm = safe_normalize(np.abs(orc_layers))
+    sectional_norm = safe_normalize(sectional)
+    scalar_norm = safe_normalize(np.abs(scalar))
+    procrustes_norm = safe_normalize(procrustes)
+
+    # Weighted combination — ORC and sectional curvature are primary signals
+    combined = (
+        0.35 * orc_norm +
+        0.30 * sectional_norm +
+        0.20 * scalar_norm +
+        0.15 * procrustes_norm
+    )
+
+    # Find top-k singularities
+    flat_idx = np.argsort(combined.ravel())[::-1][:top_k]
+    sing_layers, sing_tokens = np.unravel_index(flat_idx, combined.shape)
+
+    singularities = []
+
+    for rank, (sl, st) in enumerate(zip(sing_layers, sing_tokens)):
+        token_str = tokens[st] if st < len(tokens) else f"[{st}]"
+
+        orc_val = float(orc_layers[sl, st])
+        sect_val = float(sectional[sl, st])
+        scal_val = float(scalar[sl, st])
+        proc_val = float(procrustes[sl, st])
+        score = float(combined[sl, st])
+
+        # ================================================================
+        # Classification heuristics
+        # ================================================================
+        classification = 'unclassified'
+        description = ''
+
+        # 1. Gravitational Source: high positive ORC (tokens "attract" neighbors)
+        #    + high sectional curvature (strong holonomy)
+        if orc_val > 0 and sect_val > np.median(sectional):
+            classification = 'gravitational_source'
+            description = (
+                f"Token '{token_str}' at layer {sl} acts as a gravitational source: "
+                f"positive Ricci curvature (ORC={orc_val:.4f}) indicates neighboring tokens "
+                f"converge toward this point. High sectional curvature ({sect_val:.4f}) "
+                f"suggests strong holonomy — attention heads are actively rotating "
+                f"the local frame around this token."
+            )
+
+        # 2. Entropy Collapse: large negative volumetric strain (space contracting)
+        #    + high Procrustes deviation (tangent space rapidly reorienting)
+        elif scal_val < -np.std(scalar) and proc_val > np.median(procrustes):
+            classification = 'entropy_collapse'
+            description = (
+                f"Token '{token_str}' at layer {sl} exhibits entropy collapse: "
+                f"negative volumetric strain (ΔlogVol={scal_val:.4f}) means the local "
+                f"simplex is contracting — the model is 'deciding' on a meaning. "
+                f"High Procrustes deviation ({proc_val:.4f}) indicates the tangent space "
+                f"is rapidly reorienting as ambiguity resolves."
+            )
+
+        # 3. Syntactic Junction: high Procrustes deviation (connection strength)
+        #    + moderate ORC (neither strongly positive nor negative)
+        #    + token is at a structural boundary
+        elif proc_val > np.median(procrustes) * 1.5:
+            classification = 'syntactic_junction'
+            description = (
+                f"Token '{token_str}' at layer {sl} is a syntactic junction: "
+                f"high connection strength (||R-I||={proc_val:.4f}) indicates the "
+                f"parallel transport between layers undergoes significant rotation here. "
+                f"This typically occurs at grammatical boundaries (subject→verb, "
+                f"clause transitions) where the model shifts its processing mode."
+            )
+
+        # 4. Fallback: describe based on dominant signal
+        else:
+            if abs(orc_val) > abs(scal_val) and abs(orc_val) > proc_val:
+                classification = 'curvature_anomaly'
+                sign = 'positive' if orc_val > 0 else 'negative'
+                description = (
+                    f"Token '{token_str}' at layer {sl} shows anomalous {sign} "
+                    f"Ricci curvature (ORC={orc_val:.4f}). "
+                    f"{'Tokens converge here.' if orc_val > 0 else 'Tokens diverge here.'}"
+                )
+            elif abs(scal_val) > proc_val:
+                classification = 'volume_anomaly'
+                direction = 'expansion' if scal_val > 0 else 'contraction'
+                description = (
+                    f"Token '{token_str}' at layer {sl} shows volumetric {direction} "
+                    f"(ΔlogVol={scal_val:.4f}). The local representation neighborhood "
+                    f"is {'expanding' if scal_val > 0 else 'collapsing'}."
+                )
+            else:
+                classification = 'transport_anomaly'
+                description = (
+                    f"Token '{token_str}' at layer {sl} shows high parallel transport "
+                    f"deviation (||R-I||={proc_val:.4f}), indicating significant "
+                    f"frame rotation between layers."
+                )
+
+        # ================================================================
+        # Compute surprisal correlation if available
+        # ================================================================
+        surprisal_note = ''
+        if surprisal is not None and st < len(surprisal):
+            s_val = surprisal[st]
+            surprisal_note = f" Token surprisal: {s_val:.2f} bits."
+
+        singularities.append({
+            'rank': rank + 1,
+            'token_idx': int(st),
+            'token': token_str,
+            'layer': int(sl),
+            'orc': round(orc_val, 6),
+            'sectional': round(sect_val, 6),
+            'scalar': round(scal_val, 6),
+            'procrustes': round(proc_val, 6),
+            'combined_score': round(score, 6),
+            'classification': classification,
+            'description': description + surprisal_note,
+        })
+
+    return singularities
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+
+def visualize_metric_surprisal_correlation(correlation_data, tokens, save_path=None):
+    """
+    Visualize the correlation between log det(g) and token surprisal.
+
+    Args:
+        correlation_data: dict from correlate_metric_with_surprisal().
+        tokens: list of token strings.
+        save_path: optional path to save figure.
+
+    Returns:
+        matplotlib Figure object.
+    """
+    surprisal = correlation_data['surprisal']
+    log_det = correlation_data['log_det_g_per_layer']
+    correlations = correlation_data['correlations']
+    best_layer = correlation_data['best_layer']
+    seq_len = len(surprisal)
+
+    n_layers_plus_one = log_det.shape[0]
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle('Holographic Decoding: Metric Determinant vs. Information Content',
+                 fontsize=14, fontweight='bold', color='white')
+    fig.patch.set_facecolor('#1a1a2e')
+
+    for ax_row in axes:
+        for ax in ax_row:
+            ax.set_facecolor('#0d1117')
+            ax.tick_params(colors='#a0a0c0', labelsize=8)
+            for spine in ax.spines.values():
+                spine.set_color('#0f3460')
+
+    token_labels = [f'[{i}] {t}' for i, t in enumerate(tokens)]
+
+    # ---- Panel 1: Scatter plot at best layer ----
+    ax = axes[0, 0]
+    ld_best = log_det[best_layer]
+    valid = np.isfinite(ld_best) & np.isfinite(surprisal)
+
+    colors_scatter = plt.cm.viridis(np.linspace(0, 1, seq_len))
+    for i in range(seq_len):
+        if valid[i]:
+            ax.scatter(ld_best[i], surprisal[i], c=[colors_scatter[i]],
+                       s=60, zorder=5, edgecolors='white', linewidths=0.5)
+            ax.annotate(tokens[i], (ld_best[i], surprisal[i]),
+                        fontsize=7, color='#a0a0c0',
+                        textcoords="offset points", xytext=(5, 3))
+
+    # Fit line
+    if valid.sum() >= 2:
+        z = np.polyfit(ld_best[valid], surprisal[valid], 1)
+        p = np.poly1d(z)
+        x_line = np.linspace(ld_best[valid].min(), ld_best[valid].max(), 100)
+        ax.plot(x_line, p(x_line), '--', color='#e94560', linewidth=1.5, alpha=0.7)
+
+    best_corr = correlations[best_layer]
+    ax.set_title(f'Best Layer {best_layer}: r={best_corr["pearson_r"]:.3f}, '
+                 f'ρ={best_corr["spearman_rho"]:.3f}',
+                 color='#e94560', fontsize=10, fontweight='bold')
+    ax.set_xlabel('log det(g)', color='#a0a0c0')
+    ax.set_ylabel('Surprisal (bits)', color='#a0a0c0')
+
+    # ---- Panel 2: Correlation strength across layers ----
+    ax = axes[0, 1]
+    layer_indices = [c['layer'] for c in correlations]
+    pearson_vals = [c['pearson_r'] for c in correlations]
+    spearman_vals = [c['spearman_rho'] for c in correlations]
+
+    ax.bar(np.array(layer_indices) - 0.15, pearson_vals, width=0.3,
+           color='#e94560', alpha=0.8, label='Pearson r')
+    ax.bar(np.array(layer_indices) + 0.15, spearman_vals, width=0.3,
+           color='#53a8b6', alpha=0.8, label='Spearman ρ')
+    ax.axhline(y=0, color='#555', linewidth=0.5)
+    ax.axvline(x=best_layer, color='#f5a623', linewidth=2, linestyle='--',
+               alpha=0.7, label=f'Best layer ({best_layer})')
+    ax.set_title('Correlation Strength Across Layers',
+                 color='#53a8b6', fontsize=10, fontweight='bold')
+    ax.set_xlabel('Layer', color='#a0a0c0')
+    ax.set_ylabel('Correlation', color='#a0a0c0')
+    ax.legend(fontsize=8, facecolor='#0d1117', edgecolor='#0f3460',
+              labelcolor='#a0a0c0')
+
+    # ---- Panel 3: Surprisal profile ----
+    ax = axes[1, 0]
+    ax.bar(range(seq_len), surprisal, color='#7b68ee', alpha=0.8)
+    ax.set_xticks(range(seq_len))
+    ax.set_xticklabels(token_labels, rotation=45, ha='right', fontsize=7)
+    ax.set_title('Token Surprisal Profile', color='#7b68ee',
+                 fontsize=10, fontweight='bold')
+    ax.set_ylabel('Surprisal (bits)', color='#a0a0c0')
+
+    # ---- Panel 4: log det(g) at best layer ----
+    ax = axes[1, 1]
+    ax.bar(range(seq_len), ld_best, color='#2ecc71', alpha=0.8)
+    ax.set_xticks(range(seq_len))
+    ax.set_xticklabels(token_labels, rotation=45, ha='right', fontsize=7)
+    ax.set_title(f'log det(g) at Layer {best_layer}', color='#2ecc71',
+                 fontsize=10, fontweight='bold')
+    ax.set_ylabel('log det(g)', color='#a0a0c0')
+
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches='tight',
+                    facecolor=fig.get_facecolor())
+        print(f"[Curvature] Saved correlation plot to {save_path}")
+
+    return fig
+
+def handle_curvature_analysis(body_bytes):
+    """
+    Full holographic curvature analysis endpoint.
+    Computes fiber curvature, singularities, and metric-surprisal correlation.
+    """
+    req = json.loads(body_bytes)
+    text = req.get("text", "").strip()
+    k_neighbors = req.get("k_neighbors", 8)
+    pca_d = req.get("pca_d", 16)
+    top_k_singularities = req.get("top_k_singularities", 10)
+
+    if not text:
+        return json.dumps({"error": "Empty text"}).encode()
+
+    # Tokenize and extract hidden states
+    input_ids, tokens = tokenize_text(TOKENIZER, text)
+    hs = extract_hidden_states(MODEL, input_ids)
+
+    n_layers = get_n_layers(MODEL_CONFIG)
+    hidden_dim = get_hidden_dim(MODEL_CONFIG)
+    seq_len = input_ids.shape[1]
+
+    print(f"[Curvature] Analyzing {seq_len} tokens across {n_layers} layers "
+          f"(k={k_neighbors}, d={pca_d})...")
+
+    # ================================================================
+    # Stage 1-3: Estimate fiber curvature
+    # ================================================================
+    curvature_data = estimate_fiber_curvature(
+        hs, k_neighbors=k_neighbors, pca_d=pca_d
+    )
+
+    print(f"[Curvature] ORC shape: {curvature_data['ollivier_ricci'].shape}")
+    print(f"[Curvature] Scalar curvature shape: {curvature_data['scalar_curvature'].shape}")
+
+    # ================================================================
+    # Stage 4a: Correlate with surprisal
+    # ================================================================
+    correlation_data = None
+    if LM_MODEL is not None:
+        correlation_data = correlate_metric_with_surprisal(
+            curvature_data, hs, TOKENIZER, LM_MODEL, input_ids
+        )
+        print(f"[Curvature] {correlation_data['summary']}")
+    else:
+        print("[Curvature] No LM model — skipping surprisal correlation")
+
+    # ================================================================
+    # Stage 4b: Decode singularities
+    # ================================================================
+    surprisal = correlation_data['surprisal'] if correlation_data else None
+    singularities = decode_curvature_singularities(
+        curvature_data, tokens,
+        surprisal=surprisal,
+        top_k=top_k_singularities
+    )
+
+    print(f"[Curvature] Found {len(singularities)} singularities")
+    for s in singularities[:3]:
+        print(f"  #{s['rank']}: [{s['token_idx']}] '{s['token']}' "
+              f"at L{s['layer']} — {s['classification']}")
+
+    # ================================================================
+    # Stage 5: Generate visualizations
+    # ================================================================
+    fig_landscape = visualize_curvature_landscape(
+        curvature_data, tokens, save_path='/tmp/curvature_landscape.png'
+    )
+    plt.close(fig_landscape)
+
+    if correlation_data:
+        fig_corr = visualize_metric_surprisal_correlation(
+            correlation_data, tokens, save_path='/tmp/curvature_correlation.png'
+        )
+        plt.close(fig_corr)
+
+    # ================================================================
+    # Build JSON response
+    # ================================================================
+    response = {
+        "tokens": tokens,
+        "seq_len": seq_len,
+        "n_layers": n_layers,
+        "hidden_dim": hidden_dim,
+        "k_neighbors": k_neighbors,
+        "pca_d": pca_d,
+
+        # Curvature tensors (main output)
+        "ollivier_ricci": curvature_data['ollivier_ricci'].tolist(),
+        "scalar_curvature": curvature_data['scalar_curvature'].tolist(),
+        "sectional_curvature": curvature_data['sectional_curvature'].tolist(),
+        "metric_log_det": curvature_data['metric_log_det'].tolist(),
+        "procrustes_deviation": curvature_data['procrustes_deviation'].tolist(),
+
+        # Singularities
+        "singularities": singularities,
+
+        # Correlation analysis
+        "correlation": {
+            "summary": correlation_data['summary'],
+            "best_layer": correlation_data['best_layer'],
+            "surprisal": correlation_data['surprisal'].tolist(),
+            "correlations_per_layer": correlation_data['correlations'],
+        } if correlation_data else None,
+
+        # Visualization paths
+        "visualizations": {
+            "landscape": "/tmp/curvature_landscape.png",
+            "correlation": "/tmp/curvature_correlation.png" if correlation_data else None,
+        },
+    }
+
+    return json.dumps(response, cls=SafeFloatEncoder).encode()
 
 class SafeFloatEncoder(json.JSONEncoder):
     """JSON encoder that replaces inf/-inf/nan with 0.0 instead of crashing."""
@@ -989,6 +1645,13 @@ def process_text(text, model_name=None):
 HTML_PAGE = r"""<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><title>Metric Space Explorer</title>
 <style>
+#curvature-singularities::-webkit-scrollbar{width:4px}
+#curvature-singularities::-webkit-scrollbar-track{background:#0a0a1a}
+#curvature-singularities::-webkit-scrollbar-thumb{background:#0f3460;border-radius:2px}
+#curvature-panel .cr{display:flex;align-items:center;gap:5px;font-size:11px}
+#curvature-panel .cr label{min-width:80px;text-align:right;color:#a0a0c0}
+#curvature-panel .cr input[type=range]{flex:1;accent-color:#7b68ee}
+#curvature-panel .cr .v{min-width:30px;color:#7b68ee;font-weight:bold;font-size:10px}
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#1a1a2e;color:#e0e0e0;font-family:'Segoe UI',sans-serif;display:flex;height:100vh;overflow:hidden}
 #side{width:370px;min-width:370px;background:#16213e;padding:12px;
@@ -1205,6 +1868,68 @@ Tokens: <span id="i-tok">-</span>
       </div>
       <div id="sae-int-results" style="margin-top:6px"></div>
     </div>
+  </div>
+</div>
+<h3>Holographic Curvature Analysis</h3>
+<div id="curvature-panel" style="background:#0f3460;padding:8px;border-radius:4px;font-size:10px">
+  <div style="color:#888;font-size:9px;margin-bottom:6px">
+    Decode Ricci &amp; Sectional curvature from the fiber bundle structure.
+    Identifies curvature singularities, syntactic junctions, entropy collapses,
+    and gravitational sources.
+  </div>
+  <div class="cr">
+    <label>k-NN:</label>
+    <input type="range" id="curv-k" min="3" max="20" value="8" step="1">
+    <span class="v" id="v-curv-k">8</span>
+  </div>
+  <div class="cr" style="margin-top:3px">
+    <label>PCA d:</label>
+    <input type="range" id="curv-d" min="4" max="64" value="16" step="1">
+    <span class="v" id="v-curv-d">16</span>
+  </div>
+  <div class="cr" style="margin-top:3px">
+    <label>Top K sing.:</label>
+    <input type="range" id="curv-topk" min="3" max="25" value="10" step="1">
+    <span class="v" id="v-curv-topk">10</span>
+  </div>
+  <div style="display:flex;gap:4px;margin-top:6px">
+    <button id="btn-curvature" onclick="runCurvatureAnalysis()" style="flex:1;background:#7b68ee;color:#fff;border:none;padding:5px 10px;border-radius:3px;cursor:pointer;font-size:10px;font-weight:bold">
+      Analyze Curvature
+    </button>
+  </div>
+  <div id="curvature-status" style="margin-top:6px;color:#555;font-size:9px">Run text first, then analyze curvature.</div>
+
+  <!-- Correlation summary -->
+  <div id="curvature-correlation-summary" style="display:none;margin-top:8px;background:#0a0a1a;padding:6px;border-radius:4px;font-size:9px;line-height:1.5;color:#a0a0c0"></div>
+
+  <!-- Singularities list -->
+  <div id="curvature-singularities" style="display:none;margin-top:8px;max-height:350px;overflow-y:auto"></div>
+
+  <!-- Curvature heatmap selector -->
+  <div id="curvature-heatmap-controls" style="display:none;margin-top:8px">
+    <div class="cr">
+      <label>Heatmap:</label>
+      <select id="curv-heatmap-type" onchange="renderCurvatureHeatmap()" style="flex:1;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;padding:2px;font-size:10px">
+        <option value="ollivier_ricci">Ollivier-Ricci Curvature</option>
+        <option value="scalar_curvature">Scalar Curvature (Vol. Strain)</option>
+        <option value="sectional_curvature">Sectional Curvature</option>
+        <option value="procrustes_deviation">Procrustes Deviation</option>
+        <option value="metric_log_det">log det(g)</option>
+      </select>
+    </div>
+    <canvas id="curv-heatmap-cv" width="340" height="160" style="margin-top:4px;border:1px solid #0f3460;border-radius:4px;display:block;width:100%"></canvas>
+    <div id="curv-heatmap-legend" style="display:flex;justify-content:space-between;font-size:8px;color:#888;margin-top:2px">
+      <span id="curv-hm-min">min</span>
+      <span style="color:#a0a0c0" id="curv-hm-title">—</span>
+      <span id="curv-hm-max">max</span>
+    </div>
+  </div>
+
+  <!-- Surprisal correlation chart -->
+  <div id="curvature-surprisal-chart" style="display:none;margin-top:8px">
+    <div style="color:#2ecc71;font-weight:bold;font-size:10px;margin-bottom:3px">Metric det(g) vs Surprisal</div>
+    <canvas id="curv-surprisal-cv" width="340" height="140" style="border:1px solid #0f3460;border-radius:4px;display:block;width:100%"></canvas>
+    <div id="curv-corr-bars" style="margin-top:4px"></div>
   </div>
 </div>
 <h3>Selected Tokens (click canvas to select)</h3>
@@ -6125,6 +6850,458 @@ function renderContrastiveResults() {
         }
     }
 }
+// ============================================================
+// HOLOGRAPHIC CURVATURE ANALYSIS — Frontend
+// ============================================================
+
+var curvatureData = null;
+
+// Slider value displays
+document.getElementById('curv-k').addEventListener('input', function(){
+    document.getElementById('v-curv-k').textContent = this.value;
+});
+document.getElementById('curv-d').addEventListener('input', function(){
+    document.getElementById('v-curv-d').textContent = this.value;
+});
+document.getElementById('curv-topk').addEventListener('input', function(){
+    document.getElementById('v-curv-topk').textContent = this.value;
+});
+
+function runCurvatureAnalysis(){
+    if(!D){
+        document.getElementById('curvature-status').innerHTML =
+            '<span style="color:#e94560">Run a prompt first!</span>';
+        return;
+    }
+
+    var btn = document.getElementById('btn-curvature');
+    btn.disabled = true;
+    btn.textContent = 'Computing...';
+    document.getElementById('curvature-status').innerHTML =
+        '<span style="color:#53a8b6">Computing fiber curvature (this may take a moment)...</span>';
+
+    var kNeighbors = +document.getElementById('curv-k').value;
+    var pcaD = +document.getElementById('curv-d').value;
+    var topK = +document.getElementById('curv-topk').value;
+
+    fetch('/curvature', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            text: D.text,
+            k_neighbors: kNeighbors,
+            pca_d: pcaD,
+            top_k_singularities: topK
+        })
+    })
+    .then(function(r){
+        if(!r.ok) throw new Error('Server error ' + r.status);
+        return r.json();
+    })
+    .then(function(data){
+        if(data.error){
+            document.getElementById('curvature-status').innerHTML =
+                '<span style="color:#e94560">' + data.error + '</span>';
+            btn.disabled = false;
+            btn.textContent = 'Analyze Curvature';
+            return;
+        }
+        curvatureData = data;
+        btn.disabled = false;
+        btn.textContent = 'Analyze Curvature';
+
+        document.getElementById('curvature-status').innerHTML =
+            '<span style="color:#2ecc71">✓ Curvature computed</span> — ' +
+            data.seq_len + ' tokens × ' + data.n_layers + ' layers | ' +
+            data.singularities.length + ' singularities found';
+
+        renderCurvatureCorrelation();
+        renderCurvatureSingularities();
+        renderCurvatureHeatmap();
+        renderCurvatureSurprisalChart();
+    })
+    .catch(function(e){
+        document.getElementById('curvature-status').innerHTML =
+            '<span style="color:#e94560">Error: ' + e + '</span>';
+        btn.disabled = false;
+        btn.textContent = 'Analyze Curvature';
+    });
+}
+
+function renderCurvatureCorrelation(){
+    var panel = document.getElementById('curvature-correlation-summary');
+    if(!curvatureData || !curvatureData.correlation){
+        panel.style.display = 'none';
+        return;
+    }
+    panel.style.display = 'block';
+    var corr = curvatureData.correlation;
+
+    var html = '<div style="color:#2ecc71;font-weight:bold;margin-bottom:4px">Metric–Surprisal Correlation</div>';
+    html += '<div>' + corr.summary + '</div>';
+    html += '<div style="margin-top:4px;color:#888">Best layer: <span style="color:#e94560;font-weight:bold">' +
+            corr.best_layer + '</span></div>';
+    panel.innerHTML = html;
+}
+
+function renderCurvatureSingularities(){
+    var panel = document.getElementById('curvature-singularities');
+    if(!curvatureData || !curvatureData.singularities || curvatureData.singularities.length === 0){
+        panel.style.display = 'none';
+        return;
+    }
+    panel.style.display = 'block';
+
+    var sings = curvatureData.singularities;
+    var html = '<div style="color:#e94560;font-weight:bold;font-size:10px;margin-bottom:6px">' +
+               '⚡ Curvature Singularities (' + sings.length + ')</div>';
+
+    var classIcons = {
+        'gravitational_source': '🌀',
+        'entropy_collapse': '🔻',
+        'syntactic_junction': '🔗',
+        'curvature_anomaly': '⚠️',
+        'volume_anomaly': '📐',
+        'transport_anomaly': '🔄'
+    };
+    var classColors = {
+        'gravitational_source': '#f5a623',
+        'entropy_collapse': '#e94560',
+        'syntactic_junction': '#53a8b6',
+        'curvature_anomaly': '#7b68ee',
+        'volume_anomaly': '#2ecc71',
+        'transport_anomaly': '#fd79a8'
+    };
+
+    for(var i = 0; i < sings.length; i++){
+        var s = sings[i];
+        var icon = classIcons[s.classification] || '●';
+        var color = classColors[s.classification] || '#888';
+
+        html += '<div style="margin:3px 0;padding:4px 6px;border-left:3px solid ' + color +
+                ';background:rgba(0,0,0,0.2);border-radius:0 4px 4px 0;cursor:pointer" ' +
+                'onclick="jumpToCurvatureSingularity(' + s.layer + ',' + s.token_idx + ')" ' +
+                'onmouseover="this.style.background=\'rgba(255,255,255,0.05)\'" ' +
+                'onmouseout="this.style.background=\'rgba(0,0,0,0.2)\'">';
+
+        html += '<div style="display:flex;align-items:center;gap:4px">';
+        html += '<span style="font-size:12px">' + icon + '</span>';
+        html += '<span style="color:' + color + ';font-weight:bold;font-size:10px">' +
+                s.classification.replace(/_/g, ' ') + '</span>';
+        html += '<span style="color:#888;font-size:9px;margin-left:auto">#' + s.rank + '</span>';
+        html += '</div>';
+
+        html += '<div style="font-size:9px;margin-top:2px">';
+        html += '<span style="color:#e94560">[' + s.token_idx + '] "' + s.token + '"</span>';
+        html += ' at <span style="color:#53a8b6">L' + s.layer + '</span>';
+        html += ' | score: <span style="color:#f5a623">' + s.combined_score.toFixed(4) + '</span>';
+        html += '</div>';
+
+        // Compact metrics row
+        html += '<div style="font-size:8px;color:#666;margin-top:2px;display:flex;gap:6px;flex-wrap:wrap">';
+        html += '<span>ORC=' + s.orc.toFixed(3) + '</span>';
+        html += '<span>Sect=' + s.sectional.toFixed(3) + '</span>';
+        html += '<span>Scal=' + s.scalar.toFixed(3) + '</span>';
+        html += '<span>Proc=' + s.procrustes.toFixed(3) + '</span>';
+        html += '</div>';
+
+        // Description (collapsible)
+        html += '<div style="font-size:8px;color:#888;margin-top:3px;line-height:1.4">' +
+                s.description + '</div>';
+
+        html += '</div>';
+    }
+
+    panel.innerHTML = html;
+}
+
+function jumpToCurvatureSingularity(layer, tokenIdx){
+    // Jump the layer slider to this layer
+    var sl = document.getElementById('sl-layer');
+    sl.value = Math.min(layer, +sl.max);
+    sl.dispatchEvent(new Event('input'));
+
+    // Select the token
+    if(D && tokenIdx < D.n_real){
+        selectedTokens.clear();
+        selectedTokens.add(tokenIdx);
+        updateSelectedUI();
+        draw();
+    }
+}
+
+function renderCurvatureHeatmap(){
+    var controls = document.getElementById('curvature-heatmap-controls');
+    if(!curvatureData){
+        controls.style.display = 'none';
+        return;
+    }
+    controls.style.display = 'block';
+
+    var type = document.getElementById('curv-heatmap-type').value;
+    var matrix = curvatureData[type];
+    if(!matrix || matrix.length === 0) return;
+
+    var nRows = matrix.length;
+    var nCols = matrix[0].length;
+    var tokens = curvatureData.tokens;
+
+    // Find min/max
+    var vmin = Infinity, vmax = -Infinity;
+    for(var r = 0; r < nRows; r++){
+        for(var c = 0; c < nCols; c++){
+            var v = matrix[r][c];
+            if(v < vmin) vmin = v;
+            if(v > vmax) vmax = v;
+        }
+    }
+
+    // Handle diverging colormaps (centered at 0)
+    var isDiverging = (type === 'ollivier_ricci' || type === 'scalar_curvature');
+    if(isDiverging){
+        var absMax = Math.max(Math.abs(vmin), Math.abs(vmax), 0.001);
+        vmin = -absMax;
+        vmax = absMax;
+    }
+
+    var range = vmax - vmin;
+    if(range < 1e-12) range = 1;
+
+    var cv = document.getElementById('curv-heatmap-cv');
+    // Set canvas resolution based on data
+    var cellW = Math.max(2, Math.floor(340 / nCols));
+    var cellH = Math.max(2, Math.floor(160 / nRows));
+    cv.width = cellW * nCols;
+    cv.height = cellH * nRows;
+    var ctx = cv.getContext('2d');
+
+    for(var r = 0; r < nRows; r++){
+        for(var c = 0; c < nCols; c++){
+            var v = matrix[r][c];
+            var norm = (v - vmin) / range; // 0..1
+
+            var rgb;
+            if(isDiverging){
+                // Blue (negative) -> Black (zero) -> Red (positive)
+                if(norm < 0.5){
+                    var t = (0.5 - norm) * 2;
+                    rgb = [Math.floor(t * 30), Math.floor(t * 100), Math.floor(t * 220)];
+                } else {
+                    var t = (norm - 0.5) * 2;
+                    rgb = [Math.floor(t * 233), Math.floor(t * 50), Math.floor(t * 40)];
+                }
+            } else {
+                // Viridis-like
+                rgb = curvatureViridis(norm);
+            }
+
+            ctx.fillStyle = 'rgb(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ')';
+            ctx.fillRect(c * cellW, r * cellH, cellW, cellH);
+        }
+    }
+
+    // Draw current layer indicator
+    var currentLayer = +document.getElementById('sl-layer').value;
+    if(currentLayer < nRows){
+        ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(0, currentLayer * cellH, cv.width, cellH);
+    }
+
+    // Update legend
+    var titles = {
+        'ollivier_ricci': 'Ollivier-Ricci Curvature',
+        'scalar_curvature': 'Scalar Curvature (ΔlogVol)',
+        'sectional_curvature': 'Sectional Curvature',
+        'procrustes_deviation': 'Procrustes ||R-I||',
+        'metric_log_det': 'log det(g)'
+    };
+    document.getElementById('curv-hm-title').textContent = titles[type] || type;
+    document.getElementById('curv-hm-min').textContent = vmin.toFixed(3);
+    document.getElementById('curv-hm-max').textContent = vmax.toFixed(3);
+}
+
+function curvatureViridis(t){
+    // Approximate viridis colormap
+    t = Math.max(0, Math.min(1, t));
+    var r, g, b;
+    if(t < 0.25){
+        var f = t / 0.25;
+        r = Math.floor(68 - f * 4); g = Math.floor(1 + f * 50); b = Math.floor(84 + f * 74);
+    } else if(t < 0.5){
+        var f = (t - 0.25) / 0.25;
+        r = Math.floor(64 - f * 30); g = Math.floor(51 + f * 70); b = Math.floor(158 - f * 20);
+    } else if(t < 0.75){
+        var f = (t - 0.5) / 0.25;
+        r = Math.floor(34 + f * 100); g = Math.floor(121 + f * 60); b = Math.floor(138 - f * 60);
+    } else {
+        var f = (t - 0.75) / 0.25;
+        r = Math.floor(134 + f * 119); g = Math.floor(181 + f * 40); b = Math.floor(78 - f * 50);
+    }
+    return [r, g, b];
+}
+
+function renderCurvatureSurprisalChart(){
+    var chartDiv = document.getElementById('curvature-surprisal-chart');
+    if(!curvatureData || !curvatureData.correlation){
+        chartDiv.style.display = 'none';
+        return;
+    }
+    chartDiv.style.display = 'block';
+
+    var corr = curvatureData.correlation;
+    var surprisal = corr.surprisal;
+    var bestLayer = corr.best_layer;
+    var logDet = curvatureData.metric_log_det;
+    var tokens = curvatureData.tokens;
+    var seqLen = tokens.length;
+
+    // Get log_det at best layer
+    var ldBest = logDet[bestLayer];
+
+    // Draw scatter plot
+    var cv = document.getElementById('curv-surprisal-cv');
+    cv.width = 340;
+    cv.height = 140;
+    var ctx = cv.getContext('2d');
+    ctx.fillStyle = '#0a0a1a';
+    ctx.fillRect(0, 0, 340, 140);
+
+    // Find ranges
+    var ldMin = Infinity, ldMax = -Infinity;
+    var sMin = Infinity, sMax = -Infinity;
+    for(var i = 0; i < seqLen; i++){
+        if(ldBest[i] < ldMin) ldMin = ldBest[i];
+        if(ldBest[i] > ldMax) ldMax = ldBest[i];
+        if(surprisal[i] < sMin) sMin = surprisal[i];
+        if(surprisal[i] > sMax) sMax = surprisal[i];
+    }
+    var ldRange = ldMax - ldMin || 1;
+    var sRange = sMax - sMin || 1;
+
+    var margin = 25;
+    var plotW = 340 - 2 * margin;
+    var plotH = 140 - 2 * margin;
+
+    // Axes
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    ctx.moveTo(margin, margin);
+    ctx.lineTo(margin, margin + plotH);
+    ctx.lineTo(margin + plotW, margin + plotH);
+    ctx.stroke();
+
+    ctx.font = '7px monospace';
+    ctx.fillStyle = '#666';
+    ctx.textAlign = 'center';
+    ctx.fillText('log det(g)', margin + plotW / 2, 140 - 2);
+    ctx.save();
+    ctx.translate(8, margin + plotH / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText('Surprisal', 0, 0);
+    ctx.restore();
+
+    // Scatter points
+    var tc = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71',
+              '#e74c3c','#3498db','#9b59b6','#1abc9c','#e67e22'];
+
+    for(var i = 0; i < seqLen; i++){
+        var sx = margin + ((ldBest[i] - ldMin) / ldRange) * plotW;
+        var sy = margin + plotH - ((surprisal[i] - sMin) / sRange) * plotH;
+
+        ctx.beginPath();
+        ctx.arc(sx, sy, 3, 0, Math.PI * 2);
+        ctx.fillStyle = tc[i % tc.length];
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+        ctx.lineWidth = 0.5;
+        ctx.stroke();
+
+        // Label
+        if(seqLen <= 15){
+            ctx.font = '7px monospace';
+            ctx.fillStyle = '#888';
+            ctx.textAlign = 'left';
+            ctx.fillText(tokens[i], sx + 5, sy - 3);
+        }
+    }
+
+    // Fit line
+    if(seqLen >= 2){
+        var sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+        for(var i = 0; i < seqLen; i++){
+            sumX += ldBest[i];
+            sumY += surprisal[i];
+            sumXY += ldBest[i] * surprisal[i];
+            sumX2 += ldBest[i] * ldBest[i];
+        }
+        var n = seqLen;
+        var slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX + 1e-12);
+        var intercept = (sumY - slope * sumX) / n;
+
+        var x1 = ldMin, y1 = slope * x1 + intercept;
+        var x2 = ldMax, y2 = slope * x2 + intercept;
+
+        var sx1 = margin + ((x1 - ldMin) / ldRange) * plotW;
+        var sy1 = margin + plotH - ((y1 - sMin) / sRange) * plotH;
+        var sx2 = margin + ((x2 - ldMin) / ldRange) * plotW;
+        var sy2 = margin + plotH - ((y2 - sMin) / sRange) * plotH;
+
+        ctx.strokeStyle = 'rgba(233,69,96,0.5)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        ctx.moveTo(sx1, sy1);
+        ctx.lineTo(sx2, sy2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+    }
+
+    // Layer correlation bars
+    var barsDiv = document.getElementById('curv-corr-bars');
+    var corrPerLayer = corr.correlations_per_layer;
+    if(corrPerLayer && corrPerLayer.length > 0){
+        var bhtml = '<div style="font-size:8px;color:#888;margin-bottom:2px">Pearson r per layer (click to select):</div>';
+        bhtml += '<div style="display:flex;flex-wrap:wrap;gap:1px">';
+
+        var maxAbsR = 0;
+        for(var li = 0; li < corrPerLayer.length; li++){
+            var absR = Math.abs(corrPerLayer[li].pearson_r);
+            if(absR > maxAbsR) maxAbsR = absR;
+        }
+        if(maxAbsR < 0.01) maxAbsR = 1;
+
+        for(var li = 0; li < corrPerLayer.length; li++){
+            var c = corrPerLayer[li];
+            var barH = Math.max(2, Math.abs(c.pearson_r) / maxAbsR * 30);
+            var barColor = c.pearson_r > 0 ? '#2ecc71' : '#e94560';
+            var isBest = (li === bestLayer);
+
+            bhtml += '<div style="display:flex;flex-direction:column;align-items:center;cursor:pointer;' +
+                     'padding:1px 2px;border-radius:2px;' +
+                     (isBest ? 'background:rgba(233,69,96,0.2);' : '') + '" ' +
+                     'onclick="document.getElementById(\'sl-layer\').value=' + Math.min(li, +document.getElementById('sl-layer').max) +
+                     ';document.getElementById(\'sl-layer\').dispatchEvent(new Event(\'input\'));renderCurvatureHeatmap()" ' +
+                     'title="Layer ' + li + ': r=' + c.pearson_r + ', ρ=' + c.spearman_rho + '">';
+            bhtml += '<div style="width:8px;height:' + barH + 'px;background:' + barColor +
+                     ';border-radius:1px;margin-bottom:1px"></div>';
+            bhtml += '<span style="font-size:6px;color:' + (isBest ? '#e94560' : '#555') + '">' + li + '</span>';
+            bhtml += '</div>';
+        }
+        bhtml += '</div>';
+        barsDiv.innerHTML = bhtml;
+    }
+}
+
+// Re-render heatmap when layer changes (to update the current-layer indicator)
+var _origSlLayerHandler = null;
+(function(){
+    var slLayer = document.getElementById('sl-layer');
+    slLayer.addEventListener('input', function(){
+        if(curvatureData) renderCurvatureHeatmap();
+    });
+})();
 </script></body></html>"""
 
 # ============================================================
@@ -6182,6 +7359,7 @@ class Handler(BaseHTTPRequestHandler):
             "/sae_intervene": handle_sae_intervene,
             "/sae_info": handle_sae_info,
             "/neuron_grid": handle_neuron_grid,  # <-- ADD THIS
+            "/curvature": handle_curvature_analysis,  # <-- NEW
         }
 
         handler = handler_map.get(path)
@@ -6193,7 +7371,6 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(response_bytes)
             except Exception as e:
-                import traceback
                 traceback.print_exc()
                 self.send_response(500)
                 self.send_header("Content-Type", "application/json")
@@ -7544,6 +8721,264 @@ def handle_diffeomorphism_spectrum(body_bytes):
         "diff_spectra": diff_spectra,
     }, cls=SafeFloatEncoder).encode()
 
+def estimate_fiber_curvature(hidden_states, k_neighbors=8, pca_d=16):
+    """
+    Extract Sectional and Ricci Curvature from transformer hidden states,
+    treating the model as a principal fiber bundle E -> M.
+
+    Args:
+        hidden_states: tuple of tensors from model output, shape (1, seq_len, hidden_dim) each.
+                       hidden_states[0] = embedding, hidden_states[l+1] = after layer l.
+        k_neighbors: number of neighbors for local metric / ORC computation.
+        pca_d: number of principal components for tangent space approximation.
+
+    Returns:
+        dict with keys:
+            'ollivier_ricci':       np.ndarray of shape [n_layers, seq_len] — ORC per token per layer
+            'scalar_curvature':     np.ndarray of shape [n_layers, seq_len] — volumetric strain proxy
+            'metric_log_det':       np.ndarray of shape [n_layers+1, seq_len] — log(det(g)) per layer
+            'procrustes_deviation': np.ndarray of shape [n_layers, seq_len] — ||R - I||_F per token
+            'metric_eigenvalues':   list of list of np.ndarray — eigenvalues of local Gram matrix
+            'sectional_curvature':  np.ndarray of shape [n_layers, seq_len] — sectional curvature proxy
+    """
+    n_layers_plus_one = len(hidden_states)
+    n_layers = n_layers_plus_one - 1
+    seq_len = hidden_states[0].shape[1]
+    hidden_dim = hidden_states[0].shape[2]
+
+    # Convert all hidden states to numpy: [n_layers+1, seq_len, hidden_dim]
+    H = np.stack([
+        hidden_states[l][0].cpu().float().numpy() for l in range(n_layers_plus_one)
+    ], axis=0)  # (n_layers+1, seq_len, hidden_dim)
+
+    k = min(k_neighbors, seq_len - 1)
+    d = min(pca_d, hidden_dim, seq_len - 1)
+
+    # ================================================================
+    # STAGE 1: Metric Reconstruction (Local Gram / Covariance Matrix)
+    # For each layer l and token i, define N(i) via k-NN,
+    # compute local covariance -> eigenvalues = local "stretching"
+    # ================================================================
+    metric_eigenvalues = []   # [n_layers+1][seq_len] -> eigenvalue arrays
+    metric_log_det = np.zeros((n_layers_plus_one, seq_len))
+
+    for l in range(n_layers_plus_one):
+        layer_eigs = []
+        # Pairwise distances for this layer
+        dists = cdist(H[l], H[l], metric='euclidean')  # (seq_len, seq_len)
+
+        for i in range(seq_len):
+            # k-NN neighborhood (exclude self)
+            neighbor_idx = np.argsort(dists[i])[1:k + 1]
+            neighborhood = H[l][neighbor_idx]  # (k, hidden_dim)
+
+            # Local covariance (Gram) matrix
+            centered = neighborhood - neighborhood.mean(axis=0, keepdims=True)
+            # Use the top-d PCA subspace for tractability
+            if centered.shape[0] >= 2:
+                U, S, Vt = np.linalg.svd(centered, full_matrices=False)
+                eigs = (S[:d] ** 2) / max(len(neighbor_idx) - 1, 1)
+            else:
+                eigs = np.ones(min(d, 1))
+
+            layer_eigs.append(eigs)
+
+            # log(det(g)) ≈ sum of log(eigenvalues) — the local volume element
+            eigs_safe = np.clip(eigs, 1e-30, None)
+            metric_log_det[l, i] = np.sum(np.log(eigs_safe))
+
+        metric_eigenvalues.append(layer_eigs)
+
+    # ================================================================
+    # STAGE 2: Parallel Transport & Connection (Procrustes Alignment)
+    # For each token, align tangent spaces (top-d PCs) between layer l and l+1.
+    # Deviation of R from I = local "twist" of the bundle.
+    # ================================================================
+    procrustes_deviation = np.zeros((n_layers, seq_len))
+    procrustes_rotations = []  # store for sectional curvature
+
+    for l in range(n_layers):
+        layer_rotations = []
+        dists_l = cdist(H[l], H[l], metric='euclidean')
+        dists_l1 = cdist(H[l + 1], H[l + 1], metric='euclidean')
+
+        for i in range(seq_len):
+            # Get neighborhoods at layer l and l+1
+            nb_l = np.argsort(dists_l[i])[1:k + 1]
+            nb_l1 = np.argsort(dists_l1[i])[1:k + 1]
+
+            # Use the SAME token indices for both layers to track the fiber
+            # (parallel transport along the "layer" direction)
+            common_nb = np.intersect1d(nb_l, nb_l1)
+            if len(common_nb) < d:
+                # Fall back to using the layer-l neighborhood
+                common_nb = nb_l[:max(d, len(common_nb))]
+
+            if len(common_nb) < 2:
+                layer_rotations.append(np.eye(d))
+                procrustes_deviation[l, i] = 0.0
+                continue
+
+            # Local tangent spaces via PCA
+            cloud_l = H[l][common_nb] - H[l][i]
+            cloud_l1 = H[l + 1][common_nb] - H[l + 1][i]
+
+            def get_tangent_basis(cloud, dim):
+                if cloud.shape[0] < 2:
+                    return np.eye(cloud.shape[1])[:dim]
+                U, S, Vt = np.linalg.svd(cloud, full_matrices=False)
+                return Vt[:dim]
+
+            T_l = get_tangent_basis(cloud_l, d)    # (d, hidden_dim)
+            T_l1 = get_tangent_basis(cloud_l1, d)  # (d, hidden_dim)
+
+            # Project neighborhoods into their respective tangent spaces
+            proj_l = cloud_l @ T_l.T     # (n_common, d)
+            proj_l1 = cloud_l1 @ T_l1.T  # (n_common, d)
+
+            # Truncate to same number of rows
+            n_use = min(proj_l.shape[0], proj_l1.shape[0], d)
+            if n_use < 2:
+                layer_rotations.append(np.eye(d))
+                procrustes_deviation[l, i] = 0.0
+                continue
+
+            proj_l_use = proj_l[:n_use, :d]
+            proj_l1_use = proj_l1[:n_use, :d]
+
+            # Orthogonal Procrustes: find R such that ||proj_l1_use - proj_l_use @ R||_F is minimized
+            try:
+                R, scale = orthogonal_procrustes(proj_l_use, proj_l1_use)
+            except (np.linalg.LinAlgError, ValueError):
+                R = np.eye(d)
+
+            layer_rotations.append(R)
+
+            # Deviation from identity = magnitude of the connection
+            procrustes_deviation[l, i] = np.linalg.norm(R - np.eye(d), 'fro')
+
+        procrustes_rotations.append(layer_rotations)
+
+    # ================================================================
+    # STAGE 3a: Ollivier-Ricci Curvature (ORC)
+    # For each pair of neighboring tokens at each layer,
+    # compute W1 distance between their softmax-weighted distributions.
+    # ORC(x,y) = 1 - W1(mu_x, mu_y) / d(x,y)
+    # ================================================================
+    ollivier_ricci = np.zeros((n_layers_plus_one, seq_len))
+
+    for l in range(n_layers_plus_one):
+        dists = cdist(H[l], H[l], metric='euclidean')
+
+        # Build softmax-weighted distributions for each token
+        # mu_i(j) = softmax(-dists[i] / temperature) — a "lazy random walk"
+        temperature = np.median(dists[dists > 0]) + 1e-12
+        distributions = np.zeros((seq_len, seq_len))
+        for i in range(seq_len):
+            weights = np.exp(-dists[i] / temperature)
+            weights[i] = 0  # exclude self for the transport
+            w_sum = weights.sum()
+            if w_sum > 1e-15:
+                distributions[i] = weights / w_sum
+            else:
+                distributions[i] = np.ones(seq_len) / (seq_len - 1)
+                distributions[i, i] = 0
+
+        # For each token, compute average ORC with its k neighbors
+        for i in range(seq_len):
+            neighbor_idx = np.argsort(dists[i])[1:k + 1]
+            orc_vals = []
+            for j in neighbor_idx:
+                d_ij = dists[i, j]
+                if d_ij < 1e-12:
+                    orc_vals.append(0.0)
+                    continue
+
+                # W1 distance between distributions[i] and distributions[j]
+                # using the ground metric dists
+                # For efficiency, use 1D Wasserstein on sorted marginals
+                # projected onto the i-j axis
+                proj_i = dists[i]  # distances from i to all tokens
+                proj_j = dists[j]  # distances from j to all tokens
+
+                w1 = wasserstein_distance(
+                    proj_i, proj_j,
+                    u_weights=distributions[i],
+                    v_weights=distributions[j]
+                )
+
+                orc = 1.0 - w1 / d_ij
+                orc_vals.append(orc)
+
+            ollivier_ricci[l, i] = np.mean(orc_vals) if orc_vals else 0.0
+
+    # ================================================================
+    # STAGE 3b: Scalar Curvature Proxy (Volumetric Strain)
+    # Measure how the volume of a d-simplex changes across layers.
+    # ================================================================
+    scalar_curvature = np.zeros((n_layers, seq_len))
+
+    for l in range(n_layers):
+        for i in range(seq_len):
+            dists_l = cdist(H[l], H[l], metric='euclidean')
+            nb = np.argsort(dists_l[i])[1:d + 2]  # d+1 neighbors for a d-simplex
+
+            if len(nb) < 2:
+                scalar_curvature[l, i] = 0.0
+                continue
+
+            # Simplex at layer l
+            simplex_l = H[l][nb] - H[l][i]
+            # Simplex at layer l+1
+            simplex_l1 = H[l + 1][nb] - H[l + 1][i]
+
+            # Volume proxy: det of Gram matrix (or its log)
+            def log_volume(vecs):
+                G = vecs @ vecs.T  # Gram matrix
+                sign, logdet = np.linalg.slogdet(G)
+                return 0.5 * logdet if sign > 0 else -50.0  # half because vol = sqrt(det(G))
+
+            vol_l = log_volume(simplex_l)
+            vol_l1 = log_volume(simplex_l1)
+
+            # Volumetric strain = change in log-volume
+            scalar_curvature[l, i] = vol_l1 - vol_l
+
+    # ================================================================
+    # STAGE 3c: Sectional Curvature Proxy
+    # From the Procrustes rotations, estimate the curvature of the
+    # connection by looking at the "holonomy" around small loops.
+    # Sectional curvature ~ ||[R_l, R_{l+1}]|| for consecutive layers
+    # ================================================================
+    sectional_curvature = np.zeros((n_layers, seq_len))
+
+    for l in range(n_layers):
+        for i in range(seq_len):
+            R_l = procrustes_rotations[l][i] if l < len(procrustes_rotations) else np.eye(d)
+
+            # Use the Procrustes deviation directly as a curvature proxy
+            # (the antisymmetric part of R encodes the local rotation = curvature)
+            R_antisym = (R_l - R_l.T) / 2
+            sectional_curvature[l, i] = np.linalg.norm(R_antisym, 'fro')
+
+            # If we have two consecutive layers, compute the commutator
+            if l + 1 < n_layers and l + 1 < len(procrustes_rotations):
+                R_l1 = procrustes_rotations[l + 1][i] if i < len(procrustes_rotations[l + 1]) else np.eye(d)
+                # Ensure compatible shapes
+                min_d = min(R_l.shape[0], R_l1.shape[0])
+                R_l_sub = R_l[:min_d, :min_d]
+                R_l1_sub = R_l1[:min_d, :min_d]
+                commutator = R_l_sub @ R_l1_sub - R_l1_sub @ R_l_sub
+                sectional_curvature[l, i] += np.linalg.norm(commutator, 'fro')
+
+    return {
+        'ollivier_ricci': ollivier_ricci,           # [n_layers+1, seq_len]
+        'scalar_curvature': scalar_curvature,        # [n_layers, seq_len]
+        'metric_log_det': metric_log_det,            # [n_layers+1, seq_len]
+        'procrustes_deviation': procrustes_deviation, # [n_layers, seq_len]
+        'metric_eigenvalues': metric_eigenvalues,     # list of lists
+        'sectional_curvature': sectional_curvature,   # [n_layers, seq_len]
+    }
 
 if __name__ == "__main__":
     try:
