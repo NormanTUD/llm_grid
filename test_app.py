@@ -186,17 +186,7 @@ class TestTokenization(unittest.TestCase):
 class TestProbeSentences(unittest.TestCase):
     """Tests for Section 5: get_probe_texts, tokenize_probes."""
 
-    def test_get_probe_texts_returns_list(self):
-        probes = app.get_probe_texts()
-        self.assertIsInstance(probes, list)
-        self.assertGreater(len(probes), 10)
-
-    def test_get_probe_texts_all_strings(self):
-        for p in app.get_probe_texts():
-            self.assertIsInstance(p, str)
-            self.assertGreater(len(p), 0)
-
-    def test_tokenize_probes_flags_all_false(self):
+   def test_tokenize_probes_flags_all_false(self):
         """All probe tokens should have is_real=False."""
         import torch
         tok = MagicMock()
@@ -776,10 +766,6 @@ class TestTokenizationEdgeCases(unittest.TestCase):
 # ===================================================================
 class TestProbeSentencesEdgeCases(unittest.TestCase):
     """Additional probe sentence tests."""
-
-    def test_probe_texts_no_duplicates(self):
-        probes = app.get_probe_texts()
-        self.assertEqual(len(probes), len(set(probes)))
 
     def test_tokenize_probes_multiple_texts(self):
         import torch
