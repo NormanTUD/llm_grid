@@ -18,6 +18,7 @@ import sys
 import json
 import threading
 from urllib.parse import urlparse
+from sae_lens import SAE  # or your own SAE class
 from datetime import datetime, timedelta, UTC
 
 SAE_AVAILABLE = True
@@ -6405,9 +6406,6 @@ def main():
     print(f"\n[Server] http://127.0.0.1:{args.port}")
     print("[Server] Ctrl+C to stop\n")
     server.serve_forever()
-
-# New section: SAE LOADING
-from sae_lens import SAE  # or your own SAE class
 
 SAE_MODELS = {}  # layer_idx -> trained SAE
 
