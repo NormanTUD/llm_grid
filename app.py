@@ -2547,6 +2547,24 @@ ITP: <span id="i-itp">rbf</span>
 <div id="status">Enter text and click Run</div>
 </div>
 <script>
+var diffeoCanvas = document.getElementById('diffeo-canvas');
+var diffeoCtx = diffeoCanvas ? diffeoCanvas.getContext('2d') : null;
+var diffeoAnimId = null;
+var diffeoTime = 0;
+
+var diffeoState = {
+  active: false,
+  numSlices: 8,
+  kelpAmplitude: 1.0,
+  divergenceSensitivity: 1.0,
+  layerSpacing: 70,
+  sliceAlpha: 0.25,
+  gridRes: 10,
+  dimMode: 'auto',
+  slices: [],
+  built: false,
+};
+
 // Pan/Zoom state
 var zoomLevel = 1.0;
 var panX = 0, panY = 0;
@@ -2895,21 +2913,13 @@ document.getElementById('cv').addEventListener('click', function(e){
 window.addEventListener('resize',function(){rsz();draw()});
 
 function rsz() {
-    // ================================================================
-    // CORE: Resize the main canvas to fit the container
-    // (the original rsz body)
-    // ================================================================
     var cv = document.getElementById('cv');
     var ct = document.getElementById('main');
     var s = Math.min(ct.clientWidth - 16, ct.clientHeight - 16);
     cv.width = Math.max(400, s);
     cv.height = cv.width;
 
-    // ================================================================
-    // DIFFEO: Also resize the diffeomorphism overlay canvas
-    // (was added by the _origRsz wrapper)
-    // ================================================================
-    if (diffeoState.active) {
+    if (typeof diffeoState !== 'undefined' && diffeoState.active) {
         resizeDiffeoCanvas();
     }
 }
@@ -4528,24 +4538,6 @@ function valToColor(v) {
 // ============================================================
 // DIFFEOMORPHISM STACKING — KELP FOREST OF LAYER ROOMS
 // ============================================================
-
-var diffeoCanvas = document.getElementById('diffeo-canvas');
-var diffeoCtx = diffeoCanvas ? diffeoCanvas.getContext('2d') : null;
-var diffeoAnimId = null;
-var diffeoTime = 0;
-
-var diffeoState = {
-  active: false,
-  numSlices: 8,
-  kelpAmplitude: 1.0,
-  divergenceSensitivity: 1.0,
-  layerSpacing: 70,
-  sliceAlpha: 0.25,
-  gridRes: 10,
-  dimMode: 'auto',
-  slices: [],
-  built: false,
-};
 
 function toggleDiffeo() {
   var wrap = document.getElementById('diffeo-wrap');
