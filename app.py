@@ -3237,12 +3237,6 @@ function onKey(e) {
         sa.dispatchEvent(new Event('input'));
     }
 
-    // ---- Autoplay toggle: Space ----
-    else if (e.key === ' ') {
-        e.preventDefault();
-        togAP();
-    }
-
     // ---- Reset all: R ----
     else if (e.key === 'r' || e.key === 'R') {
         rstAll();
@@ -3280,14 +3274,6 @@ function onKey(e) {
     }
 }
 
-function togAP(){
-    if(AP){clearInterval(AP);AP=null;document.getElementById('status').textContent='Stopped';return}
-    AP=setInterval(function(){
-        var sl=document.getElementById('sl-layer');
-        sl.value=(+sl.value+1)%(+sl.max+1);sl.dispatchEvent(new Event('input'));
-    },600);
-    document.getElementById('status').textContent='Autoplay (Space=stop)';
-}
 function rstAll(){
     document.getElementById('sl-layer').value='0';
     document.getElementById('sl-t').value='1.0';
@@ -6549,9 +6535,6 @@ function onKeyFibre(e) {
   } else if (e.key === 'c' || e.key === 'C') {
     fibreState.showConnections = !fibreState.showConnections;
     draw();
-  } else if (e.key === ' ') {
-    e.preventDefault();
-    togAP();
   } else if (e.key === '0') {
     zoomLevel = 1.0; panX = 0; panY = 0;
     fibreState.scrollY = 0;
