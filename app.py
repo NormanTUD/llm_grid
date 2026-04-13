@@ -2150,7 +2150,7 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:'Segoe UI',sans-serif;display:
 #sel-model{flex:1;background:#0d1117;color:#e0e0e0;border:1px solid #0f3460;padding:4px;font-size:11px;border-radius:4px}
 #main{flex:1;display:flex;align-items:center;justify-content:center;position:relative}
 canvas{background:#0d1117}
-#status{position:absolute;bottom:8px;left:50%;transform:translateX(-50%);background:rgba(15,52,96,.9);padding:4px 12px;border-radius:12px;font-size:10px;color:#53a8b6}
+#status{position:absolute;top:8px;left:50%;transform:translateX(-50%);background:rgba(15,52,96,.9);padding:4px 12px;border-radius:12px;font-size:10px;color:#53a8b6;pointer-events:none;z-index:10}
 #legend{position:absolute;top:8px;right:8px;background:rgba(15,52,96,.9);padding:5px 8px;border-radius:5px;font-size:9px}
 .li{display:flex;align-items:center;gap:4px;margin:2px 0}
 .lc{width:16px;height:7px;border-radius:2px}
