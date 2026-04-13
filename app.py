@@ -6752,7 +6752,7 @@ function drawFibreBundle3DGrid() {
         return { edx: edxCum, edy: edyCum, edz: edzCum };
     }
 
-    // RBF-interpolated deformed grid builder — NOW WITH PROPER Z SCALING
+    // RBF-interpolated deformed grid builder — NOW WITH PROPER Z INTERPOLATION
     function buildDeformedGrid(edxCum, edyCum, edzCum) {
         var nV = (N + 1) * (N + 1);
         var oX = new Float64Array(nV), oY = new Float64Array(nV);
@@ -6772,11 +6772,17 @@ function drawFibreBundle3DGrid() {
             var _itpM = document.getElementById('sel-itp').value;
             for (var gi = 0; gi < nV; gi++) {
                 var px = oX[gi], py = oY[gi];
+                // Interpolate X and Y deformation
                 var _iRes = interpolateGridPoint(px, py, fx, fy, edxCum, edyCum, nP, sig, _itpM);
                 gX[gi] = px + t * _iRes[0];
                 gY[gi] = py + t * _iRes[1];
-            }
 
+                // *** FIX: Interpolate Z deformation onto grid vertices ***
+                // Use the same 2D interpolation kernel (based on base-space positions fx, fy)
+                // to interpolate the Z-axis deformation field (edzCum) at this grid point.
+                var _iResZ = interpolateGridPoint(px, py, fx, fy, edzCum, edzCum, nP, sig, _itpM);
+                gDZ[gi] = t * _iResZ[0];
+            }
         }
 
         // Compute strain
@@ -6785,16 +6791,21 @@ function drawFibreBundle3DGrid() {
         for (var ey = 0; ey <= N; ey++) {
             for (var ex = 0; ex < N; ex++) {
                 var a = ey * (N + 1) + ex, b = a + 1;
-                var od = Math.hypot(oX[b] - oX[a], oY[b] - oY[a]);
-                var dd = Math.hypot(gX[b] - gX[a], gY[b] - gY[a]);
+                // Include Z in strain computation for proper 3D strain
+                var odx = oX[b] - oX[a], ody = oY[b] - oY[a];
+                var od = Math.sqrt(odx * odx + ody * ody);
+                var ddx = gX[b] - gX[a], ddy = gY[b] - gY[a], ddz = gDZ[b] - gDZ[a];
+                var dd = Math.sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
                 sH[ey * N + ex] = od > 1e-12 ? dd / od : 1;
             }
         }
         for (var ey = 0; ey < N; ey++) {
             for (var ex = 0; ex <= N; ex++) {
                 var a = ey * (N + 1) + ex, b = (ey + 1) * (N + 1) + ex;
-                var od = Math.hypot(oX[b] - oX[a], oY[b] - oY[a]);
-                var dd = Math.hypot(gX[b] - gX[a], gY[b] - gY[a]);
+                var odx = oX[b] - oX[a], ody = oY[b] - oY[a];
+                var od = Math.sqrt(odx * odx + ody * ody);
+                var ddx = gX[b] - gX[a], ddy = gY[b] - gY[a], ddz = gDZ[b] - gDZ[a];
+                var dd = Math.sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
                 sV[ey * (N + 1) + ex] = od > 1e-12 ? dd / od : 1;
             }
         }
@@ -6835,9 +6846,7 @@ function drawFibreBundle3DGrid() {
     var tc = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71',
               '#e74c3c','#3498db','#9b59b6','#1abc9c','#e67e22'];
 
-    // ---- FIX: Z scaling now matches X/Y scaling ----
-    // Previously: dzScale = roomSize * 0.3 and then divided by vw
-    // Now: Z is scaled the same way as X and Y — normalized into [-0.5, 0.5] * roomSize
+    // Z scaling now matches X/Y scaling
     var dzScale = roomSize * 1.0;
 
     for (var li = 0; li < nLayers; li++) {
@@ -6871,7 +6880,7 @@ function drawFibreBundle3DGrid() {
                             var gi = corners[ci];
                             var sx = roomCenterX + ((grid.gX[gi] - vx0) / vw - 0.5) * roomSize;
                             var sy = roomCenterY + ((grid.gY[gi] - vy0) / vh - 0.5) * roomSize;
-                            // FIX: Scale Z the same way as X/Y — normalize by vw (same range), multiply by dzScale
+                            // Z uses the interpolated gDZ, scaled the same way as X/Y
                             var sz = (grid.gDZ[gi] / (vw + 1e-12)) * dzScale;
                             var p = proj3Df(sx, sy, sz);
                             pts3d.push(p);
@@ -6882,7 +6891,6 @@ function drawFibreBundle3DGrid() {
                         allQuads.push({
                             pts: pts3d, z: avgZ3d,
                             color: co,
-                            // FIX: Enhanced alpha values for visibility
                             alpha: isCurrentLayer ? 0.5 : 0.25,
                             isCurrentLayer: isCurrentLayer
                         });
@@ -6967,7 +6975,6 @@ function drawFibreBundle3DGrid() {
 
             var tokSX = roomCenterX + ((tokWX - vx0) / vw - 0.5) * roomSize;
             var tokSY = roomCenterY + ((tokWY - vy0) / vh - 0.5) * roomSize;
-            // FIX: Token Z uses same scaling as grid Z
             var tokSZ = (tokWDZ / (vw + 1e-12)) * dzScale;
 
             var tp = proj3Df(tokSX, tokSY, tokSZ);
@@ -7048,7 +7055,6 @@ function drawFibreBundle3DGrid() {
     // ---- Draw edges ----
     for (var ei = 0; ei < allEdges.length; ei++) {
         var e = allEdges[ei];
-        // FIX: Enhanced depth alpha calculation — higher base, gentler falloff
         var depthAlpha = Math.max(0.15, Math.min(0.95, 0.7 - e.z * 0.0002));
 
         if (e.type === 'pathline') {
@@ -7058,13 +7064,11 @@ function drawFibreBundle3DGrid() {
             c.strokeStyle = 'rgba(' + r + ',' + g + ',' + b + ',' + (depthAlpha * 0.6).toFixed(2) + ')';
             c.lineWidth = e.isCurrentLayer ? 2 : 1.0;
         } else if (e.type === 'border') {
-            // FIX: Enhanced border visibility
             c.strokeStyle = e.isCurrentLayer ?
                 'rgba(233,69,96,' + Math.min(1.0, e.borderAlpha * depthAlpha * 2.5).toFixed(2) + ')' :
                 'rgba(80,80,130,' + Math.min(1.0, e.borderAlpha * depthAlpha * 1.5).toFixed(2) + ')';
             c.lineWidth = e.isCurrentLayer ? 1.5 : 0.7;
         } else if (e.type === 'grid') {
-            // FIX: Significantly enhanced grid alpha values
             var gridAlpha = e.isCurrentLayer ? depthAlpha * 0.9 : depthAlpha * 0.45;
             if (showSC) {
                 var sc = s2c(e.strain);
@@ -7086,7 +7090,6 @@ function drawFibreBundle3DGrid() {
     // ---- Draw points and labels ----
     for (var pi = 0; pi < allPoints.length; pi++) {
         var pt = allPoints[pi];
-        // FIX: Enhanced point alpha — minimum floor raised significantly
         var depthAlpha = Math.max(0.4, Math.min(1.0, 0.9 - pt.z * 0.0002));
 
         if (pt.isLabel) {
@@ -7133,7 +7136,7 @@ function drawFibreBundle3DGrid() {
         c.globalAlpha = 1.0;
     }
 
-    // 3D axes — FIX: use proper scale that matches the room layout
+    // 3D axes
     var axLen = Math.max(roomSize, mr * 0.3) * zoomLevel;
     var axes = [
         { v: [1, 0, 0], label: 'Dim ' + dx, color: '#e94560' },
