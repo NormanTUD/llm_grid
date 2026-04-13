@@ -104,7 +104,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install pytest
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install transformers numpy sae_lens
+          pip install transformers numpy sae_lens matplotlib
 
       - name: Prevent ensure_safe_env from re-execing
         run: echo "UV_EXCLUDE_NEWER=2099-01-01T00:00:00Z" >> "$GITHUB_ENV"
