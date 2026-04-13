@@ -2247,9 +2247,9 @@ canvas{background:#0d1117}
     Enter multiple sentences (one per line). Each will be analyzed independently, then compared dimension-by-dimension.
   </div>
   <textarea id="multi-txt" rows="6" style="width:100%;background:#0d1117;color:#e0e0e0;border:1px solid #0f3460;padding:6px;font-size:11px;border-radius:4px;font-family:monospace;resize:vertical"
->The capital of France is Paris
-The capital of France is Berlin
-The capital of Germany is Berlin</textarea>
+True or False: The capital of France is Paris is 
+True or False: The capital of France is Berlin is 
+True or False: The capital of Germany is Berlin is </textarea>
   <button id="btn-multi" onclick="runMulti()" style="margin-top:4px;width:100%;background:#7b68ee;color:#fff;border:none;padding:6px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:bold">
     Compare Sentences
   </button>
