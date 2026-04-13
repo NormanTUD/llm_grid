@@ -2680,6 +2680,7 @@ function updateStrainStatsPanel(){
 
 function autoParams(){
     if(!D)return;
+    if(viewMode === 'multi') return;
     var dx=+document.getElementById('sl-dx').value;
     var dy=+document.getElementById('sl-dy').value;
     var nP=D.n_points;
@@ -2781,6 +2782,17 @@ function project3D(x, y, z, W, H){
 var cv3d=document.getElementById('cv');
 
 cv3d.addEventListener('mousedown', function(e){
+    if(dragActive && (viewMode==='3d' || (viewMode==='multi' && (multiSubView==='3d' || multiSubView==='fibre3d')))){
+        var ddx=e.clientX-dragLastX, ddy=e.clientY-dragLastY;
+        rotY+=ddx*0.005;
+        rotX+=ddy*0.005;
+        rotX=Math.max(-Math.PI/2, Math.min(Math.PI/2, rotX));
+        dragLastX=e.clientX;
+        dragLastY=e.clientY;
+        draw();
+        return;
+    }
+
     if(viewMode==='3d'){
         if(e.button===0 && !e.shiftKey){
             dragActive=true;
@@ -9015,6 +9027,12 @@ function drawMultiCanvas() {
   } else if (multiViewTab === 'profile') {
     drawMultiLayerProfile_Main(c, drawArea);
   }
+
+  // Update Dim Z visibility based on sub-view
+  var dzRow = document.getElementById('dz-row');
+  if (dzRow) {
+    dzRow.style.display = (multiSubView === '3d' || multiSubView === 'fibre3d') ? 'flex' : 'none';
+  }
 }
 
 /**
@@ -9822,23 +9840,38 @@ function drawMiniPanelFibreKelp(c, sentD, W, H) {
 // ---- Tab click handler ----
 // Sub-view click handler (inside the grids tab)
 document.getElementById('cv').addEventListener('click', function(e) {
-  if (viewMode !== 'multi' || !multiData || multiViewTab !== 'grids') return;
+  if (viewMode !== 'multi' || !multiData) return;
   var cv = document.getElementById('cv');
   var rect = cv.getBoundingClientRect();
   var mx = e.clientX - rect.left;
   var my = e.clientY - rect.top;
 
   var tabH = 28;
-  var svBarY = tabH + 4;
-  var svBarH = 22;
 
-  if (my >= svBarY && my < svBarY + svBarH) {
-    var subViews = ['2d', '3d', 'fibre', 'fibre3d', 'fibrekelp'];
-    var svBarW = cv.width / subViews.length;
-    var idx = Math.floor(mx / svBarW);
-    if (idx >= 0 && idx < subViews.length) {
-      multiSubView = subViews[idx];
+  // ---- MAIN TAB BAR click (the 5 tabs at the very top) ----
+  if (my >= 0 && my < tabH) {
+    var tabs = ['grids', 'dims', 'heatmap', 'pairwise', 'profile'];
+    var tabW = cv.width / tabs.length;
+    var idx = Math.floor(mx / tabW);
+    if (idx >= 0 && idx < tabs.length) {
+      multiViewTab = tabs[idx];
       drawMultiCanvas();
+    }
+    return;
+  }
+
+  // ---- SUB-VIEW BAR click (only visible in 'grids' tab) ----
+  if (multiViewTab === 'grids') {
+    var svBarY = tabH + 4;
+    var svBarH = 22;
+    if (my >= svBarY && my < svBarY + svBarH) {
+      var subViews = ['2d', '3d', 'fibre', 'fibre3d', 'fibrekelp'];
+      var svBarW = cv.width / subViews.length;
+      var idx = Math.floor(mx / svBarW);
+      if (idx >= 0 && idx < subViews.length) {
+        multiSubView = subViews[idx];
+        drawMultiCanvas();
+      }
     }
   }
 });
