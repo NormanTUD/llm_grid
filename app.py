@@ -2893,11 +2893,27 @@ document.getElementById('cv').addEventListener('click', function(e){
 });
 
 window.addEventListener('resize',function(){rsz();draw()});
-function rsz(){
-    var cv=document.getElementById('cv'),ct=document.getElementById('main');
-    var s=Math.min(ct.clientWidth-16,ct.clientHeight-16);
-    cv.width=Math.max(400,s);cv.height=cv.width;
+
+function rsz() {
+    // ================================================================
+    // CORE: Resize the main canvas to fit the container
+    // (the original rsz body)
+    // ================================================================
+    var cv = document.getElementById('cv');
+    var ct = document.getElementById('main');
+    var s = Math.min(ct.clientWidth - 16, ct.clientHeight - 16);
+    cv.width = Math.max(400, s);
+    cv.height = cv.width;
+
+    // ================================================================
+    // DIFFEO: Also resize the diffeomorphism overlay canvas
+    // (was added by the _origRsz wrapper)
+    // ================================================================
+    if (diffeoState.active) {
+        resizeDiffeoCanvas();
+    }
 }
+
 rsz();
 
 var SLS=[
@@ -4559,13 +4575,6 @@ function resizeDiffeoCanvas() {
   diffeoCanvas.style.height = container.clientHeight + 'px';
   if (diffeoCtx) diffeoCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
-
-// Hook into window resize
-var _origRsz = rsz;
-rsz = function() {
-  _origRsz();
-  if (diffeoState.active) resizeDiffeoCanvas();
-};
 
 function startDiffeoLoop() {
   if (diffeoAnimId) return;
