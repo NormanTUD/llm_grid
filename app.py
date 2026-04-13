@@ -1380,6 +1380,228 @@ def compute_grid_weights(v1, v2, existing_proj, sigma_nn):
         weights /= w_sum
     return weights
 
+# ============================================================
+# 9b. PLUGGABLE INTERPOLATION METHODS
+# ============================================================
+
+def interpolate_rbf_2d(query_x, query_y, source_x, source_y, source_vals, sigma):
+    """Gaussian RBF interpolation. Returns interpolated value (scalar per dim)."""
+    sigma = max(sigma, 1e-6)
+    s2i = 1.0 / (2 * sigma ** 2)
+    dists_sq = (query_x - source_x) ** 2 + (query_y - source_y) ** 2
+    exponents = np.clip(-dists_sq * s2i, -500, 0)
+    weights = np.exp(exponents)
+    w_sum = weights.sum()
+    if w_sum < 1e-30:
+        weights = np.ones_like(weights) / len(weights)
+    else:
+        weights /= w_sum
+    return weights @ source_vals
+
+
+def interpolate_tps_weights(source_x, source_y, source_vals):
+    """Thin Plate Spline: precompute coefficients. Returns (coeffs, pts, n)."""
+    n = len(source_x)
+    if n < 3:
+        return None
+    try:
+        pts = np.stack([source_x, source_y], axis=1)
+        D = cdist(pts, pts, metric='euclidean')
+        D = np.clip(D, 1e-12, None)
+        K = D ** 2 * np.log(D)
+        np.fill_diagonal(K, 0.0)
+        P = np.column_stack([np.ones(n), source_x, source_y])
+        Z = np.zeros((3, 3))
+        reg = 1e-6 * np.eye(n)
+        top = np.hstack([K + reg, P])
+        bot = np.hstack([P.T, Z])
+        A = np.vstack([top, bot])
+        rhs = np.concatenate([source_vals, np.zeros(3)])
+        coeffs = np.linalg.solve(A, rhs)
+        return coeffs, pts, n
+    except (np.linalg.LinAlgError, ValueError):
+        return None
+
+
+def interpolate_tps_eval(query_x, query_y, coeffs, pts, n):
+    """Evaluate TPS at a query point."""
+    qpt = np.array([[query_x, query_y]])
+    dq = cdist(qpt, pts, metric='euclidean').flatten()
+    dq = np.clip(dq, 1e-12, None)
+    kq = dq ** 2 * np.log(dq)
+    return float(np.dot(kq, coeffs[:n]) + coeffs[n] + coeffs[n+1]*query_x + coeffs[n+2]*query_y)
+
+
+def compute_itp_weights(v1, v2, existing_proj, sigma_nn, method='rbf'):
+    """Compute interpolation weights for weight-based methods.
+    Returns normalized weight vector of shape (n_points,)."""
+    source_x = existing_proj[:, 0]
+    source_y = existing_proj[:, 1]
+    n = len(source_x)
+
+    if method == 'rbf':
+        return compute_grid_weights(v1, v2, existing_proj, sigma_nn)
+
+    elif method == 'idw':
+        p = 2.0
+        dists = np.sqrt((v1 - source_x) ** 2 + (v2 - source_y) ** 2)
+        dists = np.clip(dists, 1e-12, None)
+        w = 1.0 / (dists ** p)
+        w_sum = w.sum()
+        return w / w_sum if w_sum > 1e-30 else np.ones(n) / n
+
+    elif method == 'nn':
+        dists_sq = (v1 - source_x) ** 2 + (v2 - source_y) ** 2
+        w = np.zeros(n)
+        w[np.argmin(dists_sq)] = 1.0
+        return w
+
+    elif method == 'wendland':
+        R = max(3.0 * sigma_nn, 1e-6)
+        dists = np.sqrt((v1 - source_x) ** 2 + (v2 - source_y) ** 2)
+        r_norm = dists / R
+        mask = r_norm < 1.0
+        w = np.zeros(n)
+        r_clipped = np.clip(1.0 - r_norm[mask], 0, 1)
+        w[mask] = r_clipped ** 4 * (4.0 * r_norm[mask] + 1.0)
+        w_sum = w.sum()
+        if w_sum < 1e-30:
+            # Fall back to RBF if all weights are zero
+            return compute_grid_weights(v1, v2, existing_proj, sigma_nn)
+        return w / w_sum
+
+    elif method == 'mls' or method == 'tps':
+        # MLS and TPS are not weight-based; return RBF weights as fallback
+        # The actual MLS/TPS interpolation is handled per-dimension in create_grid_probes
+        return compute_grid_weights(v1, v2, existing_proj, sigma_nn)
+
+    else:
+        return compute_grid_weights(v1, v2, existing_proj, sigma_nn)
+
+
+def interpolate_deltas_mls(v1, v2, existing_proj, all_deltas_per_point, n_layers, hidden_dim, sigma_nn):
+    """Moving Least Squares interpolation of deltas. Fits a local linear model."""
+    source_x = existing_proj[:, 0]
+    source_y = existing_proj[:, 1]
+    n_total = len(all_deltas_per_point)
+    sigma_nn = max(sigma_nn, 1e-6)
+    s2i = 1.0 / (2 * sigma_nn ** 2)
+
+    # Compute Gaussian weights
+    dists_sq = (v1 - source_x) ** 2 + (v2 - source_y) ** 2
+    W = np.exp(np.clip(-dists_sq * s2i, -500, 0))
+
+    # Build weighted least squares: f(x,y) = a0 + a1*(x-v1) + a2*(y-v2)
+    dx_local = source_x - v1
+    dy_local = source_y - v2
+
+    # A^T W A (3x3 symmetric)
+    w_sum = W.sum()
+    if w_sum < 1e-30:
+        # Fall back to uniform weights
+        W = np.ones(n_total) / n_total
+        w_sum = 1.0
+
+    AtwA = np.array([
+        [W.sum(),              (W * dx_local).sum(),       (W * dy_local).sum()],
+        [(W * dx_local).sum(), (W * dx_local**2).sum(),    (W * dx_local * dy_local).sum()],
+        [(W * dy_local).sum(), (W * dx_local * dy_local).sum(), (W * dy_local**2).sum()],
+    ])
+    # Regularize
+    AtwA += 1e-8 * np.eye(3)
+
+    point_deltas = []
+    for lay in range(n_layers):
+        d = np.zeros(hidden_dim)
+        # Stack all source deltas for this layer: (n_total, hidden_dim)
+        src_deltas = np.stack([all_deltas_per_point[pi][lay] for pi in range(n_total)], axis=0)
+
+        # A^T W v for all hidden dims at once: (3, hidden_dim)
+        Atwv = np.array([
+            (W[:, None] * src_deltas).sum(axis=0),
+            (W[:, None] * dx_local[:, None] * src_deltas).sum(axis=0),
+            (W[:, None] * dy_local[:, None] * src_deltas).sum(axis=0),
+        ])
+
+        try:
+            # Solve (3x3) system for each hidden dim: coeffs shape (3, hidden_dim)
+            coeffs = np.linalg.solve(AtwA, Atwv)
+            d = coeffs[0]  # a0 = value at query point (local coords = 0)
+        except np.linalg.LinAlgError:
+            # Fall back to weighted average
+            d = (W[:, None] * src_deltas).sum(axis=0) / max(w_sum, 1e-30)
+
+        d = np.nan_to_num(d, nan=0.0, posinf=0.0, neginf=0.0)
+        point_deltas.append(d)
+    return point_deltas
+
+
+def interpolate_deltas_tps(existing_proj, all_deltas_per_point, n_layers, hidden_dim):
+    """
+    Precompute TPS coefficients for all layers and all hidden dims.
+    Returns a function that evaluates the TPS at any query point.
+
+    TPS kernel: phi(r) = r^2 * log(r)
+    System: [K+reg, P; P^T, 0] [w; a] = [v; 0]
+    """
+    source_x = existing_proj[:, 0]
+    source_y = existing_proj[:, 1]
+    n = len(source_x)
+
+    if n < 3:
+        return None  # Can't do TPS with fewer than 3 points
+
+    pts = np.stack([source_x, source_y], axis=1)
+    D = cdist(pts, pts, metric='euclidean')
+    D = np.clip(D, 1e-12, None)
+    K = D ** 2 * np.log(D)
+    np.fill_diagonal(K, 0.0)
+
+    P = np.column_stack([np.ones(n), source_x, source_y])
+    Z = np.zeros((3, 3))
+    reg = 1e-6 * np.eye(n)
+    top = np.hstack([K + reg, P])
+    bot = np.hstack([P.T, Z])
+    A = np.vstack([top, bot])
+
+    # Precompute coefficients for every layer and hidden dim
+    # This is expensive but done once per grid rebuild
+    all_coeffs = []  # [n_layers][hidden_dim] -> coeffs array of length n+3
+
+    try:
+        # LU factorize once, solve for all RHS
+        from scipy.linalg import lu_factor, lu_solve
+        lu, piv = lu_factor(A)
+
+        for lay in range(n_layers):
+            src_deltas = np.stack([all_deltas_per_point[pi][lay] for pi in range(n)], axis=0)
+            # src_deltas shape: (n, hidden_dim)
+            # Build RHS: (n+3, hidden_dim)
+            rhs = np.vstack([src_deltas, np.zeros((3, hidden_dim))])
+            coeffs = lu_solve((lu, piv), rhs)  # (n+3, hidden_dim)
+            all_coeffs.append(coeffs)
+
+    except (np.linalg.LinAlgError, ValueError):
+        return None
+
+    def evaluate_tps(v1, v2):
+        """Evaluate the precomputed TPS at query point (v1, v2)."""
+        qpt = np.array([[v1, v2]])
+        dq = cdist(qpt, pts, metric='euclidean').flatten()
+        dq = np.clip(dq, 1e-12, None)
+        kq = dq ** 2 * np.log(dq)  # (n,)
+
+        point_deltas = []
+        for lay in range(n_layers):
+            coeffs = all_coeffs[lay]  # (n+3, hidden_dim)
+            # val = kq . coeffs[:n] + coeffs[n] + coeffs[n+1]*v1 + coeffs[n+2]*v2
+            d = kq @ coeffs[:n] + coeffs[n] + coeffs[n+1] * v1 + coeffs[n+2] * v2
+            d = np.nan_to_num(d, nan=0.0, posinf=0.0, neginf=0.0)
+            point_deltas.append(d)
+        return point_deltas
+
+    return evaluate_tps
+
 def interpolate_deltas(weights, all_deltas_per_point, n_layers, hidden_dim):
     """Weighted-average the deltas from all points for one grid point, sanitized."""
     n_total = len(all_deltas_per_point)
@@ -1394,11 +1616,11 @@ def interpolate_deltas(weights, all_deltas_per_point, n_layers, hidden_dim):
 
 def create_grid_probes(centroid, pc1, pc2, proj1, proj2, existing_proj,
                        all_deltas_per_point, n_layers, hidden_dim, n_side=10, pad_frac=0.3,
-                       all_attn_deltas=None, all_mlp_deltas=None):
+                       all_attn_deltas=None, all_mlp_deltas=None, itp_method='rbf'):
     """
     Create grid intersection probes in PCA space.
+    Uses the specified interpolation method for delta interpolation.
     Returns (grid_layer0, grid_deltas, grid_attn_deltas, grid_mlp_deltas).
-    grid_attn_deltas and grid_mlp_deltas may be None if decomposition is unavailable.
     """
     mn1, mx1, r1 = compute_grid_range(proj1, pad_frac)
     mn2, mx2, r2 = compute_grid_range(proj2, pad_frac)
@@ -1411,23 +1633,241 @@ def create_grid_probes(centroid, pc1, pc2, proj1, proj2, existing_proj,
     grid_attn_deltas = [] if all_attn_deltas is not None else None
     grid_mlp_deltas = [] if all_mlp_deltas is not None else None
 
+    # For TPS, precompute coefficients once (expensive but amortized)
+    tps_eval_fn = None
+    tps_attn_eval_fn = None
+    tps_mlp_eval_fn = None
+    if itp_method == 'tps':
+        print(f"[Grid] Precomputing TPS coefficients ({len(all_deltas_per_point)} points, {hidden_dim} dims)...")
+        tps_eval_fn = interpolate_deltas_tps(existing_proj, all_deltas_per_point, n_layers, hidden_dim)
+        if tps_eval_fn is None:
+            print("[Grid] TPS precomputation failed, falling back to RBF")
+            itp_method = 'rbf'
+        else:
+            if all_attn_deltas is not None:
+                tps_attn_eval_fn = interpolate_deltas_tps(existing_proj, all_attn_deltas, n_layers, hidden_dim)
+            if all_mlp_deltas is not None:
+                tps_mlp_eval_fn = interpolate_deltas_tps(existing_proj, all_mlp_deltas, n_layers, hidden_dim)
+
+    # Weight-based methods can reuse compute_itp_weights + interpolate_deltas
+    weight_based = itp_method in ('rbf', 'idw', 'nn', 'wendland')
+
     for v1, v2 in make_grid_coords(g1, g2):
         emb = interpolate_grid_embedding(v1, v2, centroid, pc1, pc2)
         grid_layer0.append(emb)
 
-        weights = compute_grid_weights(v1, v2, existing_proj, sigma_nn)
-        point_deltas = interpolate_deltas(weights, all_deltas_per_point, n_layers, hidden_dim)
-        grid_deltas.append(point_deltas)
+        if itp_method == 'tps' and tps_eval_fn is not None:
+            point_deltas = tps_eval_fn(v1, v2)
+            grid_deltas.append(point_deltas)
+            if all_attn_deltas is not None and tps_attn_eval_fn is not None:
+                grid_attn_deltas.append(tps_attn_eval_fn(v1, v2))
+            elif all_attn_deltas is not None:
+                # Fallback for attn
+                w = compute_grid_weights(v1, v2, existing_proj, sigma_nn)
+                grid_attn_deltas.append(interpolate_deltas(w, all_attn_deltas, n_layers, hidden_dim))
+            if all_mlp_deltas is not None and tps_mlp_eval_fn is not None:
+                grid_mlp_deltas.append(tps_mlp_eval_fn(v1, v2))
+            elif all_mlp_deltas is not None:
+                w = compute_grid_weights(v1, v2, existing_proj, sigma_nn)
+                grid_mlp_deltas.append(interpolate_deltas(w, all_mlp_deltas, n_layers, hidden_dim))
 
-        if all_attn_deltas is not None:
-            attn_point_deltas = interpolate_deltas(weights, all_attn_deltas, n_layers, hidden_dim)
-            grid_attn_deltas.append(attn_point_deltas)
-        if all_mlp_deltas is not None:
-            mlp_point_deltas = interpolate_deltas(weights, all_mlp_deltas, n_layers, hidden_dim)
-            grid_mlp_deltas.append(mlp_point_deltas)
+        elif itp_method == 'mls':
+            point_deltas = interpolate_deltas_mls(v1, v2, existing_proj,
+                                                   all_deltas_per_point, n_layers, hidden_dim, sigma_nn)
+            grid_deltas.append(point_deltas)
+            if all_attn_deltas is not None:
+                grid_attn_deltas.append(interpolate_deltas_mls(v1, v2, existing_proj,
+                                                                all_attn_deltas, n_layers, hidden_dim, sigma_nn))
+            if all_mlp_deltas is not None:
+                grid_mlp_deltas.append(interpolate_deltas_mls(v1, v2, existing_proj,
+                                                               all_mlp_deltas, n_layers, hidden_dim, sigma_nn))
+
+        elif weight_based:
+            weights = compute_itp_weights(v1, v2, existing_proj, sigma_nn, method=itp_method)
+            point_deltas = interpolate_deltas(weights, all_deltas_per_point, n_layers, hidden_dim)
+            grid_deltas.append(point_deltas)
+            if all_attn_deltas is not None:
+                grid_attn_deltas.append(interpolate_deltas(weights, all_attn_deltas, n_layers, hidden_dim))
+            if all_mlp_deltas is not None:
+                grid_mlp_deltas.append(interpolate_deltas(weights, all_mlp_deltas, n_layers, hidden_dim))
+
+        else:
+            # Unknown method, fall back to RBF
+            weights = compute_grid_weights(v1, v2, existing_proj, sigma_nn)
+            point_deltas = interpolate_deltas(weights, all_deltas_per_point, n_layers, hidden_dim)
+            grid_deltas.append(point_deltas)
+            if all_attn_deltas is not None:
+                grid_attn_deltas.append(interpolate_deltas(weights, all_attn_deltas, n_layers, hidden_dim))
+            if all_mlp_deltas is not None:
+                grid_mlp_deltas.append(interpolate_deltas(weights, all_mlp_deltas, n_layers, hidden_dim))
 
     return grid_layer0, grid_deltas, grid_attn_deltas, grid_mlp_deltas
 
+# ============================================================
+# 9b. PLUGGABLE INTERPOLATION METHODS
+# ============================================================
+
+def interpolate_rbf(query_x, query_y, source_x, source_y, source_vals_x, source_vals_y, sigma):
+    """Gaussian RBF interpolation (original default)."""
+    sigma = max(sigma, 1e-6)
+    s2i = 1.0 / (2 * sigma ** 2)
+    dists_sq = (query_x - source_x) ** 2 + (query_y - source_y) ** 2
+    exponents = np.clip(-dists_sq * s2i, -500, 0)
+    weights = np.exp(exponents)
+    w_sum = weights.sum()
+    if w_sum < 1e-30:
+        weights = np.ones_like(weights) / len(weights)
+    else:
+        weights /= w_sum
+    vx = np.dot(weights, source_vals_x)
+    vy = np.dot(weights, source_vals_y)
+    return vx, vy
+
+
+def interpolate_tps(query_x, query_y, source_x, source_y, source_vals_x, source_vals_y, sigma):
+    """Thin Plate Spline interpolation.
+    Uses the TPS kernel phi(r) = r^2 * log(r) with a linear polynomial term.
+    Falls back to RBF if the system is singular."""
+    n = len(source_x)
+    if n < 3:
+        return interpolate_rbf(query_x, query_y, source_x, source_y,
+                               source_vals_x, source_vals_y, sigma)
+    try:
+        # Build TPS kernel matrix K
+        pts = np.stack([source_x, source_y], axis=1)  # (n, 2)
+        D = cdist(pts, pts, metric='euclidean')
+        D = np.clip(D, 1e-12, None)
+        K = D ** 2 * np.log(D)
+        np.fill_diagonal(K, 0.0)
+
+        # Build the full TPS system: [K P; P^T 0] [w; a] = [v; 0]
+        P = np.column_stack([np.ones(n), source_x, source_y])  # (n, 3)
+        Z = np.zeros((3, 3))
+
+        # Regularization for stability
+        reg = 1e-6 * np.eye(n)
+        top = np.hstack([K + reg, P])
+        bot = np.hstack([P.T, Z])
+        A = np.vstack([top, bot])
+
+        # Solve for x-component
+        rhs_x = np.concatenate([source_vals_x, np.zeros(3)])
+        coeffs_x = np.linalg.solve(A, rhs_x)
+
+        # Solve for y-component
+        rhs_y = np.concatenate([source_vals_y, np.zeros(3)])
+        coeffs_y = np.linalg.solve(A, rhs_y)
+
+        # Evaluate at query point
+        qpt = np.array([[query_x, query_y]])
+        dq = cdist(qpt, pts, metric='euclidean').flatten()
+        dq = np.clip(dq, 1e-12, None)
+        kq = dq ** 2 * np.log(dq)
+
+        vx = np.dot(kq, coeffs_x[:n]) + coeffs_x[n] + coeffs_x[n+1]*query_x + coeffs_x[n+2]*query_y
+        vy = np.dot(kq, coeffs_y[:n]) + coeffs_y[n] + coeffs_y[n+1]*query_x + coeffs_y[n+2]*query_y
+        return float(vx), float(vy)
+    except (np.linalg.LinAlgError, ValueError):
+        return interpolate_rbf(query_x, query_y, source_x, source_y,
+                               source_vals_x, source_vals_y, sigma)
+
+
+def interpolate_idw(query_x, query_y, source_x, source_y, source_vals_x, source_vals_y, sigma):
+    """Inverse Distance Weighting (Shepard's method) with power p=2."""
+    p = 2.0
+    dists = np.sqrt((query_x - source_x) ** 2 + (query_y - source_y) ** 2)
+    dists = np.clip(dists, 1e-12, None)
+    weights = 1.0 / (dists ** p)
+    w_sum = weights.sum()
+    if w_sum < 1e-30:
+        weights = np.ones_like(weights) / len(weights)
+    else:
+        weights /= w_sum
+    vx = np.dot(weights, source_vals_x)
+    vy = np.dot(weights, source_vals_y)
+    return float(vx), float(vy)
+
+
+def interpolate_mls(query_x, query_y, source_x, source_y, source_vals_x, source_vals_y, sigma):
+    """Moving Least Squares with local linear basis.
+    Fits a local linear model weighted by Gaussian distance."""
+    sigma = max(sigma, 1e-6)
+    s2i = 1.0 / (2 * sigma ** 2)
+    dists_sq = (query_x - source_x) ** 2 + (query_y - source_y) ** 2
+    weights = np.exp(np.clip(-dists_sq * s2i, -500, 0))
+
+    n = len(source_x)
+    if n < 3:
+        return interpolate_rbf(query_x, query_y, source_x, source_y,
+                               source_vals_x, source_vals_y, sigma)
+    try:
+        # Build weighted least squares: f(x,y) = a0 + a1*x + a2*y
+        W = np.diag(weights)
+        A = np.column_stack([np.ones(n), source_x - query_x, source_y - query_y])
+        WA = W @ A
+        ATWA = A.T @ WA
+
+        # Regularize
+        ATWA += 1e-8 * np.eye(3)
+
+        # Solve for x-component
+        coeffs_x = np.linalg.solve(ATWA, A.T @ (W @ source_vals_x))
+        vx = coeffs_x[0]  # evaluated at (0,0) in local coords = query point
+
+        # Solve for y-component
+        coeffs_y = np.linalg.solve(ATWA, A.T @ (W @ source_vals_y))
+        vy = coeffs_y[0]
+
+        return float(vx), float(vy)
+    except (np.linalg.LinAlgError, ValueError):
+        return interpolate_rbf(query_x, query_y, source_x, source_y,
+                               source_vals_x, source_vals_y, sigma)
+
+
+def interpolate_nn(query_x, query_y, source_x, source_y, source_vals_x, source_vals_y, sigma):
+    """Nearest Neighbor interpolation (simplest possible)."""
+    dists_sq = (query_x - source_x) ** 2 + (query_y - source_y) ** 2
+    idx = np.argmin(dists_sq)
+    return float(source_vals_x[idx]), float(source_vals_y[idx])
+
+
+def interpolate_wendland(query_x, query_y, source_x, source_y, source_vals_x, source_vals_y, sigma):
+    """Compactly Supported RBF using Wendland C2 kernel.
+    phi(r) = (1 - r/R)^4 * (4r/R + 1) for r < R, else 0.
+    R = 3 * sigma (compact support radius)."""
+    R = max(3.0 * sigma, 1e-6)
+    dists = np.sqrt((query_x - source_x) ** 2 + (query_y - source_y) ** 2)
+    r_norm = dists / R
+    # Wendland C2 kernel
+    mask = r_norm < 1.0
+    weights = np.zeros_like(dists)
+    r_clipped = np.clip(1.0 - r_norm[mask], 0, 1)
+    weights[mask] = r_clipped ** 4 * (4.0 * r_norm[mask] + 1.0)
+
+    w_sum = weights.sum()
+    if w_sum < 1e-30:
+        # Fall back to RBF if all weights are zero (query too far from all sources)
+        return interpolate_rbf(query_x, query_y, source_x, source_y,
+                               source_vals_x, source_vals_y, sigma)
+    weights /= w_sum
+    vx = np.dot(weights, source_vals_x)
+    vy = np.dot(weights, source_vals_y)
+    return float(vx), float(vy)
+
+
+# Registry of available interpolation methods
+INTERPOLATION_METHODS = {
+    'rbf': interpolate_rbf,
+    'tps': interpolate_tps,
+    'idw': interpolate_idw,
+    'mls': interpolate_mls,
+    'nn': interpolate_nn,
+    'wendland': interpolate_wendland,
+}
+
+def get_interpolation_fn(method_name):
+    """Return the interpolation function for the given method name."""
+    return INTERPOLATION_METHODS.get(method_name, interpolate_rbf)
 
 # ============================================================
 # 10. OUTPUT ASSEMBLY
@@ -1553,7 +1993,7 @@ def compute_strain_stats(all_layer0, all_deltas_per_point, n_layers, n_real, hid
 # 11. MAIN PROCESSING PIPELINE
 # ============================================================
 
-def process_text(text, model_name=None):
+def process_text(text, model_name=None, itp_method='rbf'):
     global TOKENIZER, MODEL, MODEL_NAME, MODEL_CONFIG
 
     # Switch model if requested
@@ -1567,6 +2007,7 @@ def process_text(text, model_name=None):
     real_ids, tokens_clean = tokenize_text(TOKENIZER, text)
     n_real = real_ids.shape[1]
     print(f"[Model] Tokens ({n_real}): {tokens_clean}")
+    print(f"[Model] Interpolation method: {itp_method}")
 
     # Run ONLY the real sequence through the model (with component decomposition)
     all_layer0, all_deltas_per_point, all_attn_deltas, all_mlp_deltas = \
@@ -1601,7 +2042,6 @@ def process_text(text, model_name=None):
     print("[Model] Creating systematic grid probes around real points...")
     layer0_mat = np.stack(all_layer0, axis=0)
 
-    # Safety: need at least 2 points for meaningful PCA
     if n_real < 2:
         print("[Model] WARNING: fewer than 2 real tokens, grid probes will be trivial")
 
@@ -1614,10 +2054,11 @@ def process_text(text, model_name=None):
         n_side=10, pad_frac=0.3,
         all_attn_deltas=all_attn_deltas,
         all_mlp_deltas=all_mlp_deltas,
+        itp_method=itp_method,
     )
 
     n_grid = len(grid_layer0)
-    print(f"[Model] Added {n_grid} systematic grid probes")
+    print(f"[Model] Added {n_grid} systematic grid probes (itp={itp_method})")
 
     # Append grid probes as the ONLY synthetic points
     for gi in range(n_grid):
@@ -1634,7 +2075,6 @@ def process_text(text, model_name=None):
     # Compute strain statistics (on real tokens only)
     print("[Model] Computing strain statistics...")
     strain_stats = compute_strain_stats(all_layer0, all_deltas_per_point, n_layers, n_real, hidden_dim)
-    # Find most active layer
     most_active_layer = max(range(n_layers), key=lambda lay: strain_stats[lay]["variance"])
     print(f"[Model] Most active layer (by strain variance): {most_active_layer}")
 
@@ -1642,7 +2082,6 @@ def process_text(text, model_name=None):
     fixed_pos = build_fixed_pos(all_layer0)
     deltas = build_deltas_array(all_deltas_per_point, n_layers, n_total_final)
 
-    # Build component delta arrays if available
     attn_deltas_json = None
     mlp_deltas_json = None
     if decomposition_available:
@@ -1658,6 +2097,9 @@ def process_text(text, model_name=None):
         mlp_deltas=mlp_deltas_json,
         strain_stats=strain_stats,
     )
+
+    # Include the interpolation method in the response
+    data["itp_method"] = itp_method
 
     json_str = json.dumps(data, cls=SafeFloatEncoder)
     print(f"[Model] JSON: {len(json_str)/1024/1024:.1f} MB")
@@ -1799,8 +2241,10 @@ canvas{background:#0d1117}
 Model: <span id="i-mod">-</span> |
 Points: <span id="i-pts">-</span> (<span id="i-real">-</span> real + <span id="i-syn">-</span> probes)<br>
 Layers: <span id="i-lay">-</span> | Dim: <span id="i-dim">-</span> |
-Tokens: <span id="i-tok">-</span>
+Tokens: <span id="i-tok">-</span> |
+ITP: <span id="i-itp">rbf</span>
 </div>
+
 <h3>Predicted Next Token</h3>
 <div id="next-token-panel" style="background:#0f3460;padding:6px;border-radius:4px;font-size:11px;line-height:1.6">
 <span style="color:#555">Run a prompt to see predictions</span>
@@ -2000,7 +2444,30 @@ Tokens: <span id="i-tok">-</span>
 <div class="cr"><label>K Neighbors:</label><input type="range" id="sl-kn" min="1" max="20" value="5" step="1"><span class="v" id="v-kn">5</span></div>
 <div class="cb"><input type="checkbox" id="cb-nb" checked><label for="cb-nb">Show Neighbor Lines</label></div>
 <div class="cb"><input type="checkbox" id="cb-nblabel" checked><label for="cb-nblabel">Show Neighbor Labels</label></div>
-<h3>RBF &amp; Grid</h3>
+<h3>Interpolation &amp; Grid</h3>
+<div class="cr"><label>Method:</label>
+<select id="sel-itp">
+<option value="rbf" selected>Gaussian RBF</option>
+<option value="tps">Thin Plate Spline</option>
+<option value="idw">Inverse Distance (Shepard)</option>
+<option value="mls">Moving Least Squares</option>
+<option value="nn">Nearest Neighbor</option>
+<option value="wendland">Wendland C2 (Compact)</option>
+</select>
+</div>
+<div class="cr"><label>Bandwidth σ:</label><input type="range" id="sl-sig" min="0.01" max="20" value="1.0" step="0.01"><span class="v" id="v-sig">1.00</span></div>
+<div class="cr"><label>Grid Res:</label><input type="range" id="sl-gr" min="10" max="80" value="30" step="1"><span class="v" id="v-gr">30</span></div>
+<h3>Interpolation &amp; Grid</h3>
+<div class="cr"><label>Method:</label>
+<select id="sel-itp">
+<option value="rbf" selected>Gaussian RBF</option>
+<option value="tps">Thin Plate Spline</option>
+<option value="idw">Inverse Distance (Shepard)</option>
+<option value="mls">Moving Least Squares</option>
+<option value="nn">Nearest Neighbor</option>
+<option value="wendland">Wendland C2 (Compact)</option>
+</select>
+</div>
 <div class="cr"><label>Bandwidth σ:</label><input type="range" id="sl-sig" min="0.01" max="20" value="1.0" step="0.01"><span class="v" id="v-sig">1.00</span></div>
 <div class="cr"><label>Grid Res:</label><input type="range" id="sl-gr" min="10" max="80" value="30" step="1"><span class="v" id="v-gr">30</span></div>
 <h3>Display</h3>
@@ -2073,11 +2540,12 @@ function runText(){
     var txt=document.getElementById('txt-in').value.trim();
     if(!txt)return;
     var modelName=document.getElementById('sel-model').value;
+    var itpMethod=document.getElementById('sel-itp').value;
     var btn=document.getElementById('btn-run');
     btn.disabled=true;btn.textContent='Running...';
-    document.getElementById('status').textContent='Processing (model: '+modelName+')...';
+    document.getElementById('status').textContent='Processing (model: '+modelName+', itp: '+itpMethod+')...';
     fetch('/run',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({text:txt, model:modelName})})
+        body:JSON.stringify({text:txt, model:modelName, itp_method:itpMethod})})
     .then(function(r){if(!r.ok)throw new Error('Server error '+r.status);return r.json()})
     .then(function(d){
         D=d;selectedTokens.clear();updateSelectedUI();onData();
@@ -2165,6 +2633,13 @@ function onData(){
     document.getElementById('i-dim').textContent=D.hidden_dim;
     document.getElementById('i-tok').textContent=D.tokens.slice(0,D.n_real).join(' ');
     document.getElementById('sel-model').value=D.model_name;
+
+    // Display interpolation method
+    document.getElementById('i-itp').textContent = D.itp_method || 'rbf';
+    // Sync the dropdown
+    if(D.itp_method){
+        document.getElementById('sel-itp').value = D.itp_method;
+    }
 
     // Update decomposition selector availability
     var decompSel = document.getElementById('sel-decomp');
@@ -2471,6 +2946,138 @@ document.getElementById('sel-decomp').addEventListener('change',function(){
 document.addEventListener('keydown',onKey);
 document.getElementById('txt-in').addEventListener('keydown',function(e){if(e.key==='Enter')runText()});
 
+document.getElementById('sel-itp').addEventListener('change', function(){
+    // When interpolation method changes, we need to re-run the backend
+    // because the grid probes are computed server-side with the chosen method
+    document.getElementById('status').textContent =
+        'Interpolation changed to ' + this.value + ' — click Run to recompute grid probes';
+});
+
+// ============================================================
+// CLIENT-SIDE INTERPOLATION METHODS
+// These mirror the server-side methods for real-time grid rendering
+// ============================================================
+
+function computeItpWeight(px, py, fx_k, fy_k, sig, method) {
+    // Returns a single weight for point (px,py) relative to source (fx_k, fy_k)
+    var ex = px - fx_k, ey = py - fy_k;
+    var dist_sq = ex * ex + ey * ey;
+    var dist = Math.sqrt(dist_sq);
+
+    if (method === 'idw') {
+        var p = 2.0;
+        return 1.0 / Math.pow(Math.max(dist, 1e-12), p);
+    } else if (method === 'wendland') {
+        var R = Math.max(3.0 * sig, 1e-6);
+        var r_norm = dist / R;
+        if (r_norm >= 1.0) return 0.0;
+        var t = 1.0 - r_norm;
+        return t * t * t * t * (4.0 * r_norm + 1.0);
+    } else if (method === 'nn') {
+        // NN returns 0 for all but the nearest; handled specially
+        return -dist; // negative distance; caller picks max
+    } else {
+        // Default: Gaussian RBF
+        var s2i = 1.0 / (2.0 * sig * sig);
+        var exponent = -dist_sq * s2i;
+        if (exponent < -500) return 0;
+        return Math.exp(exponent);
+    }
+}
+
+function interpolateGridPoint(px, py, fx, fy, edx, edy, nP, sig, method) {
+    // Interpolate the deformation field at (px, py) using the selected method
+    // Returns [vx, vy]
+
+    if (method === 'nn') {
+        // Nearest neighbor: just use the closest point's delta
+        var bestDist = Infinity, bestIdx = 0;
+        for (var k = 0; k < nP; k++) {
+            var d = (px - fx[k]) * (px - fx[k]) + (py - fy[k]) * (py - fy[k]);
+            if (d < bestDist) { bestDist = d; bestIdx = k; }
+        }
+        return [edx[bestIdx], edy[bestIdx]];
+    }
+
+    if (method === 'mls') {
+        // Moving Least Squares with local linear basis
+        var s2i = 1.0 / (2.0 * sig * sig);
+        // Compute weights
+        var W = new Float64Array(nP);
+        for (var k = 0; k < nP; k++) {
+            var ex = px - fx[k], ey = py - fy[k];
+            var exp_val = -(ex * ex + ey * ey) * s2i;
+            W[k] = exp_val < -500 ? 0 : Math.exp(exp_val);
+        }
+
+        // Build weighted least squares: f(x,y) = a0 + a1*(x-px) + a2*(y-py)
+        // Normal equations: (A^T W A) c = A^T W v
+        // A = [1, dx_k, dy_k] for each point k
+        var AtwA00 = 0, AtwA01 = 0, AtwA02 = 0;
+        var AtwA11 = 0, AtwA12 = 0, AtwA22 = 0;
+        var Atwvx0 = 0, Atwvx1 = 0, Atwvx2 = 0;
+        var Atwvy0 = 0, Atwvy1 = 0, Atwvy2 = 0;
+
+        for (var k = 0; k < nP; k++) {
+            var w = W[k];
+            if (w < 1e-30) continue;
+            var dxk = fx[k] - px, dyk = fy[k] - py;
+            AtwA00 += w;
+            AtwA01 += w * dxk;
+            AtwA02 += w * dyk;
+            AtwA11 += w * dxk * dxk;
+            AtwA12 += w * dxk * dyk;
+            AtwA22 += w * dyk * dyk;
+            Atwvx0 += w * edx[k];
+            Atwvx1 += w * dxk * edx[k];
+            Atwvx2 += w * dyk * edx[k];
+            Atwvy0 += w * edy[k];
+            Atwvy1 += w * dxk * edy[k];
+            Atwvy2 += w * dyk * edy[k];
+        }
+
+        // Add regularization
+        AtwA00 += 1e-8; AtwA11 += 1e-8; AtwA22 += 1e-8;
+
+        // Solve 3x3 system using Cramer's rule for a0 (the value at query point)
+        var det = AtwA00 * (AtwA11 * AtwA22 - AtwA12 * AtwA12)
+                - AtwA01 * (AtwA01 * AtwA22 - AtwA12 * AtwA02)
+                + AtwA02 * (AtwA01 * AtwA12 - AtwA11 * AtwA02);
+
+        if (Math.abs(det) < 1e-20) {
+            // Fallback to RBF
+            return interpolateGridPoint(px, py, fx, fy, edx, edy, nP, sig, 'rbf');
+        }
+
+        // We only need a0 (the constant term = value at query point)
+        var detX = Atwvx0 * (AtwA11 * AtwA22 - AtwA12 * AtwA12)
+                 - AtwA01 * (Atwvx1 * AtwA22 - AtwA12 * Atwvx2)
+                 + AtwA02 * (Atwvx1 * AtwA12 - AtwA11 * Atwvx2);
+        var detY = Atwvy0 * (AtwA11 * AtwA22 - AtwA12 * AtwA12)
+                 - AtwA01 * (Atwvy1 * AtwA22 - AtwA12 * Atwvy2)
+                 + AtwA02 * (Atwvy1 * AtwA12 - AtwA11 * Atwvy2);
+
+        return [detX / det, detY / det];
+    }
+
+    if (method === 'tps') {
+        // TPS is expensive client-side; fall back to RBF for real-time rendering
+        // The server-side grid probes already use TPS
+        return interpolateGridPoint(px, py, fx, fy, edx, edy, nP, sig, 'rbf');
+    }
+
+    // Weight-based methods: RBF, IDW, Wendland
+    var vx = 0, vy = 0, ws = 0;
+    for (var k = 0; k < nP; k++) {
+        var w = computeItpWeight(px, py, fx[k], fy[k], sig, method);
+        vx += w * edx[k];
+        vy += w * edy[k];
+        ws += w;
+    }
+    if (ws > 1e-15) { vx /= ws; vy /= ws; }
+    return [vx, vy];
+}
+
 function gp(){return{
     layer:+document.getElementById('sl-layer').value,
     t:+document.getElementById('sl-t').value,
@@ -2695,19 +3302,15 @@ function draw2D(){
     }
 
     var sig=p.sig,s2i=1/(2*sig*sig),t=p.t;
+    var itpMethod = document.getElementById('sel-itp').value;
+
     if(isEmb){
         for(var gi2=0;gi2<nV;gi2++){gX[gi2]=oX[gi2];gY[gi2]=oY[gi2]}
     } else {
         for(var gi3=0;gi3<nV;gi3++){
             var px=oX[gi3],py=oY[gi3];
-            var vx=0,vy=0,ws=0;
-            for(var k=0;k<nP;k++){
-                var ex=px-fx[k],ey=py-fy[k];
-                var w=Math.exp(-(ex*ex+ey*ey)*s2i);
-                vx+=w*edx[k];vy+=w*edy[k];ws+=w;
-            }
-            if(ws>1e-15){vx/=ws;vy/=ws}
-            gX[gi3]=px+t*vx;gY[gi3]=py+t*vy;
+            var interp = interpolateGridPoint(px, py, fx, fy, edx, edy, nP, sig, itpMethod);
+            gX[gi3]=px+t*interp[0];gY[gi3]=py+t*interp[1];
         }
     }
 
@@ -2878,7 +3481,8 @@ function draw2D(){
     if(isEmb){
         c.fillText('EMBEDDING SPACE [2D]  Dims:'+dx+','+dy,42,18);
     } else {
-        c.fillText('Layer '+p.layer+'/'+(D.n_layers-1)+'  t='+p.t.toFixed(2)+'  amp='+p.amp.toFixed(1)+'  Dims:'+dx+','+dy+'  Mode:'+p.mode+'  Decomp:'+decompLabel+'  [2D]',42,18);
+        var itpLabel = document.getElementById('sel-itp').value.toUpperCase();
+        c.fillText('Layer '+p.layer+'/'+(D.n_layers-1)+'  t='+p.t.toFixed(2)+'  amp='+p.amp.toFixed(1)+'  Dims:'+dx+','+dy+'  Mode:'+p.mode+'  Decomp:'+decompLabel+'  ITP:'+itpLabel+'  [2D]',42,18);
     }
     c.font='10px monospace';c.fillStyle='rgba(255,255,255,0.35)';
     c.fillText('Zoom: '+zoomLevel.toFixed(2)+'x  (Scroll=zoom, Shift+drag=pan, 0=reset)',42,H-10);
@@ -3243,18 +3847,58 @@ function draw3D(){
     var gX3=new Float64Array(nV3),gY3=new Float64Array(nV3),gZ3=new Float64Array(nV3);
     var sig=p.sig, s2i3=1/(2*sig*sig), t=p.t;
 
+    var itpMethod = document.getElementById('sel-itp').value;
+
     if(isEmb){
         for(var gi2=0;gi2<nV3;gi2++){gX3[gi2]=oX3[gi2];gY3[gi2]=oY3[gi2];gZ3[gi2]=oZ3[gi2]}
     } else {
         for(var gi3=0;gi3<nV3;gi3++){
             var gpx=oX3[gi3],gpy=oY3[gi3],gpz=oZ3[gi3];
+            // For 3D, we extend the 2D methods to 3D distance
             var vvx=0,vvy=0,vvz=0,ws=0;
-            for(var k=0;k<nP;k++){
-                var eex=gpx-fx[k],eey=gpy-fy[k],eez=gpz-fz[k];
-                var w=Math.exp(-(eex*eex+eey*eey+eez*eez)*s2i3);
-                vvx+=w*edx3[k];vvy+=w*edy3[k];vvz+=w*edz3[k];ws+=w;
+            if(itpMethod === 'nn'){
+                var bestDist3=Infinity, bestIdx3=0;
+                for(var k=0;k<nP;k++){
+                    var d3=(gpx-fx[k])*(gpx-fx[k])+(gpy-fy[k])*(gpy-fy[k])+(gpz-fz[k])*(gpz-fz[k]);
+                    if(d3<bestDist3){bestDist3=d3;bestIdx3=k;}
+                }
+                vvx=edx3[bestIdx3];vvy=edy3[bestIdx3];vvz=edz3[bestIdx3];
+            } else if(itpMethod === 'idw'){
+                var p3=2.0;
+                for(var k=0;k<nP;k++){
+                    var dist3=Math.sqrt((gpx-fx[k])*(gpx-fx[k])+(gpy-fy[k])*(gpy-fy[k])+(gpz-fz[k])*(gpz-fz[k]));
+                    var w=1.0/Math.pow(Math.max(dist3,1e-12),p3);
+                    vvx+=w*edx3[k];vvy+=w*edy3[k];vvz+=w*edz3[k];ws+=w;
+                }
+                if(ws>1e-15){vvx/=ws;vvy/=ws;vvz/=ws}
+            } else if(itpMethod === 'wendland'){
+                var R3=Math.max(3.0*sig,1e-6);
+                for(var k=0;k<nP;k++){
+                    var dist3=Math.sqrt((gpx-fx[k])*(gpx-fx[k])+(gpy-fy[k])*(gpy-fy[k])+(gpz-fz[k])*(gpz-fz[k]));
+                    var rn3=dist3/R3;
+                    if(rn3>=1.0) continue;
+                    var tt=1.0-rn3;
+                    var w=tt*tt*tt*tt*(4.0*rn3+1.0);
+                    vvx+=w*edx3[k];vvy+=w*edy3[k];vvz+=w*edz3[k];ws+=w;
+                }
+                if(ws<1e-30){
+                    // fallback to RBF
+                    for(var k=0;k<nP;k++){
+                        var eex=gpx-fx[k],eey=gpy-fy[k],eez=gpz-fz[k];
+                        var w=Math.exp(-(eex*eex+eey*eey+eez*eez)*s2i3);
+                        vvx+=w*edx3[k];vvy+=w*edy3[k];vvz+=w*edz3[k];ws+=w;
+                    }
+                }
+                if(ws>1e-15){vvx/=ws;vvy/=ws;vvz/=ws}
+            } else {
+                // RBF (default), MLS fallback to RBF in 3D, TPS fallback to RBF
+                for(var k=0;k<nP;k++){
+                    var eex=gpx-fx[k],eey=gpy-fy[k],eez=gpz-fz[k];
+                    var w=Math.exp(-(eex*eex+eey*eey+eez*eez)*s2i3);
+                    vvx+=w*edx3[k];vvy+=w*edy3[k];vvz+=w*edz3[k];ws+=w;
+                }
+                if(ws>1e-15){vvx/=ws;vvy/=ws;vvz/=ws}
             }
-            if(ws>1e-15){vvx/=ws;vvy/=ws;vvz/=ws}
             gX3[gi3]=gpx+t*vvx;
             gY3[gi3]=gpy+t*vvy;
             gZ3[gi3]=gpz+t*vvz;
@@ -4671,18 +5315,14 @@ function drawFibreBundleKelp() {
                 }
             }
 
+            var _itpM = document.getElementById('sel-itp').value;
             for (var gi = 0; gi < nV; gi++) {
                 var px = oX[gi], py = oY[gi];
-                var vvx = 0, vvy = 0, ws = 0;
-                for (var k = 0; k < nP; k++) {
-                    var eex = px - fx[k], eey = py - fy[k];
-                    var w = Math.exp(-(eex * eex + eey * eey) * s2i);
-                    vvx += w * edxCum[k]; vvy += w * edyCum[k]; ws += w;
-                }
-                if (ws > 1e-15) { vvx /= ws; vvy /= ws; }
-                gX[gi] = px + t * vvx;
-                gY[gi] = py + t * vvy;
+                var _iRes = interpolateGridPoint(px, py, fx, fy, edxCum, edyCum, nP, sig, _itpM);
+                gX[gi] = px + t * _iRes[0];
+                gY[gi] = py + t * _iRes[1];
             }
+
 
             // Compute strain for coloring
             var sH = new Float64Array(N * (N + 1));
@@ -5144,17 +5784,12 @@ function drawFibreBundle() {
         if (isEmb) {
             for (var gi = 0; gi < nV; gi++) { gX[gi] = oX[gi]; gY[gi] = oY[gi]; }
         } else {
+            var _itpM = document.getElementById('sel-itp').value;
             for (var gi = 0; gi < nV; gi++) {
                 var px = oX[gi], py = oY[gi];
-                var vvx = 0, vvy = 0, ws = 0;
-                for (var k = 0; k < nP; k++) {
-                    var eex = px - fx[k], eey = py - fy[k];
-                    var w = Math.exp(-(eex * eex + eey * eey) * s2i);
-                    vvx += w * edxCum[k]; vvy += w * edyCum[k]; ws += w;
-                }
-                if (ws > 1e-15) { vvx /= ws; vvy /= ws; }
-                gX[gi] = px + t * vvx;
-                gY[gi] = py + t * vvy;
+                var _iRes = interpolateGridPoint(px, py, fx, fy, edxCum, edyCum, nP, sig, _itpM);
+                gX[gi] = px + t * _iRes[0];
+                gY[gi] = py + t * _iRes[1];
             }
         }
 
@@ -5184,16 +5819,14 @@ function drawFibreBundle() {
     // Helper: RBF interpolate the attn/mlp vector field at a world-space point
     function interpolateComponentField(px, py, compDeltas, layerIdx) {
         if (!compDeltas) return [0, 0];
-        var vvx = 0, vvy = 0, ws = 0;
+        var _compEdx = new Float64Array(nP);
+        var _compEdy = new Float64Array(nP);
         for (var k = 0; k < nP; k++) {
-            var eex = px - fx[k], eey = py - fy[k];
-            var w = Math.exp(-(eex * eex + eey * eey) * s2i);
-            vvx += w * compDeltas[layerIdx][k][dx] * amp;
-            vvy += w * compDeltas[layerIdx][k][dy] * amp;
-            ws += w;
+            _compEdx[k] = compDeltas[layerIdx][k][dx] * amp;
+            _compEdy[k] = compDeltas[layerIdx][k][dy] * amp;
         }
-        if (ws > 1e-15) { vvx /= ws; vvy /= ws; }
-        return [vvx, vvy];
+        return interpolateGridPoint(px, py, fx, fy, _compEdx, _compEdy, nP, sig,
+            document.getElementById('sel-itp').value);
     }
 
     // ========== PASS 1: Draw flow streamlines BETWEEN layers (behind rooms) ==========
@@ -6136,19 +6769,14 @@ function drawFibreBundle3DGrid() {
         if (isEmb) {
             for (var gi = 0; gi < nV; gi++) { gX[gi] = oX[gi]; gY[gi] = oY[gi]; gDZ[gi] = 0; }
         } else {
+            var _itpM = document.getElementById('sel-itp').value;
             for (var gi = 0; gi < nV; gi++) {
                 var px = oX[gi], py = oY[gi];
-                var vvx = 0, vvy = 0, vvdz = 0, ws = 0;
-                for (var k = 0; k < nP; k++) {
-                    var eex = px - fx[k], eey = py - fy[k];
-                    var w = Math.exp(-(eex * eex + eey * eey) * s2i);
-                    vvx += w * edxCum[k]; vvy += w * edyCum[k]; vvdz += w * edzCum[k]; ws += w;
-                }
-                if (ws > 1e-15) { vvx /= ws; vvy /= ws; vvdz /= ws; }
-                gX[gi] = px + t * vvx;
-                gY[gi] = py + t * vvy;
-                gDZ[gi] = t * vvdz;
+                var _iRes = interpolateGridPoint(px, py, fx, fy, edxCum, edyCum, nP, sig, _itpM);
+                gX[gi] = px + t * _iRes[0];
+                gY[gi] = py + t * _iRes[1];
             }
+
         }
 
         // Compute strain
@@ -7883,12 +8511,12 @@ def handle_post_run(body_bytes):
     req = json.loads(body_bytes)
     text = req.get("text", "").strip()
     model_name = req.get("model", "").strip() or None
+    itp_method = req.get("itp_method", "rbf").strip()
     if not text:
         raise ValueError("Empty text")
-    print(f"\n[Server] Processing: {text[:60]}... (model: {model_name or MODEL_NAME})...")
-    json_str = process_text(text, model_name)
+    print(f"\n[Server] Processing: {text[:60]}... (model: {model_name or MODEL_NAME}, itp: {itp_method})...")
+    json_str = process_text(text, model_name, itp_method=itp_method)
     return json_str.encode("utf-8")
-
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
