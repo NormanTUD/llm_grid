@@ -9216,7 +9216,7 @@ function drawMiniPanel3D(c, sentD, W, H) {
 
   // Compute bounds
   var mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity, mnz = Infinity, mxz = -Infinity;
-  for (var i = 0; i < nP; i++) {
+  for (var i = 0; i < nR; i++) {
     if (fx[i] < mnx) mnx = fx[i]; if (fx[i] > mxx) mxx = fx[i];
     if (fy[i] < mny) mny = fy[i]; if (fy[i] > mxy) mxy = fy[i];
     if (fz[i] < mnz) mnz = fz[i]; if (fz[i] > mxz) mxz = fz[i];
@@ -9364,7 +9364,7 @@ function drawMiniPanelFibre(c, sentD, W, H) {
   for (var i = 0; i < nP; i++) { fx[i] = sentD.fixed_pos[i][dx]; fy[i] = sentD.fixed_pos[i][dy]; }
 
   var mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
-  for (var i = 0; i < nP; i++) {
+  for (var i = 0; i < nR; i++) {
     if (fx[i] < mnx) mnx = fx[i]; if (fx[i] > mxx) mxx = fx[i];
     if (fy[i] < mny) mny = fy[i]; if (fy[i] > mxy) mxy = fy[i];
   }
@@ -9660,7 +9660,7 @@ function drawMiniPanelFibreKelp(c, sentD, W, H) {
   for (var i = 0; i < nP; i++) { fx[i] = sentD.fixed_pos[i][dx]; fy[i] = sentD.fixed_pos[i][dy]; }
 
   var mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
-  for (var i = 0; i < nP; i++) {
+  for (var i = 0; i < nR; i++) {
     if (fx[i] < mnx) mnx = fx[i]; if (fx[i] > mxx) mxx = fx[i];
     if (fy[i] < mny) mny = fy[i]; if (fy[i] > mxy) mxy = fy[i];
   }
@@ -10490,12 +10490,16 @@ function drawMiniDeformedGrid(c, sentD, p, px, py, pw, ph) {
     }
   }
 
-  // Compute view bounds
-  var mnx = fx[0], mxx = fx[0], mny = fy[0], mxy = fy[0];
-  for (var i2 = 1; i2 < nP; i2++) {
+// Compute view bounds from REAL tokens only so tokens are always visible
+  var mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
+  for (var i2 = 0; i2 < nR; i2++) {
     if (fx[i2] < mnx) mnx = fx[i2]; if (fx[i2] > mxx) mxx = fx[i2];
     if (fy[i2] < mny) mny = fy[i2]; if (fy[i2] > mxy) mxy = fy[i2];
   }
+  // Fallback if only 1 token
+  if (!isFinite(mnx) || mnx === mxx) { mnx = fx[0] - 1; mxx = fx[0] + 1; }
+  if (!isFinite(mny) || mny === mxy) { mny = fy[0] - 1; mxy = fy[0] + 1; }
+
   var mr = Math.max(mxx - mnx, mxy - mny) || 1;
   var cxv = (mnx + mxx) / 2, cyv = (mny + mxy) / 2;
   var pd2 = 0.12;
