@@ -2237,6 +2237,57 @@ canvas{background:#0d1117}
   <div id="compare-divergence-chart"></div>
   <div id="compare-panel"></div>
 </div>
+<!-- Multi-Sentence Comparison -->
+<div class="cb" style="margin-bottom:4px">
+  <input type="checkbox" id="cb-multi" onchange="toggleMultiMode()">
+  <label for="cb-multi" style="color:#7b68ee;font-weight:bold">🔬 Multi-Sentence Compare</label>
+</div>
+<div id="multi-area" style="display:none">
+  <div style="font-size:10px;color:#888;margin-bottom:4px">
+    Enter multiple sentences (one per line). Each will be analyzed independently, then compared dimension-by-dimension.
+  </div>
+  <textarea id="multi-txt" rows="6" style="width:100%;background:#0d1117;color:#e0e0e0;border:1px solid #0f3460;padding:6px;font-size:11px;border-radius:4px;font-family:monospace;resize:vertical"
+>The capital of France is Paris
+The capital of France is Berlin
+The capital of Germany is Berlin</textarea>
+  <button id="btn-multi" onclick="runMulti()" style="margin-top:4px;width:100%;background:#7b68ee;color:#fff;border:none;padding:6px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:bold">
+    Compare Sentences
+  </button>
+  <div id="multi-status" style="margin-top:4px;font-size:9px;color:#555"></div>
+  <div id="multi-summary" style="display:none;margin-top:6px;background:#0f3460;padding:8px;border-radius:4px;font-size:10px;line-height:1.5"></div>
+  <div id="multi-layer-select" style="display:none;margin-top:4px">
+    <div class="cr">
+      <label>Layer:</label>
+      <select id="multi-layer" onchange="renderMultiLayer()" style="flex:1;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;padding:2px;font-size:10px"></select>
+    </div>
+    <div class="cr" style="margin-top:3px">
+      <label>Show:</label>
+      <select id="multi-show" onchange="renderMultiLayer()" style="flex:1;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;padding:2px;font-size:10px">
+        <option value="most">Most Different Dims</option>
+        <option value="least">Least Different Dims</option>
+      </select>
+    </div>
+    <div class="cr" style="margin-top:3px">
+      <label>Top K:</label>
+      <input type="range" id="multi-topk" min="5" max="50" value="20" step="1" oninput="document.getElementById('v-multi-topk').textContent=this.value;renderMultiLayer()">
+      <span class="v" id="v-multi-topk">20</span>
+    </div>
+  </div>
+  <!-- Dimension comparison chart -->
+  <div id="multi-dim-chart" style="display:none;margin-top:6px">
+    <canvas id="multi-dim-cv" width="340" height="250" style="border:1px solid #0f3460;border-radius:4px;display:block;width:100%"></canvas>
+  </div>
+  <!-- Pairwise similarity matrix -->
+  <div id="multi-pairwise" style="display:none;margin-top:6px">
+    <div style="color:#53a8b6;font-weight:bold;font-size:10px;margin-bottom:3px">Pairwise Cosine Similarity</div>
+    <canvas id="multi-pair-cv" width="200" height="200" style="border:1px solid #0f3460;border-radius:4px;display:block"></canvas>
+  </div>
+  <!-- Layer divergence profile -->
+  <div id="multi-layer-profile" style="display:none;margin-top:6px">
+    <div style="color:#e94560;font-weight:bold;font-size:10px;margin-bottom:3px">Layer-by-Layer Divergence</div>
+    <canvas id="multi-layerprof-cv" width="340" height="80" style="border:1px solid #0f3460;border-radius:4px;display:block;width:100%"></canvas>
+  </div>
+</div>
 <div id="info">
 Model: <span id="i-mod">-</span> |
 Points: <span id="i-pts">-</span> (<span id="i-real">-</span> real + <span id="i-syn">-</span> probes)<br>
@@ -8498,6 +8549,317 @@ var _origSlLayerHandler = null;
         if(curvatureData) renderCurvatureHeatmap();
     });
 })();
+// ============================================================
+// MULTI-SENTENCE COMPARISON
+// ============================================================
+
+var multiData = null;
+
+function toggleMultiMode() {
+  var on = document.getElementById('cb-multi').checked;
+  document.getElementById('multi-area').style.display = on ? 'block' : 'none';
+  if (!on) {
+    multiData = null;
+    document.getElementById('multi-summary').style.display = 'none';
+    document.getElementById('multi-layer-select').style.display = 'none';
+    document.getElementById('multi-dim-chart').style.display = 'none';
+    document.getElementById('multi-pairwise').style.display = 'none';
+    document.getElementById('multi-layer-profile').style.display = 'none';
+  }
+}
+
+function runMulti() {
+  var text = document.getElementById('multi-txt').value.trim();
+  if (!text) return;
+  var sentences = text.split('\n').filter(function(s) { return s.trim().length > 0; });
+  if (sentences.length < 2) {
+    document.getElementById('multi-status').innerHTML =
+      '<span style="color:#e94560">Need at least 2 sentences</span>';
+    return;
+  }
+
+  var modelName = document.getElementById('sel-model').value;
+  var btn = document.getElementById('btn-multi');
+  btn.disabled = true; btn.textContent = 'Processing...';
+  document.getElementById('multi-status').innerHTML =
+    '<span style="color:#53a8b6">Processing ' + sentences.length + ' sentences...</span>';
+
+  fetch('/multi_run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sentences: sentences, model: modelName })
+  })
+  .then(function(r) { if (!r.ok) throw new Error('Server error ' + r.status); return r.json(); })
+  .then(function(data) {
+    if (data.error) {
+      document.getElementById('multi-status').innerHTML =
+        '<span style="color:#e94560">' + data.error + '</span>';
+      btn.disabled = false; btn.textContent = 'Compare Sentences';
+      return;
+    }
+    multiData = data;
+    btn.disabled = false; btn.textContent = 'Compare Sentences';
+    document.getElementById('multi-status').innerHTML =
+      '<span style="color:#2ecc71">✓ Compared ' + data.n_sentences +
+      ' sentences across ' + data.n_layers + ' layers</span>';
+    renderMultiSummary();
+    renderMultiLayerProfile();
+    populateMultiLayerSelect();
+    renderMultiLayer();
+  })
+  .catch(function(e) {
+    document.getElementById('multi-status').innerHTML =
+      '<span style="color:#e94560">Error: ' + e + '</span>';
+    btn.disabled = false; btn.textContent = 'Compare Sentences';
+  });
+}
+
+function renderMultiSummary() {
+  var panel = document.getElementById('multi-summary');
+  panel.style.display = 'block';
+  var s = multiData.summary;
+
+  var html = '<div style="color:#7b68ee;font-weight:bold;margin-bottom:4px">Multi-Sentence Comparison</div>';
+  html += '<div>' + multiData.n_sentences + ' sentences | ' +
+          multiData.n_layers + ' layers | ' + multiData.hidden_dim + ' dims</div>';
+
+  // Sentence list
+  for (var i = 0; i < multiData.sentences.length; i++) {
+    var sent = multiData.sentences[i];
+    var colors = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71','#e74c3c','#3498db','#9b59b6'];
+    html += '<div style="margin-top:2px"><span style="color:' + colors[i % colors.length] +
+            ';font-weight:bold">[' + i + ']</span> ' +
+            '<span style="color:#a0a0c0">' + sent.text + '</span> ' +
+            '<span style="color:#666">(' + sent.n_tokens + ' tokens)</span></div>';
+  }
+
+  html += '<div style="margin-top:6px;border-top:1px solid #1a1a2e;padding-top:4px">';
+  html += 'Most divergent layer: <span style="color:#e94560;font-weight:bold">' +
+          (s.most_divergent_layer === 0 ? 'Embedding' : 'L' + (s.most_divergent_layer - 1)) + '</span> | ';
+  html += 'Least divergent: <span style="color:#53a8b6">' +
+          (s.least_divergent_layer === 0 ? 'Embedding' : 'L' + (s.least_divergent_layer - 1)) + '</span>';
+  html += '</div>';
+
+  // Global top different dimensions
+  html += '<div style="margin-top:4px;font-size:9px">';
+  html += '<b style="color:#f5a623">Top globally different dims:</b> ';
+  for (var di = 0; di < Math.min(10, s.global_most_different_dims.length); di++) {
+    var gd = s.global_most_different_dims[di];
+    html += '<span style="color:#e94560">d' + gd.dim + '</span> ';
+  }
+  html += '</div>';
+
+  panel.innerHTML = html;
+}
+
+function populateMultiLayerSelect() {
+  var sel = document.getElementById('multi-layer');
+  sel.innerHTML = '';
+  for (var li = 0; li < multiData.layer_comparisons.length; li++) {
+    var opt = document.createElement('option');
+    opt.value = li;
+    var lc = multiData.layer_comparisons[li];
+    opt.textContent = (li === 0 ? 'Embedding' : 'Layer ' + (li - 1)) +
+                      ' (var=' + lc.total_variance.toFixed(2) + ')';
+    sel.appendChild(opt);
+  }
+  // Default to most divergent layer
+  sel.value = multiData.summary.most_divergent_layer;
+  document.getElementById('multi-layer-select').style.display = 'block';
+}
+
+function renderMultiLayer() {
+  if (!multiData) return;
+
+  var layerIdx = +document.getElementById('multi-layer').value;
+  var showMode = document.getElementById('multi-show').value;
+  var topK = +document.getElementById('multi-topk').value;
+  var lc = multiData.layer_comparisons[layerIdx];
+
+  var dims = (showMode === 'most') ? lc.most_different_dims : lc.least_different_dims;
+  dims = dims.slice(0, topK);
+
+  // ---- Dimension comparison bar chart ----
+  document.getElementById('multi-dim-chart').style.display = 'block';
+  var cv = document.getElementById('multi-dim-cv');
+  var chartH = Math.max(200, dims.length * 14 + 40);
+  cv.height = chartH;
+  var ctx = cv.getContext('2d');
+  var W = cv.width, H = cv.height;
+  ctx.fillStyle = '#0a0a1a';
+  ctx.fillRect(0, 0, W, H);
+
+  var nSent = multiData.n_sentences;
+  var colors = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71','#e74c3c','#3498db','#9b59b6'];
+  var margin = { left: 50, right: 20, top: 25, bottom: 15 };
+  var plotW = W - margin.left - margin.right;
+  var plotH = H - margin.top - margin.bottom;
+
+  var barGroupH = Math.max(8, Math.floor(plotH / dims.length) - 2);
+  var barH = Math.max(2, Math.floor(barGroupH / nSent) - 1);
+
+  // Find global value range for this set of dims
+  var globalMin = Infinity, globalMax = -Infinity;
+  for (var di = 0; di < dims.length; di++) {
+    for (var si = 0; si < nSent; si++) {
+      var v = dims[di].values[si];
+      if (v < globalMin) globalMin = v;
+      if (v > globalMax) globalMax = v;
+    }
+  }
+  var valRange = globalMax - globalMin || 1;
+
+  // Title
+  ctx.font = 'bold 10px monospace';
+  ctx.fillStyle = '#888';
+  ctx.textAlign = 'center';
+  ctx.fillText(
+    (showMode === 'most' ? 'Most' : 'Least') + ' Different Dimensions — ' +
+    (layerIdx === 0 ? 'Embedding' : 'Layer ' + (layerIdx - 1)),
+    W / 2, 14
+  );
+
+  // Draw bars
+  for (var di = 0; di < dims.length; di++) {
+    var d = dims[di];
+    var y0 = margin.top + di * (barGroupH + 2);
+
+    // Dim label
+    ctx.font = '8px monospace';
+    ctx.fillStyle = '#888';
+    ctx.textAlign = 'right';
+    ctx.fillText('d' + d.dim, margin.left - 4, y0 + barGroupH / 2 + 3);
+
+    // One bar per sentence
+    for (var si = 0; si < nSent; si++) {
+      var v = d.values[si];
+      var barX = margin.left + ((v - globalMin) / valRange) * plotW;
+      var zeroX = margin.left + ((0 - globalMin) / valRange) * plotW;
+
+      var by = y0 + si * (barH + 1);
+      var bw = barX - zeroX;
+
+      ctx.fillStyle = colors[si % colors.length];
+      if (bw >= 0) {
+        ctx.fillRect(zeroX, by, bw, barH);
+      } else {
+        ctx.fillRect(barX, by, -bw, barH);
+      }
+    }
+
+    // Variance indicator
+    var varBarW = Math.min(plotW * 0.3, Math.max(2, (d.variance / (dims[0].variance || 1)) * plotW * 0.2));
+    ctx.fillStyle = 'rgba(255,255,255,0.15)';
+    ctx.fillRect(margin.left + plotW - varBarW - 2, y0, varBarW, barGroupH);
+    ctx.font = '7px monospace';
+    ctx.fillStyle = '#555';
+    ctx.textAlign = 'right';
+    ctx.fillText('σ²=' + d.variance.toExponential(1), margin.left + plotW - 4, y0 + barGroupH - 1);
+  }
+
+  // Legend
+  var legY = H - 10;
+  ctx.font = '8px monospace';
+  ctx.textAlign = 'left';
+  for (var si = 0; si < nSent; si++) {
+    var lx = margin.left + si * 70;
+    ctx.fillStyle = colors[si % colors.length];
+    ctx.fillRect(lx, legY - 6, 10, 6);
+    ctx.fillStyle = '#888';
+    ctx.fillText('[' + si + ']', lx + 13, legY);
+  }
+
+  // ---- Pairwise similarity matrix ----
+  document.getElementById('multi-pairwise').style.display = 'block';
+  var pairCv = document.getElementById('multi-pair-cv');
+  var cellSize = Math.min(40, Math.floor(200 / nSent));
+  pairCv.width = cellSize * nSent + 60;
+  pairCv.height = cellSize * nSent + 60;
+  var pCtx = pairCv.getContext('2d');
+  pCtx.fillStyle = '#0a0a1a';
+  pCtx.fillRect(0, 0, pairCv.width, pairCv.height);
+
+  var cosMatrix = lc.pairwise_cosine;
+  var offsetX = 50, offsetY = 10;
+
+  for (var i = 0; i < nSent; i++) {
+    for (var j = 0; j < nSent; j++) {
+      var val = cosMatrix[i][j];
+      // Map cosine similarity [-1, 1] to color
+      // -1 = blue, 0 = black, 1 = green
+      var r, g, b;
+      if (val < 0) {
+        var t = -val;
+        r = 0; g = 0; b = Math.floor(t * 220);
+      } else {
+        var t = val;
+        r = 0; g = Math.floor(t * 200); b = Math.floor(t * 100);
+      }
+      pCtx.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
+      pCtx.fillRect(offsetX + j * cellSize, offsetY + i * cellSize, cellSize - 1, cellSize - 1);
+
+      // Value text
+      if (cellSize >= 20) {
+        pCtx.font = '8px monospace';
+        pCtx.fillStyle = val > 0.5 ? '#000' : '#fff';
+        pCtx.textAlign = 'center';
+        pCtx.fillText(val.toFixed(2),
+          offsetX + j * cellSize + cellSize / 2,
+          offsetY + i * cellSize + cellSize / 2 + 3);
+      }
+    }
+    // Row label
+    pCtx.font = '8px monospace';
+    pCtx.fillStyle = colors[i % colors.length];
+    pCtx.textAlign = 'right';
+    pCtx.fillText('[' + i + ']', offsetX - 4, offsetY + i * cellSize + cellSize / 2 + 3);
+    // Column label
+    pCtx.textAlign = 'center';
+    pCtx.fillText('[' + i + ']', offsetX + i * cellSize + cellSize / 2, offsetY + nSent * cellSize + 14);
+  }
+}
+
+function renderMultiLayerProfile() {
+  if (!multiData) return;
+  document.getElementById('multi-layer-profile').style.display = 'block';
+
+  var cv = document.getElementById('multi-layerprof-cv');
+  var ctx = cv.getContext('2d');
+  var W = cv.width, H = cv.height;
+  ctx.fillStyle = '#0a0a1a';
+  ctx.fillRect(0, 0, W, H);
+
+  var variances = multiData.summary.layer_total_variances;
+  var nL = variances.length;
+  var maxVar = Math.max.apply(null, variances) || 1;
+
+  var barW = Math.max(3, Math.floor((W - 30) / nL) - 1);
+  var baseY = H - 15;
+  var maxBarH = baseY - 5;
+
+  for (var i = 0; i < nL; i++) {
+    var h = (variances[i] / maxVar) * maxBarH;
+    var x = 15 + i * (barW + 1);
+    var frac = variances[i] / maxVar;
+
+    // Most divergent layer highlighted
+    var isMost = (i === multiData.summary.most_divergent_layer);
+
+    ctx.fillStyle = isMost ?
+      'rgb(233,69,96)' :
+      'rgb(' + Math.floor(frac * 200) + ',' + Math.floor((1 - frac) * 120 + 50) + ',' + Math.floor((1 - frac) * 180) + ')';
+    ctx.fillRect(x, baseY - h, barW, h);
+
+    // Label
+    if (nL <= 25 || i % 2 === 0) {
+      ctx.font = '7px monospace';
+      ctx.fillStyle = isMost ? '#e94560' : '#666';
+      ctx.textAlign = 'center';
+      ctx.fillText(i === 0 ? 'E' : '' + (i - 1), x + barW / 2, H - 2);
+    }
+  }
+}
+
 </script></body></html>"""
 
 # ============================================================
@@ -8548,6 +8910,7 @@ class Handler(BaseHTTPRequestHandler):
 
         handler_map = {
             "/run": handle_post_run,
+            "/multi_run": handle_multi_run,
             "/diffeomorphism_spectrum": handle_diffeomorphism_spectrum,
             "/contrastive_spectrum": handle_contrastive_spectrum,
             "/compare": handle_compare,
@@ -10175,6 +10538,173 @@ def estimate_fiber_curvature(hidden_states, k_neighbors=8, pca_d=16):
         'metric_eigenvalues': metric_eigenvalues,     # list of lists
         'sectional_curvature': sectional_curvature,   # [n_layers, seq_len]
     }
+
+def handle_multi_run(body_bytes):
+    """Process multiple sentences independently and return comparison data."""
+    req = json.loads(body_bytes)
+    sentences = req.get("sentences", [])
+    model_name = req.get("model", "").strip() or None
+    itp_method = req.get("itp_method", "rbf").strip()
+
+    if not sentences or len(sentences) < 2:
+        return json.dumps({"error": "Need at least 2 sentences"}).encode()
+
+    if model_name and model_name != MODEL_NAME:
+        load_model(model_name)
+
+    n_layers = get_n_layers(MODEL_CONFIG)
+    hidden_dim = get_hidden_dim(MODEL_CONFIG)
+
+    all_results = []
+
+    for idx, text in enumerate(sentences):
+        text = text.strip()
+        if not text:
+            continue
+        print(f"[MultiRun] Processing sentence {idx+1}/{len(sentences)}: {text[:60]}...")
+
+        input_ids, tokens = tokenize_text(TOKENIZER, text)
+        hs = extract_hidden_states(MODEL, input_ids)
+        n_tokens = input_ids.shape[1]
+
+        # Collect per-layer hidden states as numpy arrays
+        # Shape per layer: (seq_len, hidden_dim)
+        layer_activations = []
+        for lay in range(n_layers + 1):
+            layer_activations.append(hs[lay][0].cpu().float().numpy())
+
+        # Compute mean activation per dimension per layer (aggregated across tokens)
+        # This gives a "sentence fingerprint" per layer: (n_layers+1, hidden_dim)
+        mean_per_layer = np.stack([la.mean(axis=0) for la in layer_activations], axis=0)
+
+        # Also compute max absolute activation per dimension per layer
+        max_abs_per_layer = np.stack([np.abs(la).max(axis=0) for la in layer_activations], axis=0)
+
+        # Compute per-layer norms (L2 of mean activation)
+        layer_norms = [float(np.linalg.norm(mean_per_layer[l])) for l in range(n_layers + 1)]
+
+        all_results.append({
+            "index": idx,
+            "text": text,
+            "tokens": tokens,
+            "n_tokens": n_tokens,
+            "mean_per_layer": mean_per_layer.tolist(),        # (n_layers+1, hidden_dim)
+            "max_abs_per_layer": max_abs_per_layer.tolist(),  # (n_layers+1, hidden_dim)
+            "layer_norms": layer_norms,
+        })
+
+    if len(all_results) < 2:
+        return json.dumps({"error": "Need at least 2 non-empty sentences"}).encode()
+
+    # ================================================================
+    # CROSS-SENTENCE COMPARISON
+    # ================================================================
+    n_sentences = len(all_results)
+
+    # For each layer, compute pairwise dimension-wise differences
+    # and find which dimensions differ the most / least
+    layer_comparisons = []
+
+    for lay in range(n_layers + 1):
+        # Collect mean activations for all sentences at this layer
+        # Shape: (n_sentences, hidden_dim)
+        means = np.stack([
+            np.array(all_results[si]["mean_per_layer"][lay])
+            for si in range(n_sentences)
+        ], axis=0)
+
+        # Variance across sentences per dimension
+        dim_variance = np.var(means, axis=0)  # (hidden_dim,)
+
+        # Mean across sentences per dimension
+        dim_mean = np.mean(means, axis=0)  # (hidden_dim,)
+
+        # Range (max - min) across sentences per dimension
+        dim_range = np.ptp(means, axis=0)  # (hidden_dim,)
+
+        # Top-K most differing dimensions
+        top_k = min(50, hidden_dim)
+        most_different_dims = np.argsort(-dim_variance)[:top_k]
+        least_different_dims = np.argsort(dim_variance)[:top_k]
+
+        # Pairwise cosine similarities between sentences at this layer
+        from scipy.spatial.distance import cosine as cosine_dist
+        pairwise_cosine = np.zeros((n_sentences, n_sentences))
+        for i in range(n_sentences):
+            for j in range(n_sentences):
+                if i == j:
+                    pairwise_cosine[i, j] = 1.0
+                else:
+                    pairwise_cosine[i, j] = 1.0 - cosine_dist(means[i], means[j])
+
+        # Pairwise L2 distances
+        pairwise_l2 = cdist(means, means, metric='euclidean')
+
+        layer_comparisons.append({
+            "layer": lay,
+            "dim_variance": dim_variance.tolist(),
+            "dim_mean": dim_mean.tolist(),
+            "dim_range": dim_range.tolist(),
+            "most_different_dims": [
+                {
+                    "dim": int(d),
+                    "variance": round(float(dim_variance[d]), 8),
+                    "range": round(float(dim_range[d]), 6),
+                    "values": [round(float(means[si][d]), 6) for si in range(n_sentences)]
+                }
+                for d in most_different_dims
+            ],
+            "least_different_dims": [
+                {
+                    "dim": int(d),
+                    "variance": round(float(dim_variance[d]), 8),
+                    "range": round(float(dim_range[d]), 6),
+                    "values": [round(float(means[si][d]), 6) for si in range(n_sentences)]
+                }
+                for d in least_different_dims
+            ],
+            "pairwise_cosine": pairwise_cosine.tolist(),
+            "pairwise_l2": pairwise_l2.tolist(),
+            "total_variance": round(float(np.sum(dim_variance)), 6),
+        })
+
+    # ================================================================
+    # GLOBAL SUMMARY: Which layers show the most cross-sentence divergence?
+    # ================================================================
+    layer_total_variances = [lc["total_variance"] for lc in layer_comparisons]
+    most_divergent_layer = int(np.argmax(layer_total_variances))
+    least_divergent_layer = int(np.argmin(layer_total_variances))
+
+    # Global top dimensions (across all layers)
+    global_dim_variance = np.zeros(hidden_dim)
+    for lc in layer_comparisons:
+        global_dim_variance += np.array(lc["dim_variance"])
+    global_most_different = np.argsort(-global_dim_variance)[:50]
+    global_least_different = np.argsort(global_dim_variance)[:50]
+
+    response = {
+        "n_sentences": n_sentences,
+        "n_layers": n_layers,
+        "hidden_dim": hidden_dim,
+        "model_name": MODEL_NAME,
+        "sentences": all_results,
+        "layer_comparisons": layer_comparisons,
+        "summary": {
+            "most_divergent_layer": most_divergent_layer,
+            "least_divergent_layer": least_divergent_layer,
+            "layer_total_variances": [round(v, 6) for v in layer_total_variances],
+            "global_most_different_dims": [
+                {"dim": int(d), "total_variance": round(float(global_dim_variance[d]), 8)}
+                for d in global_most_different[:20]
+            ],
+            "global_least_different_dims": [
+                {"dim": int(d), "total_variance": round(float(global_dim_variance[d]), 8)}
+                for d in global_least_different[:20]
+            ],
+        }
+    }
+
+    return json.dumps(response, cls=SafeFloatEncoder).encode()
 
 if __name__ == "__main__":
     try:
