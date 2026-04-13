@@ -3082,106 +3082,173 @@ function gp(){return{
     kn:+document.getElementById('sl-kn').value
 }}
 
-function onKey(e){
-    if(document.activeElement===document.getElementById('txt-in'))return;
-    if(document.activeElement===document.getElementById('txt-b'))return;
-    var sl=document.getElementById('sl-layer'),st=document.getElementById('sl-t'),sa=document.getElementById('sl-amp');
-    var sdx=document.getElementById('sl-dx'), sdy=document.getElementById('sl-dy'), sdz=document.getElementById('sl-dz');
+function onKey(e) {
+    // ================================================================
+    // Guard: don't intercept keys when typing in text inputs
+    // ================================================================
+    if (document.activeElement === document.getElementById('txt-in')) return;
+    if (document.activeElement === document.getElementById('txt-b')) return;
+
+    // ================================================================
+    // FIBRE VIEW MODES: delegate to fibre-specific key handler
+    // (was added by the _origOnKey wrapper)
+    // ================================================================
+    if (viewMode === 'fibre' || viewMode === 'fibrekelp' || viewMode === 'fibre3d') {
+        onKeyFibre(e);
+        return;
+    }
+
+    // ================================================================
+    // STANDARD KEY HANDLING (the original onKey body)
+    // ================================================================
+    var sl  = document.getElementById('sl-layer');
+    var st  = document.getElementById('sl-t');
+    var sa  = document.getElementById('sl-amp');
+    var sdx = document.getElementById('sl-dx');
+    var sdy = document.getElementById('sl-dy');
+    var sdz = document.getElementById('sl-dz');
     var maxDim = D ? D.hidden_dim - 1 : 767;
 
-    // Shift+Arrow = Dim Z (third axis), works in all views
-    if(e.shiftKey && e.key==='ArrowRight'){
+    // ---- Shift+Arrow = Dim Z (third axis), works in all views ----
+    if (e.shiftKey && e.key === 'ArrowRight') {
         e.preventDefault();
         var newZ = +sdz.value + 1;
-        if(newZ > maxDim) newZ = 0;
-        while(newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ + 1) % (maxDim + 1);
+        if (newZ > maxDim) newZ = 0;
+        while (newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ + 1) % (maxDim + 1);
         sdz.value = newZ;
         sdz.dispatchEvent(new Event('input'));
         return;
     }
-    else if(e.shiftKey && e.key==='ArrowLeft'){
+    else if (e.shiftKey && e.key === 'ArrowLeft') {
         e.preventDefault();
         var newZ = +sdz.value - 1;
-        if(newZ < 0) newZ = maxDim;
-        while(newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ - 1 + maxDim + 1) % (maxDim + 1);
+        if (newZ < 0) newZ = maxDim;
+        while (newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ - 1 + maxDim + 1) % (maxDim + 1);
         sdz.value = newZ;
         sdz.dispatchEvent(new Event('input'));
         return;
     }
-    else if(e.shiftKey && e.key==='ArrowUp'){
+    else if (e.shiftKey && e.key === 'ArrowUp') {
         e.preventDefault();
         var newZ = +sdz.value + 10;
-        if(newZ > maxDim) newZ = newZ % (maxDim + 1);
-        while(newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ + 1) % (maxDim + 1);
+        if (newZ > maxDim) newZ = newZ % (maxDim + 1);
+        while (newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ + 1) % (maxDim + 1);
         sdz.value = newZ;
         sdz.dispatchEvent(new Event('input'));
         return;
     }
-    else if(e.shiftKey && e.key==='ArrowDown'){
+    else if (e.shiftKey && e.key === 'ArrowDown') {
         e.preventDefault();
         var newZ = +sdz.value - 10;
-        if(newZ < 0) newZ = (newZ + maxDim + 1) % (maxDim + 1);
-        while(newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ - 1 + maxDim + 1) % (maxDim + 1);
+        if (newZ < 0) newZ = (newZ + maxDim + 1) % (maxDim + 1);
+        while (newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ - 1 + maxDim + 1) % (maxDim + 1);
         sdz.value = newZ;
         sdz.dispatchEvent(new Event('input'));
         return;
     }
 
-    if(e.key==='ArrowRight'){
+    // ---- Arrow keys (no shift) = Dim X / Dim Y ----
+    if (e.key === 'ArrowRight') {
         e.preventDefault();
         var newX = +sdx.value + 1;
-        if(newX > maxDim) newX = 0;
-        if(newX === +sdy.value) newX = (newX + 1) % (maxDim + 1);
+        if (newX > maxDim) newX = 0;
+        if (newX === +sdy.value) newX = (newX + 1) % (maxDim + 1);
         sdx.value = newX;
         sdx.dispatchEvent(new Event('input'));
     }
-    else if(e.key==='ArrowLeft'){
+    else if (e.key === 'ArrowLeft') {
         e.preventDefault();
         var newX = +sdx.value - 1;
-        if(newX < 0) newX = maxDim;
-        if(newX === +sdy.value) newX = (newX - 1 + maxDim + 1) % (maxDim + 1);
+        if (newX < 0) newX = maxDim;
+        if (newX === +sdy.value) newX = (newX - 1 + maxDim + 1) % (maxDim + 1);
         sdx.value = newX;
         sdx.dispatchEvent(new Event('input'));
     }
-    else if(e.key==='ArrowUp'){
+    else if (e.key === 'ArrowUp') {
         e.preventDefault();
         var newY = +sdy.value + 1;
-        if(newY > maxDim) newY = 0;
-        if(newY === +sdx.value) newY = (newY + 1) % (maxDim + 1);
+        if (newY > maxDim) newY = 0;
+        if (newY === +sdx.value) newY = (newY + 1) % (maxDim + 1);
         sdy.value = newY;
         sdy.dispatchEvent(new Event('input'));
     }
-    else if(e.key==='ArrowDown'){
+    else if (e.key === 'ArrowDown') {
         e.preventDefault();
         var newY = +sdy.value - 1;
-        if(newY < 0) newY = maxDim;
-        if(newY === +sdx.value) newY = (newY - 1 + maxDim + 1) % (maxDim + 1);
+        if (newY < 0) newY = maxDim;
+        if (newY === +sdx.value) newY = (newY - 1 + maxDim + 1) % (maxDim + 1);
         sdy.value = newY;
         sdy.dispatchEvent(new Event('input'));
     }
-    else if(e.key==='.' || e.key===']'){sl.value=Math.min(+sl.max,+sl.value+1);sl.dispatchEvent(new Event('input'))}
-    else if(e.key===',' || e.key==='['){sl.value=Math.max(0,+sl.value-1);sl.dispatchEvent(new Event('input'))}
-    else if(e.key==="'"){st.value=Math.min(1,+st.value+.05).toFixed(2);st.dispatchEvent(new Event('input'))}
-    else if(e.key===';'){st.value=Math.max(0,+st.value-.05).toFixed(2);st.dispatchEvent(new Event('input'))}
-    else if(e.key==='a'||e.key==='A'){sa.value=Math.min(500,+sa.value*1.3).toFixed(1);sa.dispatchEvent(new Event('input'))}
-    else if(e.key==='z'||e.key==='Z'){sa.value=Math.max(.1,+sa.value/1.3).toFixed(1);sa.dispatchEvent(new Event('input'))}
-    else if(e.key===' '){e.preventDefault();togAP()}
-    else if(e.key==='r'||e.key==='R'){rstAll()}
-    else if(e.key==='d'||e.key==='D'){nxtD()}
-    else if(e.key==='0'){zoomLevel=1.0;panX=0;panY=0;draw()}
-    else if(viewMode==='3d' && e.key==='PageUp'){
+
+    // ---- Layer navigation: [ ] or , . ----
+    else if (e.key === '.' || e.key === ']') {
+        sl.value = Math.min(+sl.max, +sl.value + 1);
+        sl.dispatchEvent(new Event('input'));
+    }
+    else if (e.key === ',' || e.key === '[') {
+        sl.value = Math.max(0, +sl.value - 1);
+        sl.dispatchEvent(new Event('input'));
+    }
+
+    // ---- Deformation t: ; / ' ----
+    else if (e.key === "'") {
+        st.value = Math.min(1, +st.value + 0.05).toFixed(2);
+        st.dispatchEvent(new Event('input'));
+    }
+    else if (e.key === ';') {
+        st.value = Math.max(0, +st.value - 0.05).toFixed(2);
+        st.dispatchEvent(new Event('input'));
+    }
+
+    // ---- Amplification: A / Z ----
+    else if (e.key === 'a' || e.key === 'A') {
+        sa.value = Math.min(500, +sa.value * 1.3).toFixed(1);
+        sa.dispatchEvent(new Event('input'));
+    }
+    else if (e.key === 'z' || e.key === 'Z') {
+        sa.value = Math.max(0.1, +sa.value / 1.3).toFixed(1);
+        sa.dispatchEvent(new Event('input'));
+    }
+
+    // ---- Autoplay toggle: Space ----
+    else if (e.key === ' ') {
+        e.preventDefault();
+        togAP();
+    }
+
+    // ---- Reset all: R ----
+    else if (e.key === 'r' || e.key === 'R') {
+        rstAll();
+    }
+
+    // ---- Next dimension pair: D ----
+    else if (e.key === 'd' || e.key === 'D') {
+        nxtD();
+    }
+
+    // ---- Reset zoom/pan: 0 ----
+    else if (e.key === '0') {
+        zoomLevel = 1.0;
+        panX = 0;
+        panY = 0;
+        draw();
+    }
+
+    // ---- 3D-specific: PageUp/PageDown for Dim Z ----
+    else if (viewMode === '3d' && e.key === 'PageUp') {
         e.preventDefault();
         var newZ = +sdz.value + 1;
-        if(newZ > maxDim) newZ = 0;
-        while(newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ + 1) % (maxDim + 1);
+        if (newZ > maxDim) newZ = 0;
+        while (newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ + 1) % (maxDim + 1);
         sdz.value = newZ;
         sdz.dispatchEvent(new Event('input'));
     }
-    else if(viewMode==='3d' && e.key==='PageDown'){
+    else if (viewMode === '3d' && e.key === 'PageDown') {
         e.preventDefault();
         var newZ = +sdz.value - 1;
-        if(newZ < 0) newZ = maxDim;
-        while(newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ - 1 + maxDim + 1) % (maxDim + 1);
+        if (newZ < 0) newZ = maxDim;
+        while (newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ - 1 + maxDim + 1) % (maxDim + 1);
         sdz.value = newZ;
         sdz.dispatchEvent(new Event('input'));
     }
@@ -5070,16 +5137,6 @@ function fetchFibreNeuronData() {
     fibreState.loading = false;
   });
 }
-
-// Extend key handler for fibre-specific controls
-var _origOnKey = onKey;
-onKey = function(e) {
-  if (viewMode === 'fibre' || viewMode === 'fibrekelp' || viewMode === 'fibre3d') {
-    onKeyFibre(e);
-    return;
-  }
-  _origOnKey(e);
-};
 
 function computeFractionalDeltas(layerFrac, mode, activeDeltas, attnDeltas, mlpDeltas, nLayers, nP, dx, dy, amp) {
     var layerInt = Math.floor(layerFrac);
