@@ -2660,64 +2660,6 @@ function updateStrainStatsPanel(){
     panel.innerHTML = html;
 }
 
-function onData(){
-    document.getElementById('sl-layer').max=D.n_layers-1;
-    document.getElementById('sl-dx').max=D.hidden_dim-1;
-    document.getElementById('sl-dy').max=D.hidden_dim-1;
-    document.getElementById('sl-dz').max=D.hidden_dim-1;
-    document.getElementById('i-mod').textContent=D.model_name;
-    document.getElementById('i-pts').textContent=D.n_points;
-    document.getElementById('i-real').textContent=D.n_real;
-    document.getElementById('i-syn').textContent=D.n_synth;
-    document.getElementById('i-lay').textContent=D.n_layers;
-    document.getElementById('i-dim').textContent=D.hidden_dim;
-    document.getElementById('i-tok').textContent=D.tokens.slice(0,D.n_real).join(' ');
-    document.getElementById('sel-model').value=D.model_name;
-
-    // Display interpolation method
-    document.getElementById('i-itp').textContent = D.itp_method || 'rbf';
-    // Sync the dropdown
-    if(D.itp_method){
-        document.getElementById('sel-itp').value = D.itp_method;
-    }
-
-    // Update decomposition selector availability
-    var decompSel = document.getElementById('sel-decomp');
-    if(D.attn_deltas && D.mlp_deltas){
-        decompSel.disabled = false;
-        decompSel.title = 'Component decomposition available';
-    } else {
-        decompSel.disabled = true;
-        decompSel.value = 'full';
-        decompSel.title = 'Component decomposition not available for this model architecture';
-    }
-
-    // Update strain stats panel
-    updateStrainStatsPanel();
-
-    autoParams();
-    draw();
-    document.getElementById('status').textContent='Ready — '+D.n_real+' tokens, '+D.n_synth+' probes | Model: '+D.model_name;
-
-    var ntp = document.getElementById('next-token-panel');
-    if(D.next_token && D.next_token.length > 0){
-        var html = '';
-        for(var i=0; i<D.next_token.length; i++){
-            var nt = D.next_token[i];
-            var barW = Math.max(2, nt.prob * 200);
-            html += '<div style="display:flex;align-items:center;gap:6px">';
-            html += '<span style="color:#e94560;font-weight:bold;min-width:80px;font-family:monospace">' +
-                    nt.token + '</span>';
-            html += '<div style="background:#e94560;height:8px;width:'+barW+'px;border-radius:3px;opacity:0.7"></div>';
-            html += '<span style="color:#888;font-size:9px">' + (nt.prob*100).toFixed(1) + '%</span>';
-            html += '</div>';
-        }
-        ntp.innerHTML = html;
-    } else {
-        ntp.innerHTML = '<span style="color:#555">No predictions available</span>';
-    }
-}
-
 function autoParams(){
     if(!D)return;
     var dx=+document.getElementById('sl-dx').value;
@@ -3576,13 +3518,99 @@ function updateSAETokenDropdown(){
     sel.value = D.n_real - 1;
 }
 
-// Hook into onData to refresh token list and SAE info
-var _origOnData = onData;
-onData = function(){
-    _origOnData();
+function onData() {
+    // ================================================================
+    // FIBRE: Clear cached neuron data when new text arrives
+    // (was added by _origOnData3 wrapper)
+    // ================================================================
+    fibreState.neuronData = null;
+
+    // ================================================================
+    // CORE: Update all UI controls from the new data D
+    // (the original onData body)
+    // ================================================================
+    document.getElementById('sl-layer').max = D.n_layers - 1;
+    document.getElementById('sl-dx').max = D.hidden_dim - 1;
+    document.getElementById('sl-dy').max = D.hidden_dim - 1;
+    document.getElementById('sl-dz').max = D.hidden_dim - 1;
+    document.getElementById('i-mod').textContent = D.model_name;
+    document.getElementById('i-pts').textContent = D.n_points;
+    document.getElementById('i-real').textContent = D.n_real;
+    document.getElementById('i-syn').textContent = D.n_synth;
+    document.getElementById('i-lay').textContent = D.n_layers;
+    document.getElementById('i-dim').textContent = D.hidden_dim;
+    document.getElementById('i-tok').textContent = D.tokens.slice(0, D.n_real).join(' ');
+    document.getElementById('sel-model').value = D.model_name;
+
+    // Display interpolation method
+    document.getElementById('i-itp').textContent = D.itp_method || 'rbf';
+    if (D.itp_method) {
+        document.getElementById('sel-itp').value = D.itp_method;
+    }
+
+    // Update decomposition selector availability
+    var decompSel = document.getElementById('sel-decomp');
+    if (D.attn_deltas && D.mlp_deltas) {
+        decompSel.disabled = false;
+        decompSel.title = 'Component decomposition available';
+    } else {
+        decompSel.disabled = true;
+        decompSel.value = 'full';
+        decompSel.title = 'Component decomposition not available for this model architecture';
+    }
+
+    // Update strain stats panel
+    updateStrainStatsPanel();
+
+    autoParams();
+    draw();
+    document.getElementById('status').textContent =
+        'Ready — ' + D.n_real + ' tokens, ' + D.n_synth + ' probes | Model: ' + D.model_name;
+
+    // Render next-token predictions
+    var ntp = document.getElementById('next-token-panel');
+    if (D.next_token && D.next_token.length > 0) {
+        var html = '';
+        for (var i = 0; i < D.next_token.length; i++) {
+            var nt = D.next_token[i];
+            var barW = Math.max(2, nt.prob * 200);
+            html += '<div style="display:flex;align-items:center;gap:6px">';
+            html += '<span style="color:#e94560;font-weight:bold;min-width:80px;font-family:monospace">' +
+                    nt.token + '</span>';
+            html += '<div style="background:#e94560;height:8px;width:' + barW +
+                    'px;border-radius:3px;opacity:0.7"></div>';
+            html += '<span style="color:#888;font-size:9px">' +
+                    (nt.prob * 100).toFixed(1) + '%</span>';
+            html += '</div>';
+        }
+        ntp.innerHTML = html;
+    } else {
+        ntp.innerHTML = '<span style="color:#555">No predictions available</span>';
+    }
+
+    // ================================================================
+    // SAE: Refresh token dropdown and re-initialize SAE panel
+    // (was added by _origOnData / SAE wrapper)
+    // ================================================================
     updateSAETokenDropdown();
     initSAEPanel();
-};
+
+    // ================================================================
+    // DIFFEO: Rebuild diffeomorphism overlay if active
+    // (was added by _origOnData2 / diffeo wrapper)
+    // ================================================================
+    if (diffeoState.active) {
+        rebuildDiffeo();
+    }
+
+    // ================================================================
+    // FIBRE: Auto-fetch neuron data if currently in a fibre view
+    // (was added by _origOnData3 / fibre wrapper)
+    // ================================================================
+    if (viewMode.startsWith('fibre') && D) {
+        fetchFibreNeuronData();
+    }
+}
 
 function fetchSAEFeatures(){
     if(!D) return;
@@ -4850,15 +4878,6 @@ function renderDiffeoOverlay(time) {
   }
 }
 
-// Hook into onData so diffeo rebuilds when new data arrives
-var _origOnData2 = onData;
-onData = function() {
-  _origOnData2();
-  if (diffeoState.active) {
-    rebuildDiffeo();
-  }
-};
-
 function draw() {
     if (!D) return;
 
@@ -5051,16 +5070,6 @@ function fetchFibreNeuronData() {
     fibreState.loading = false;
   });
 }
-
-// Hook into onData to clear cached neuron data when new text is run
-var _origOnData3 = onData;
-onData = function() {
-  fibreState.neuronData = null;
-  _origOnData3();
-  if (viewMode.startsWith('fibre') && D) {
-    fetchFibreNeuronData();
-  }
-};
 
 // Extend key handler for fibre-specific controls
 var _origOnKey = onKey;
