@@ -1966,6 +1966,7 @@ Tokens: <span id="i-tok">-</span>
 <h3>View Mode</h3>
 <div class="view-toggle">
 <button id="btn-fibre" onclick="setViewMode('fibre')">Fibre Bundle</button>
+<button id="btn-fibre3d" onclick="setViewMode('fibre3d')">Fibre 3D</button>
 <button id="btn-fibrekelp" onclick="setViewMode('fibrekelp')">Fibre Kelp</button>
 <button id="btn-2d" class="active" onclick="setViewMode('2d')">2D</button>
 <button id="btn-3d" onclick="setViewMode('3d')">3D</button>
@@ -4229,14 +4230,28 @@ setViewMode = function(mode) {
     document.getElementById('btn-2d').className = '';
     document.getElementById('btn-3d').className = '';
     document.getElementById('btn-fibre').className = '';
+    document.getElementById('btn-fibre3d').className = '';
     document.getElementById('btn-fibrekelp').className = 'active';
     document.getElementById('dz-row').style.display = 'none';
+    draw();
+  } else if (mode === 'fibre3d') {
+    viewMode = 'fibre3d';
+    document.getElementById('btn-2d').className = '';
+    document.getElementById('btn-3d').className = '';
+    document.getElementById('btn-fibre').className = '';
+    document.getElementById('btn-fibre3d').className = 'active';
+    document.getElementById('btn-fibrekelp').className = '';
+    document.getElementById('dz-row').style.display = 'flex';
+    if (D && !fibreState.neuronData && !fibreState.loading) {
+      fetchFibreNeuronData();
+    }
     draw();
   } else if (mode === 'fibre') {
     viewMode = 'fibre';
     document.getElementById('btn-2d').className = '';
     document.getElementById('btn-3d').className = '';
     document.getElementById('btn-fibre').className = 'active';
+    document.getElementById('btn-fibre3d').className = '';
     document.getElementById('btn-fibrekelp').className = '';
     document.getElementById('dz-row').style.display = 'none';
     if (D && !fibreState.neuronData && !fibreState.loading) {
@@ -4245,6 +4260,7 @@ setViewMode = function(mode) {
     draw();
   } else {
     document.getElementById('btn-fibre').className = '';
+    document.getElementById('btn-fibre3d').className = '';
     document.getElementById('btn-fibrekelp').className = '';
     _origSetViewMode(mode);
   }
@@ -4297,6 +4313,10 @@ draw = function() {
     drawFibreBundleKelp();
     return;
   }
+  if (viewMode === 'fibre3d') {
+    drawFibreBundle3DGrid();
+    return;
+  }
   if (viewMode === 'fibre') {
     drawFibreBundle();
     return;
@@ -4307,7 +4327,7 @@ draw = function() {
 // Extend key handler for fibre-specific controls
 var _origOnKey = onKey;
 onKey = function(e) {
-  if (viewMode === 'fibre' || viewMode === 'fibrekelp') {
+  if (viewMode === 'fibre' || viewMode === 'fibrekelp' || viewMode === 'fibre3d') {
     onKeyFibre(e);
     return;
   }
@@ -5977,7 +5997,7 @@ function drawFibreBundle3D(c, W, H, data, layersSource, nTokens, nLayers, hidden
 
 // ---- Mouse interaction for fibre view ----
 cv3d.addEventListener('mousedown', function(e) {
-  if (viewMode !== 'fibre') return;
+    if (viewMode !== 'fibre' && viewMode !== 'fibre3d') return;
   if (e.button === 0 && !e.shiftKey) {
     // Normal drag = rotate all rooms
     fibreState.dragActive = true;
@@ -5996,7 +6016,7 @@ cv3d.addEventListener('mousedown', function(e) {
 });
 
 window.addEventListener('mousemove', function(e) {
-  if (viewMode !== 'fibre') return;
+  if (viewMode !== 'fibre' && viewMode !== 'fibre3d') return;
   if (fibreState.dragActive) {
     var ddx = e.clientX - fibreState.dragLastX;
     var ddy = e.clientY - fibreState.dragLastY;
@@ -6010,8 +6030,422 @@ window.addEventListener('mousemove', function(e) {
   }
 });
 
+function drawFibreBundle3DGrid() {
+    var cv = document.getElementById('cv');
+    var c = cv.getContext('2d');
+    var W = cv.width, H = cv.height;
+    c.clearRect(0, 0, W, H);
+
+    if (!D) {
+        c.font = '14px monospace';
+        c.fillStyle = '#555';
+        c.fillText('Run a prompt first', W / 2 - 80, H / 2);
+        return;
+    }
+
+    var nTokens = D.n_real;
+    var nLayers = D.n_layers;
+    var hiddenDim = D.hidden_dim;
+    var nP = D.n_points;
+
+    var dx = +document.getElementById('sl-dx').value;
+    var dy = +document.getElementById('sl-dy').value;
+    var dz = +document.getElementById('sl-dz').value;
+    var amp = +document.getElementById('sl-amp').value;
+    var t = +document.getElementById('sl-t').value;
+    var sig = +document.getElementById('sl-sig').value;
+    var currentLayer = +document.getElementById('sl-layer').value;
+    var showGrid = document.getElementById('cb-grid').checked;
+    var showHeat = document.getElementById('cb-heat').checked;
+    var showSC = document.getElementById('cb-sc').checked;
+    var mode = document.getElementById('sel-mode').value;
+
+    var activeDeltas = getActiveDeltas();
+    if (!activeDeltas) activeDeltas = D.deltas;
+    var attnDeltas = D.attn_deltas || null;
+    var mlpDeltas = D.mlp_deltas || null;
+    var isEmb = (mode === 'embedding');
+
+    dx = Math.min(dx, hiddenDim - 1);
+    dy = Math.min(dy, hiddenDim - 1);
+    dz = Math.min(dz, hiddenDim - 1);
+
+    // Extract base positions
+    var fx = new Float64Array(nP), fy = new Float64Array(nP), fz = new Float64Array(nP);
+    for (var i = 0; i < nP; i++) {
+        fx[i] = D.fixed_pos[i][dx];
+        fy[i] = D.fixed_pos[i][dy];
+        fz[i] = D.fixed_pos[i][dz];
+    }
+
+    // View bounds
+    var mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity, mnz = Infinity, mxz = -Infinity;
+    for (var i = 0; i < nP; i++) {
+        if (fx[i] < mnx) mnx = fx[i]; if (fx[i] > mxx) mxx = fx[i];
+        if (fy[i] < mny) mny = fy[i]; if (fy[i] > mxy) mxy = fy[i];
+        if (fz[i] < mnz) mnz = fz[i]; if (fz[i] > mxz) mxz = fz[i];
+    }
+    var mr = Math.max(mxx - mnx, mxy - mny, mxz - mnz) || 1;
+    var cxv = (mnx + mxx) / 2, cyv = (mny + mxy) / 2, czv = (mnz + mxz) / 2;
+
+    // 3D projection helpers using fibreState rotation
+    var focalLen = 600;
+    var effScale = Math.min(W, H) * 0.12 / mr * zoomLevel;
+
+    function rot3Df(x, y, z) {
+        var cosY = Math.cos(fibreState.rotY), sinY = Math.sin(fibreState.rotY);
+        var x1 = x * cosY + z * sinY, z1 = -x * sinY + z * cosY;
+        var cosX = Math.cos(fibreState.rotX), sinX = Math.sin(fibreState.rotX);
+        var y1 = y * cosX - z1 * sinX, z2 = y * sinX + z1 * cosX;
+        return [x1, y1, z2];
+    }
+
+    function proj3Df(x, y, z) {
+        var r = rot3Df(x, y, z);
+        var scale = focalLen / (focalLen + r[2]);
+        return [W / 2 + panX + r[0] * scale, H / 2 + panY + r[1] * scale, r[2], scale];
+    }
+
+    // Precompute per-layer raw deltas
+    var edxAll = [], edyAll = [], edzAll = [];
+    for (var lay = 0; lay < nLayers; lay++) {
+        var edxL = new Float64Array(nP), edyL = new Float64Array(nP), edzL = new Float64Array(nP);
+        for (var j = 0; j < nP; j++) {
+            edxL[j] = activeDeltas[lay][j][dx] * amp;
+            edyL[j] = activeDeltas[lay][j][dy] * amp;
+            edzL[j] = activeDeltas[lay][j][dz] * amp;
+        }
+        edxAll.push(edxL); edyAll.push(edyL); edzAll.push(edzL);
+    }
+
+    var s2i = 1 / (2 * sig * sig);
+    var N = Math.max(4, Math.min(10, Math.floor(+document.getElementById('sl-gr').value / 4)));
+
+    // Compute mode-aware cumulative deltas for a given layer
+    function computeEdxEdyEdzForLayer(li) {
+        var edxCum = new Float64Array(nP), edyCum = new Float64Array(nP), edzCum = new Float64Array(nP);
+        if (isEmb) return { edx: edxCum, edy: edyCum, edz: edzCum };
+        if (mode === 'single') {
+            for (var j = 0; j < nP; j++) { edxCum[j] = edxAll[li][j]; edyCum[j] = edyAll[li][j]; edzCum[j] = edzAll[li][j]; }
+        } else if (mode === 'cumfwd') {
+            for (var cl = 0; cl <= li; cl++) for (var j = 0; j < nP; j++) { edxCum[j] += edxAll[cl][j]; edyCum[j] += edyAll[cl][j]; edzCum[j] += edzAll[cl][j]; }
+        } else {
+            for (var cl = li; cl < nLayers; cl++) for (var j = 0; j < nP; j++) { edxCum[j] += edxAll[cl][j]; edyCum[j] += edyAll[cl][j]; edzCum[j] += edzAll[cl][j]; }
+        }
+        return { edx: edxCum, edy: edyCum, edz: edzCum };
+    }
+
+    // Layout: layers stacked along an extra axis (Y in 3D world)
+    // Each layer gets a "slab" in 3D space
+    var layerSpread = mr * 2.5; // total spread of layers along the stacking axis
+    var layerStep = layerSpread / Math.max(nLayers - 1, 1);
+
+    // We'll use a coordinate system where:
+    // X = hidden dim dx
+    // Z = hidden dim dy  (mapped to depth)
+    // Y = layer index (vertical stacking)
+    // The third hidden dim (dz) modulates the deformation
+
+    var pd = 0.15;
+    var vx0 = cxv - mr * (0.5 + pd), vx1 = cxv + mr * (0.5 + pd);
+    var vz0 = cyv - mr * (0.5 + pd), vz1 = cyv + mr * (0.5 + pd);
+    var vw = vx1 - vx0, vh = vz1 - vz0;
+
+    // Collect all edges for depth sorting
+    var allEdges = [];
+    var allTokenPoints = [];
+
+    var tc = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71',
+              '#e74c3c','#3498db','#9b59b6','#1abc9c','#e67e22'];
+
+    for (var li = 0; li < nLayers; li++) {
+        var isCurrentLayer = (li === currentLayer);
+        var layerY = (li - (nLayers - 1) / 2) * layerStep;
+
+        var layerDeltas = computeEdxEdyEdzForLayer(li);
+        var edxCum = layerDeltas.edx, edyCum = layerDeltas.edy, edzCum = layerDeltas.edz;
+
+        // Build deformed grid for this layer
+        var nV = (N + 1) * (N + 1);
+        var oX = new Float64Array(nV), oZ = new Float64Array(nV);
+        var gX = new Float64Array(nV), gZ = new Float64Array(nV), gDZ = new Float64Array(nV);
+
+        for (var gy = 0; gy <= N; gy++) {
+            for (var gx = 0; gx <= N; gx++) {
+                var gi = gy * (N + 1) + gx;
+                oX[gi] = vx0 + (gx / N) * vw;
+                oZ[gi] = vz0 + (gy / N) * vh;
+            }
+        }
+
+        if (isEmb) {
+            for (var gi = 0; gi < nV; gi++) { gX[gi] = oX[gi]; gZ[gi] = oZ[gi]; gDZ[gi] = 0; }
+        } else {
+            for (var gi = 0; gi < nV; gi++) {
+                var px = oX[gi], pz = oZ[gi];
+                var vvx = 0, vvz = 0, vvdz = 0, ws = 0;
+                for (var k = 0; k < nP; k++) {
+                    var eex = px - fx[k], eez = pz - fy[k];
+                    var w = Math.exp(-(eex * eex + eez * eez) * s2i);
+                    vvx += w * edxCum[k]; vvz += w * edyCum[k]; vvdz += w * edzCum[k]; ws += w;
+                }
+                if (ws > 1e-15) { vvx /= ws; vvz /= ws; vvdz /= ws; }
+                gX[gi] = px + t * vvx;
+                gZ[gi] = pz + t * vvz;
+                gDZ[gi] = t * vvdz; // third dim deformation adds to the layer Y offset
+            }
+        }
+
+        // Compute strain for coloring
+        function strainEdge(a, b) {
+            var od = Math.hypot(oX[b] - oX[a], oZ[b] - oZ[a]);
+            var dd = Math.hypot(gX[b] - gX[a], gZ[b] - gZ[a]);
+            return od > 1e-12 ? dd / od : 1;
+        }
+
+        // Grid edges (horizontal)
+        for (var ey = 0; ey <= N; ey++) {
+            for (var ex = 0; ex < N; ex++) {
+                var a = ey * (N + 1) + ex, b = a + 1;
+                var es = strainEdge(a, b);
+
+                var ax3 = (gX[a] - cxv) * effScale;
+                var ay3 = layerY * effScale + gDZ[a] * effScale * 0.3;
+                var az3 = (gZ[a] - cyv) * effScale;
+                var bx3 = (gX[b] - cxv) * effScale;
+                var by3 = layerY * effScale + gDZ[b] * effScale * 0.3;
+                var bz3 = (gZ[b] - cyv) * effScale;
+
+                var pa = proj3Df(ax3, ay3, az3);
+                var pb = proj3Df(bx3, by3, bz3);
+                var avgZ = (pa[2] + pb[2]) / 2;
+
+                allEdges.push({
+                    x1: pa[0], y1: pa[1], x2: pb[0], y2: pb[1],
+                    z: avgZ, strain: es, isCurrentLayer: isCurrentLayer,
+                    type: 'grid'
+                });
+            }
+        }
+
+        // Grid edges (vertical)
+        for (var ey = 0; ey < N; ey++) {
+            for (var ex = 0; ex <= N; ex++) {
+                var a = ey * (N + 1) + ex, b = (ey + 1) * (N + 1) + ex;
+                var es = strainEdge(a, b);
+
+                var ax3 = (gX[a] - cxv) * effScale;
+                var ay3 = layerY * effScale + gDZ[a] * effScale * 0.3;
+                var az3 = (gZ[a] - cyv) * effScale;
+                var bx3 = (gX[b] - cxv) * effScale;
+                var by3 = layerY * effScale + gDZ[b] * effScale * 0.3;
+                var bz3 = (gZ[b] - cyv) * effScale;
+
+                var pa = proj3Df(ax3, ay3, az3);
+                var pb = proj3Df(bx3, by3, bz3);
+                var avgZ = (pa[2] + pb[2]) / 2;
+
+                allEdges.push({
+                    x1: pa[0], y1: pa[1], x2: pb[0], y2: pb[1],
+                    z: avgZ, strain: es, isCurrentLayer: isCurrentLayer,
+                    type: 'grid'
+                });
+            }
+        }
+
+        // Token points at this layer
+        for (var ti = 0; ti < nTokens; ti++) {
+            var tokWX = fx[ti] + (isEmb ? 0 : t * edxCum[ti]);
+            var tokWZ = fy[ti] + (isEmb ? 0 : t * edyCum[ti]);
+            var tokWDZ = isEmb ? 0 : t * edzCum[ti];
+
+            var tx3 = (tokWX - cxv) * effScale;
+            var ty3 = layerY * effScale + tokWDZ * effScale * 0.3;
+            var tz3 = (tokWZ - cyv) * effScale;
+
+            var tp = proj3Df(tx3, ty3, tz3);
+
+            allTokenPoints.push({
+                x: tp[0], y: tp[1], z: tp[2], scale: tp[3],
+                tokenIdx: ti, layerIdx: li,
+                isCurrentLayer: isCurrentLayer,
+                color: tc[ti % tc.length]
+            });
+        }
+
+        // Inter-layer connections (pathlines between consecutive layers)
+        if (li > 0) {
+            var prevLayerY = ((li - 1) - (nLayers - 1) / 2) * layerStep;
+            var prevDeltas = computeEdxEdyEdzForLayer(li - 1);
+
+            for (var ti = 0; ti < nTokens; ti++) {
+                var prevWX = fx[ti] + (isEmb ? 0 : t * prevDeltas.edx[ti]);
+                var prevWZ = fy[ti] + (isEmb ? 0 : t * prevDeltas.edy[ti]);
+                var prevWDZ = isEmb ? 0 : t * prevDeltas.edz[ti];
+                var currWX = fx[ti] + (isEmb ? 0 : t * edxCum[ti]);
+                var currWZ = fy[ti] + (isEmb ? 0 : t * edyCum[ti]);
+                var currWDZ = isEmb ? 0 : t * edzCum[ti];
+
+                var px3 = (prevWX - cxv) * effScale;
+                var py3 = prevLayerY * effScale + prevWDZ * effScale * 0.3;
+                var pz3 = (prevWZ - cyv) * effScale;
+                var cx3 = (currWX - cxv) * effScale;
+                var cy3 = layerY * effScale + currWDZ * effScale * 0.3;
+                var cz3 = (currWZ - cyv) * effScale;
+
+                var pp = proj3Df(px3, py3, pz3);
+                var cp = proj3Df(cx3, cy3, cz3);
+                var avgZ = (pp[2] + cp[2]) / 2;
+
+                allEdges.push({
+                    x1: pp[0], y1: pp[1], x2: cp[0], y2: cp[1],
+                    z: avgZ, strain: 1.0, isCurrentLayer: isCurrentLayer,
+                    type: 'pathline',
+                    color: tc[ti % tc.length]
+                });
+            }
+        }
+
+        // Layer label
+        var labelPos = proj3Df(-mr * 0.7 * effScale / mr, layerY * effScale, 0);
+        allTokenPoints.push({
+            x: labelPos[0], y: labelPos[1], z: labelPos[2], scale: labelPos[3],
+            tokenIdx: -1, layerIdx: li,
+            isCurrentLayer: isCurrentLayer,
+            isLabel: true,
+            labelText: 'L' + li
+        });
+    }
+
+    // Depth sort: back to front
+    allEdges.sort(function(a, b) { return b.z - a.z; });
+    allTokenPoints.sort(function(a, b) { return b.z - a.z; });
+
+    // Draw edges
+    for (var ei = 0; ei < allEdges.length; ei++) {
+        var e = allEdges[ei];
+        var depthAlpha = Math.max(0.05, Math.min(0.8, 0.5 - e.z * 0.0005));
+
+        if (e.type === 'pathline') {
+            var r = parseInt(e.color.slice(1, 3), 16);
+            var g = parseInt(e.color.slice(3, 5), 16);
+            var b = parseInt(e.color.slice(5, 7), 16);
+            c.strokeStyle = 'rgba(' + r + ',' + g + ',' + b + ',' + (depthAlpha * 0.7).toFixed(2) + ')';
+            c.lineWidth = e.isCurrentLayer ? 2.5 : 1.2;
+        } else if (showGrid) {
+            var gridAlpha = e.isCurrentLayer ? depthAlpha * 0.6 : depthAlpha * 0.15;
+            if (showSC) {
+                var sc = s2c(e.strain);
+                c.strokeStyle = 'rgba(' + sc[0] + ',' + sc[1] + ',' + sc[2] + ',' + gridAlpha.toFixed(2) + ')';
+            } else {
+                c.strokeStyle = 'rgba(200,200,200,' + gridAlpha.toFixed(2) + ')';
+            }
+            c.lineWidth = e.isCurrentLayer ? 0.8 : 0.3;
+        } else {
+            continue;
+        }
+
+        c.beginPath();
+        c.moveTo(e.x1, e.y1);
+        c.lineTo(e.x2, e.y2);
+        c.stroke();
+    }
+
+    // Draw token points and labels
+    for (var pi = 0; pi < allTokenPoints.length; pi++) {
+        var pt = allTokenPoints[pi];
+
+        if (pt.isLabel) {
+            c.font = (pt.isCurrentLayer ? 'bold ' : '') + Math.max(8, Math.round(10 * pt.scale)) + 'px monospace';
+            c.fillStyle = pt.isCurrentLayer ? '#e94560' : '#555';
+            c.textAlign = 'right';
+            c.fillText(pt.labelText, pt.x - 5, pt.y + 3);
+            continue;
+        }
+
+        var dotR = Math.max(2, (pt.isCurrentLayer ? 6 : 3.5) * pt.scale);
+        var depthAlpha = Math.max(0.2, Math.min(1.0, 0.8 - pt.z * 0.0005));
+
+        // Glow for current layer
+        if (pt.isCurrentLayer) {
+            var grad = c.createRadialGradient(pt.x, pt.y, 0, pt.x, pt.y, dotR * 3);
+            grad.addColorStop(0, 'rgba(255,255,255,0.1)');
+            grad.addColorStop(1, 'rgba(255,255,255,0)');
+            c.beginPath();
+            c.arc(pt.x, pt.y, dotR * 3, 0, Math.PI * 2);
+            c.fillStyle = grad;
+            c.fill();
+        }
+
+        c.beginPath();
+        c.arc(pt.x, pt.y, dotR, 0, Math.PI * 2);
+        c.fillStyle = pt.color;
+        c.globalAlpha = depthAlpha;
+        c.fill();
+        c.strokeStyle = pt.isCurrentLayer ? '#fff' : 'rgba(255,255,255,0.3)';
+        c.lineWidth = pt.isCurrentLayer ? 1.5 : 0.5;
+        c.stroke();
+        c.globalAlpha = 1.0;
+
+        // Token label (only on bottom layer or current layer, and only for real tokens)
+        if (pt.tokenIdx >= 0 && (pt.layerIdx === 0 || pt.isCurrentLayer)) {
+            var fontSize = Math.max(7, Math.round(10 * pt.scale));
+            c.font = 'bold ' + fontSize + 'px monospace';
+            c.fillStyle = pt.color;
+            c.globalAlpha = depthAlpha;
+            c.textAlign = 'center';
+            c.fillText('[' + pt.tokenIdx + '] ' + D.tokens[pt.tokenIdx], pt.x, pt.y + dotR + fontSize + 2);
+            c.globalAlpha = 1.0;
+        }
+    }
+
+    // 3D axes
+    var axLen = mr * 0.4 * effScale;
+    var axes = [
+        { v: [1, 0, 0], label: 'Dim ' + dx, color: '#e94560' },
+        { v: [0, 1, 0], label: 'Layer ↑', color: '#53a8b6' },
+        { v: [0, 0, 1], label: 'Dim ' + dy, color: '#f5a623' }
+    ];
+    c.lineWidth = 1.5;
+    var o3 = proj3Df(0, 0, 0);
+    for (var ai = 0; ai < 3; ai++) {
+        var ax = axes[ai];
+        var e3 = proj3Df(ax.v[0] * axLen, ax.v[1] * axLen, ax.v[2] * axLen);
+        c.strokeStyle = ax.color;
+        c.globalAlpha = 0.5;
+        c.beginPath();
+        c.moveTo(o3[0], o3[1]);
+        c.lineTo(e3[0], e3[1]);
+        c.stroke();
+        c.globalAlpha = 1;
+        c.font = '10px monospace';
+        c.fillStyle = ax.color;
+        c.textAlign = 'left';
+        c.fillText(ax.label, e3[0] + 4, e3[1] - 4);
+    }
+
+    // HUD
+    var decompLabel = getDecompLabel();
+    c.font = '11px monospace';
+    c.fillStyle = 'rgba(255,255,255,0.45)';
+    c.textAlign = 'left';
+    if (isEmb) {
+        c.fillText('FIBRE BUNDLE 3D  EMBEDDING  Dims:' + dx + ',' + dy + ',' + dz +
+                   '  Layers:' + nLayers + '  Tokens:' + nTokens + '  Drag to rotate', 12, 16);
+    } else {
+        c.fillText('FIBRE BUNDLE 3D  Layer ' + currentLayer + '/' + (nLayers - 1) +
+                   '  t=' + t.toFixed(2) + '  amp=' + amp.toFixed(1) +
+                   '  Dims:' + dx + ',' + dy + ',' + dz +
+                   '  Mode:' + mode + '  Decomp:' + decompLabel +
+                   '  Drag to rotate', 12, 16);
+    }
+    c.font = '9px monospace';
+    c.fillStyle = 'rgba(255,255,255,0.3)';
+    c.fillText('Zoom: ' + zoomLevel.toFixed(2) + 'x  (Scroll=zoom, Shift+drag=pan, 0=reset)', 12, H - 8);
+}
+
 window.addEventListener('mouseup', function(e) {
-  if (viewMode === 'fibre') {
+  if (viewMode === 'fibre' || viewMode === 'fibre3d') {
     fibreState.dragActive = false;
   }
 });
