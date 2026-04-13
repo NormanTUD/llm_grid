@@ -8918,6 +8918,10 @@ var multiHoveredDim = -1;
 var multiHoveredSentence = -1;
 var multiViewTab = 'grids';
 
+// ============================================================
+// MULTI-VIEW: Unified side-by-side rendering for ALL view modes
+// ============================================================
+
 function drawMultiCanvas() {
   var cv = document.getElementById('cv');
   var c = cv.getContext('2d');
@@ -8934,7 +8938,7 @@ function drawMultiCanvas() {
 
   // Draw tab bar at top
   var tabs = [
-    { id: 'grids', label: '🗺️ Deformation Grids' },
+    { id: 'grids', label: '🗺️ Side-by-Side Views' },
     { id: 'dims', label: '📊 Dimension Comparison' },
     { id: 'heatmap', label: '🔥 Variance Heatmap' },
     { id: 'pairwise', label: '🔗 Pairwise Similarity' },
@@ -8956,11 +8960,10 @@ function drawMultiCanvas() {
     c.fillText(tabs[ti].label, tx + tabW / 2, tabH / 2 + 4);
   }
 
-  // Dispatch to the active tab
   var drawArea = { x: 0, y: tabH + 4, w: W, h: H - tabH - 4 };
 
   if (multiViewTab === 'grids') {
-    drawMultiGridComparison(c, drawArea);
+    drawMultiSideBySide(c, cv, drawArea);
   } else if (multiViewTab === 'dims') {
     drawMultiDimComparison(c, drawArea);
   } else if (multiViewTab === 'heatmap') {
@@ -8972,21 +8975,827 @@ function drawMultiCanvas() {
   }
 }
 
+/**
+ * The key function: renders each sentence side-by-side using the
+ * CURRENT view mode (2D, 3D, Fibre, Fibre3D, FibreKelp).
+ *
+ * It works by temporarily swapping the global D to each sentence's
+ * data, setting up a clip region and transform for each panel,
+ * then calling the appropriate existing draw function.
+ */
+function drawMultiSideBySide(c, cv, area) {
+  if (!multiData || !multiData.sentence_data || multiData.sentence_data.length === 0) {
+    c.font = '14px monospace';
+    c.fillStyle = '#555';
+    c.textAlign = 'center';
+    c.fillText('No sentence data — re-run Multi Compare', area.x + area.w / 2, area.y + area.h / 2);
+    return;
+  }
+
+  var nSent = multiData.sentence_data.length;
+  var sentColors = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71','#e74c3c','#3498db','#9b59b6'];
+
+  // Determine the sub-view mode to use for each panel
+  // Use a selector or default to the last non-multi viewMode
+  var subView = multiSubView || '2d';
+
+  // Draw sub-view selector bar just below the tab bar
+  var subViews = [
+    { id: '2d', label: '2D' },
+    { id: '3d', label: '3D' },
+    { id: 'fibre', label: 'Fibre' },
+    { id: 'fibre3d', label: 'Fibre 3D' },
+    { id: 'fibrekelp', label: 'Kelp' },
+  ];
+  var svBarH = 22;
+  var svBarW = area.w / subViews.length;
+  for (var svi = 0; svi < subViews.length; svi++) {
+    var svx = area.x + svi * svBarW;
+    var svy = area.y;
+    var isAct = (subViews[svi].id === subView);
+    c.fillStyle = isAct ? '#0f3460' : '#0a0a1a';
+    c.fillRect(svx, svy, svBarW, svBarH);
+    c.strokeStyle = isAct ? '#53a8b6' : '#0f3460';
+    c.lineWidth = isAct ? 1.5 : 0.5;
+    c.strokeRect(svx, svy, svBarW, svBarH);
+    c.font = (isAct ? 'bold ' : '') + '10px monospace';
+    c.fillStyle = isAct ? '#53a8b6' : '#666';
+    c.textAlign = 'center';
+    c.fillText(subViews[svi].label, svx + svBarW / 2, svy + svBarH / 2 + 3);
+  }
+
+  // Adjust area below the sub-view bar
+  var panelArea = {
+    x: area.x,
+    y: area.y + svBarH + 2,
+    w: area.w,
+    h: area.h - svBarH - 2 - 30 // leave room for labels
+  };
+
+  // Layout: divide into nSent columns
+  var gap = 4;
+  var panelW = Math.floor((panelArea.w - gap * (nSent - 1)) / nSent);
+  var panelH = panelArea.h;
+
+  // Save the real global state
+  var savedD = D;
+  var savedViewMode = viewMode;
+  var savedZoom = zoomLevel;
+  var savedPanX = panX;
+  var savedPanY = panY;
+  var savedRotX = rotX;
+  var savedRotY = rotY;
+  var savedFibreRotX = fibreState.rotX;
+  var savedFibreRotY = fibreState.rotY;
+
+  for (var si = 0; si < nSent; si++) {
+    var sentD = multiData.sentence_data[si];
+    if (!sentD || !sentD.fixed_pos || !sentD.deltas) continue;
+
+    var px = panelArea.x + si * (panelW + gap);
+    var py = panelArea.y;
+
+    // Draw panel border
+    c.strokeStyle = sentColors[si % sentColors.length];
+    c.lineWidth = 1.5;
+    c.strokeRect(px, py, panelW, panelH);
+
+    // Set up clipping and transform so the existing draw functions
+    // render into this panel
+    c.save();
+    c.beginPath();
+    c.rect(px, py, panelW, panelH);
+    c.clip();
+
+    // Temporarily swap global state
+    D = sentD;
+    viewMode = subView;
+    zoomLevel = 1.0;
+    panX = 0;
+    panY = 0;
+
+    // Resize the canvas dimensions that the draw functions read
+    // We do this by overriding cv.width/cv.height temporarily
+    // But that would clear the canvas! Instead, we use a transform.
+    //
+    // The draw functions use cv.width and cv.height for layout.
+    // We need to make them think the canvas is panelW x panelH.
+    // We'll translate so (0,0) maps to (px, py) and scale if needed.
+
+    // For 2D: draw2D uses c.save/translate/scale internally for pan/zoom.
+    // We need to intercept that. The simplest approach: create an offscreen
+    // canvas for each panel, draw into it, then composite.
+
+    var offCv = document.createElement('canvas');
+    offCv.width = panelW;
+    offCv.height = panelH;
+    var offCtx = offCv.getContext('2d');
+
+    // The draw functions read from document.getElementById('cv')
+    // We can't easily redirect that. Instead, we'll use our
+    // drawMiniDeformedGrid for 2D, and build mini versions for others.
+
+    if (subView === '2d') {
+      drawMiniPanel2D(offCtx, sentD, panelW, panelH);
+    } else if (subView === '3d') {
+      drawMiniPanel3D(offCtx, sentD, panelW, panelH);
+    } else if (subView === 'fibre') {
+      drawMiniPanelFibre(offCtx, sentD, panelW, panelH);
+    } else if (subView === 'fibre3d') {
+      drawMiniPanelFibre3D(offCtx, sentD, panelW, panelH);
+    } else if (subView === 'fibrekelp') {
+      drawMiniPanelFibreKelp(offCtx, sentD, panelW, panelH);
+    }
+
+    // Composite the offscreen canvas into the main canvas
+    c.drawImage(offCv, px, py);
+
+    c.restore(); // restore clipping
+
+    // Sentence label below the panel
+    c.font = 'bold 9px monospace';
+    c.fillStyle = sentColors[si % sentColors.length];
+    c.textAlign = 'center';
+    var labelText = '[' + si + '] ' + (sentD.text || '').substring(0, Math.floor(panelW / 5.5));
+    if ((sentD.text || '').length > Math.floor(panelW / 5.5)) labelText += '…';
+    c.fillText(labelText, px + panelW / 2, py + panelH + 14);
+
+    c.font = '8px monospace';
+    c.fillStyle = '#666';
+    c.fillText(sentD.n_real + ' tok | ' + sentD.n_layers + ' layers',
+      px + panelW / 2, py + panelH + 24);
+  }
+
+  // Restore global state
+  D = savedD;
+  viewMode = savedViewMode;
+  zoomLevel = savedZoom;
+  panX = savedPanX;
+  panY = savedPanY;
+  rotX = savedRotX;
+  rotY = savedRotY;
+  fibreState.rotX = savedFibreRotX;
+  fibreState.rotY = savedFibreRotY;
+
+  // HUD
+  c.font = '10px monospace';
+  c.fillStyle = 'rgba(255,255,255,0.4)';
+  c.textAlign = 'left';
+  var p = gp();
+  c.fillText(
+    'Sub-view: ' + subView.toUpperCase() +
+    '  Layer ' + p.layer + '/' + (multiData.sentence_data[0].n_layers - 1) +
+    '  t=' + p.t.toFixed(2) +
+    '  amp=' + p.amp.toFixed(1) +
+    '  Dims:' + p.dx + ',' + p.dy +
+    (subView === '3d' || subView === 'fibre3d' ? ',' + p.dz : '') +
+    '  Mode:' + p.mode +
+    '  |  All sidebar controls affect all panels',
+    area.x + 10, area.y + area.h - 2
+  );
+}
+
+// Global: which sub-view to use in multi mode
+var multiSubView = '2d';
+
+// ============================================================
+// MINI PANEL RENDERERS
+// Each takes an offscreen context, sentence data, and dimensions,
+// and renders the full visualization into that context.
+// ============================================================
+
+/**
+ * Mini 2D panel — reuses drawMiniDeformedGrid from before
+ */
+function drawMiniPanel2D(c, sentD, W, H) {
+  var p = gp();
+  // drawMiniDeformedGrid expects (c, sentD, p, px, py, pw, ph)
+  drawMiniDeformedGrid(c, sentD, p, 0, 0, W, H);
+}
+
+/**
+ * Mini 3D panel — renders a 3D deformed grid for one sentence
+ */
+function drawMiniPanel3D(c, sentD, W, H) {
+  var p = gp();
+  var nP = sentD.n_points, nR = sentD.n_real;
+  var dx = Math.min(p.dx, sentD.hidden_dim - 1);
+  var dy = Math.min(p.dy, sentD.hidden_dim - 1);
+  var dz = Math.min(p.dz, sentD.hidden_dim - 1);
+  var isEmb = (p.mode === 'embedding');
+
+  var decomp = document.getElementById('sel-decomp').value;
+  var activeDeltas = sentD.deltas;
+  if (decomp === 'attn' && sentD.attn_deltas) activeDeltas = sentD.attn_deltas;
+  if (decomp === 'mlp' && sentD.mlp_deltas) activeDeltas = sentD.mlp_deltas;
+
+  var layer = Math.min(p.layer, sentD.n_layers - 1);
+  var amp = p.amp, t = p.t;
+
+  var fx = new Float64Array(nP), fy = new Float64Array(nP), fz = new Float64Array(nP);
+  for (var i = 0; i < nP; i++) {
+    fx[i] = sentD.fixed_pos[i][dx];
+    fy[i] = sentD.fixed_pos[i][dy];
+    fz[i] = sentD.fixed_pos[i][dz];
+  }
+
+  var edx = new Float64Array(nP), edy = new Float64Array(nP), edz = new Float64Array(nP);
+  if (!isEmb) {
+    for (var j = 0; j < nP; j++) {
+      var sx = 0, sy = 0, sz = 0;
+      if (p.mode === 'single') {
+        sx = activeDeltas[layer][j][dx]; sy = activeDeltas[layer][j][dy]; sz = activeDeltas[layer][j][dz];
+      } else if (p.mode === 'cumfwd') {
+        for (var l = 0; l <= layer; l++) { sx += activeDeltas[l][j][dx]; sy += activeDeltas[l][j][dy]; sz += activeDeltas[l][j][dz]; }
+      } else {
+        for (var l = layer; l < sentD.n_layers; l++) { sx += activeDeltas[l][j][dx]; sy += activeDeltas[l][j][dy]; sz += activeDeltas[l][j][dz]; }
+      }
+      edx[j] = sx * amp; edy[j] = sy * amp; edz[j] = sz * amp;
+    }
+  }
+
+  // Compute bounds
+  var mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity, mnz = Infinity, mxz = -Infinity;
+  for (var i = 0; i < nP; i++) {
+    if (fx[i] < mnx) mnx = fx[i]; if (fx[i] > mxx) mxx = fx[i];
+    if (fy[i] < mny) mny = fy[i]; if (fy[i] > mxy) mxy = fy[i];
+    if (fz[i] < mnz) mnz = fz[i]; if (fz[i] > mxz) mxz = fz[i];
+  }
+  var mr = Math.max(mxx - mnx, mxy - mny, mxz - mnz) || 1;
+  var cx3 = (mnx + mxx) / 2, cy3 = (mny + mxy) / 2, cz3 = (mnz + mxz) / 2;
+  var sc3 = Math.min(W, H) * 0.3 / mr;
+
+  var fl = 400;
+  function proj(x, y, z) {
+    var cosY = Math.cos(rotY), sinY = Math.sin(rotY);
+    var x1 = x * cosY + z * sinY, z1 = -x * sinY + z * cosY;
+    var cosX = Math.cos(rotX), sinX = Math.sin(rotX);
+    var y1 = y * cosX - z1 * sinX, z2 = y * sinX + z1 * cosX;
+    var scale = fl / (fl + z2);
+    return [W / 2 + x1 * scale, H / 2 + y1 * scale, z2, scale];
+  }
+
+  // Build 3D grid
+  var N = Math.max(4, Math.min(12, Math.floor(p.gr / 4)));
+  var pd = 0.12;
+  var vx0 = cx3 - mr * (0.5 + pd), vx1 = cx3 + mr * (0.5 + pd);
+  var vy0 = cy3 - mr * (0.5 + pd), vy1 = cy3 + mr * (0.5 + pd);
+  var vz0 = cz3 - mr * (0.5 + pd), vz1 = cz3 + mr * (0.5 + pd);
+
+  function gIdx(ix, iy, iz) { return iz * (N + 1) * (N + 1) + iy * (N + 1) + ix; }
+  var nV = (N + 1) * (N + 1) * (N + 1);
+  var oX = new Float64Array(nV), oY = new Float64Array(nV), oZ = new Float64Array(nV);
+  var gX = new Float64Array(nV), gY = new Float64Array(nV), gZ = new Float64Array(nV);
+
+  for (var iz = 0; iz <= N; iz++) for (var iy = 0; iy <= N; iy++) for (var ix = 0; ix <= N; ix++) {
+    var gi = gIdx(ix, iy, iz);
+    oX[gi] = vx0 + (ix / N) * (vx1 - vx0);
+    oY[gi] = vy0 + (iy / N) * (vy1 - vy0);
+    oZ[gi] = vz0 + (iz / N) * (vz1 - vz0);
+  }
+
+  var sig = p.sig, s2i = 1 / (2 * sig * sig);
+  if (isEmb) {
+    for (var gi = 0; gi < nV; gi++) { gX[gi] = oX[gi]; gY[gi] = oY[gi]; gZ[gi] = oZ[gi]; }
+  } else {
+    for (var gi = 0; gi < nV; gi++) {
+      var gpx = oX[gi], gpy = oY[gi], gpz = oZ[gi];
+      var vvx = 0, vvy = 0, vvz = 0, ws = 0;
+      for (var k = 0; k < nP; k++) {
+        var ex = gpx - fx[k], ey = gpy - fy[k], ez = gpz - fz[k];
+        var w = Math.exp(Math.max(-500, -(ex * ex + ey * ey + ez * ez) * s2i));
+        vvx += w * edx[k]; vvy += w * edy[k]; vvz += w * edz[k]; ws += w;
+      }
+      if (ws > 1e-15) { vvx /= ws; vvy /= ws; vvz /= ws; }
+      gX[gi] = gpx + t * vvx; gY[gi] = gpy + t * vvy; gZ[gi] = gpz + t * vvz;
+    }
+  }
+
+  // Collect edges with strain
+  var edges = [];
+  function addEdge(a, b) {
+    var od = Math.hypot(oX[b] - oX[a], oY[b] - oY[a], oZ[b] - oZ[a]);
+    var dd = Math.hypot(gX[b] - gX[a], gY[b] - gY[a], gZ[b] - gZ[a]);
+    var strain = od > 1e-12 ? dd / od : 1;
+    var pa = proj((gX[a] - cx3) * sc3, (gY[a] - cy3) * sc3, (gZ[a] - cz3) * sc3);
+    var pb = proj((gX[b] - cx3) * sc3, (gY[b] - cy3) * sc3, (gZ[b] - cz3) * sc3);
+    edges.push({ x1: pa[0], y1: pa[1], x2: pb[0], y2: pb[1], z: (pa[2] + pb[2]) / 2, strain: strain });
+  }
+
+  for (var iz = 0; iz <= N; iz++) for (var iy = 0; iy <= N; iy++) for (var ix = 0; ix < N; ix++) addEdge(gIdx(ix, iy, iz), gIdx(ix + 1, iy, iz));
+  for (var iz = 0; iz <= N; iz++) for (var iy = 0; iy < N; iy++) for (var ix = 0; ix <= N; ix++) addEdge(gIdx(ix, iy, iz), gIdx(ix, iy + 1, iz));
+  for (var iz = 0; iz < N; iz++) for (var iy = 0; iy <= N; iy++) for (var ix = 0; ix <= N; ix++) addEdge(gIdx(ix, iy, iz), gIdx(ix, iy, iz + 1));
+
+  edges.sort(function(a, b) { return b.z - a.z; });
+
+  // Draw edges
+  if (p.grid && !isEmb) {
+    c.lineWidth = 0.6;
+    for (var ei = 0; ei < edges.length; ei++) {
+      var e = edges[ei];
+      var da = Math.max(0.1, Math.min(0.7, 0.5 - e.z * 0.001));
+      if (p.sc) {
+        var ec = s2c(e.strain);
+        c.strokeStyle = 'rgba(' + ec[0] + ',' + ec[1] + ',' + ec[2] + ',' + da.toFixed(2) + ')';
+      } else {
+        c.strokeStyle = 'rgba(200,200,200,' + da.toFixed(2) + ')';
+      }
+      c.beginPath(); c.moveTo(e.x1, e.y1); c.lineTo(e.x2, e.y2); c.stroke();
+    }
+  }
+
+  // Draw token dots
+  if (p.tok) {
+    var tc = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71','#e74c3c','#3498db','#9b59b6','#1abc9c','#e67e22'];
+    var pts = [];
+    for (var ti = 0; ti < nR; ti++) {
+      var pp = proj((fx[ti] - cx3) * sc3, (fy[ti] - cy3) * sc3, (fz[ti] - cz3) * sc3);
+      pts.push({ idx: ti, x: pp[0], y: pp[1], z: pp[2], s: pp[3] });
+    }
+    pts.sort(function(a, b) { return b.z - a.z; });
+    for (var pi = 0; pi < pts.length; pi++) {
+      var pt = pts[pi];
+      var r = Math.max(2, 4 * pt.s);
+      c.beginPath(); c.arc(pt.x, pt.y, r, 0, Math.PI * 2);
+      c.fillStyle = tc[pt.idx % tc.length]; c.fill();
+      c.strokeStyle = '#fff'; c.lineWidth = 0.8; c.stroke();
+      c.font = 'bold 7px monospace';
+      c.lineWidth = 1.5; c.strokeStyle = 'rgba(0,0,0,0.9)';
+      var lb = '[' + pt.idx + '] ' + sentD.tokens[pt.idx];
+      if (lb.length > Math.floor(W / 7)) lb = lb.substring(0, Math.floor(W / 7)) + '…';
+      c.strokeText(lb, pt.x + 5, pt.y - 4);
+      c.fillStyle = '#fff'; c.fillText(lb, pt.x + 5, pt.y - 4);
+    }
+  }
+
+  // HUD
+  c.font = '7px monospace';
+  c.fillStyle = 'rgba(255,255,255,0.3)';
+  c.textAlign = 'left';
+  c.fillText('3D L' + layer + ' d' + dx + ',' + dy + ',' + dz, 4, 10);
+}
+
+/**
+ * Mini Fibre Bundle panel — renders the token-per-column, layer-per-row grid view
+ */
+function drawMiniPanelFibre(c, sentD, W, H) {
+  var p = gp();
+  var nR = sentD.n_real;
+  var nLayers = sentD.n_layers;
+  var nP = sentD.n_points;
+  var dx = Math.min(p.dx, sentD.hidden_dim - 1);
+  var dy = Math.min(p.dy, sentD.hidden_dim - 1);
+  var mode = p.mode;
+  var isEmb = (mode === 'embedding');
+  var layer = Math.min(p.layer, nLayers - 1);
+  var amp = p.amp, t = p.t, sig = p.sig;
+
+  // Read display toggles from the checkboxes
+  var showGrid = document.getElementById('cb-grid').checked;
+  var showHeat = document.getElementById('cb-heat').checked;
+  var showSC = document.getElementById('cb-sc').checked;
+
+  var decomp = document.getElementById('sel-decomp').value;
+  var activeDeltas = sentD.deltas;
+  if (decomp === 'attn' && sentD.attn_deltas) activeDeltas = sentD.attn_deltas;
+  if (decomp === 'mlp' && sentD.mlp_deltas) activeDeltas = sentD.mlp_deltas;
+
+  var fx = new Float64Array(nP), fy = new Float64Array(nP);
+  for (var i = 0; i < nP; i++) { fx[i] = sentD.fixed_pos[i][dx]; fy[i] = sentD.fixed_pos[i][dy]; }
+
+  var mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
+  for (var i = 0; i < nP; i++) {
+    if (fx[i] < mnx) mnx = fx[i]; if (fx[i] > mxx) mxx = fx[i];
+    if (fy[i] < mny) mny = fy[i]; if (fy[i] > mxy) mxy = fy[i];
+  }
+  var mr = Math.max(mxx - mnx, mxy - mny) || 1;
+  var cxv = (mnx + mxx) / 2, cyv = (mny + mxy) / 2;
+  var pd = 0.15;
+  var vx0 = cxv - mr * (0.5 + pd), vy0 = cyv - mr * (0.5 + pd);
+  var vw = mr * (1 + 2 * pd), vh = vw;
+
+  // Layout: rooms
+  var margin = 4;
+  var labelW = 18;
+  var availW = W - 2 * margin - labelW;
+  var availH = H - 2 * margin;
+  var roomSize = Math.max(12, Math.min(
+    Math.floor(availW / (nR * 1.3)),
+    Math.floor(availH / (nLayers * 1.4))
+  ));
+  var gapX = Math.max(2, Math.floor(roomSize * 0.2));
+  var gapY = Math.max(3, Math.floor(roomSize * 0.25));
+  var startX = margin + labelW;
+  var startY = margin;
+
+  var N = Math.max(3, Math.min(8, Math.floor(roomSize / 5)));
+  var itpM = document.getElementById('sel-itp').value;
+
+  var tc = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71','#e74c3c','#3498db','#9b59b6'];
+
+  for (var li = 0; li < nLayers; li++) {
+    var rowIdx = nLayers - 1 - li;
+    var roomCY = startY + rowIdx * (roomSize + gapY);
+    var isCurrent = (li === layer);
+
+    // Layer label
+    c.font = (isCurrent ? 'bold ' : '') + '6px monospace';
+    c.fillStyle = isCurrent ? '#e94560' : '#555';
+    c.textAlign = 'right';
+    c.fillText('L' + li, startX - 2, roomCY + roomSize / 2 + 3);
+
+    var layerDeltas = computeEdxEdyForLayerMini(sentD, li, nP, dx, dy, amp, mode, activeDeltas, nLayers);
+    var edxCum = layerDeltas.edx;
+    var edyCum = layerDeltas.edy;
+
+    for (var ti = 0; ti < nR; ti++) {
+      var roomCX = startX + ti * (roomSize + gapX);
+
+      // Room background
+      var bgAlpha = isCurrent ? 0.15 : 0.06;
+      c.fillStyle = 'rgba(30,30,60,' + bgAlpha + ')';
+      c.fillRect(roomCX, roomCY, roomSize, roomSize);
+
+      // Room border
+      c.strokeStyle = isCurrent ? 'rgba(233,69,96,0.6)' : 'rgba(60,60,100,0.25)';
+      c.lineWidth = isCurrent ? 1.5 : 0.5;
+      c.strokeRect(roomCX, roomCY, roomSize, roomSize);
+
+      // Build deformed grid for this room
+      var grid = buildDeformedGridMini(vx0, vy0, vw, vh, N, fx, fy, edxCum, edyCum, nP, sig, t, isEmb, itpM);
+
+      // Strain heatmap
+      if (showHeat && !isEmb) {
+        for (var hy = 0; hy < N; hy++) {
+          for (var hx = 0; hx < N; hx++) {
+            var avg = (grid.sH[hy * N + hx] + grid.sH[(hy + 1) * N + hx] +
+                       grid.sV[hy * (N + 1) + hx] + grid.sV[hy * (N + 1) + hx + 1]) / 4;
+            var co = s2c(avg);
+            var i00 = hy * (N + 1) + hx, i10 = i00 + 1;
+            var i01 = (hy + 1) * (N + 1) + hx, i11 = i01 + 1;
+            c.beginPath();
+            c.moveTo(roomCX + ((grid.gX[i00] - vx0) / vw) * roomSize,
+                     roomCY + ((grid.gY[i00] - vy0) / vh) * roomSize);
+            c.lineTo(roomCX + ((grid.gX[i10] - vx0) / vw) * roomSize,
+                     roomCY + ((grid.gY[i10] - vy0) / vh) * roomSize);
+            c.lineTo(roomCX + ((grid.gX[i11] - vx0) / vw) * roomSize,
+                     roomCY + ((grid.gY[i11] - vy0) / vh) * roomSize);
+            c.lineTo(roomCX + ((grid.gX[i01] - vx0) / vw) * roomSize,
+                     roomCY + ((grid.gY[i01] - vy0) / vh) * roomSize);
+            c.closePath();
+            c.fillStyle = 'rgba(' + co[0] + ',' + co[1] + ',' + co[2] + ',0.4)';
+            c.fill();
+          }
+        }
+      }
+
+      // Grid lines
+      if (showGrid && !isEmb) {
+        c.lineWidth = 0.5;
+        for (var dhy = 0; dhy <= N; dhy++) {
+          for (var dhx = 0; dhx < N; dhx++) {
+            var di1 = dhy * (N + 1) + dhx, di2 = di1 + 1;
+            var es = grid.sH[dhy * N + dhx];
+            if (showSC) {
+              var ec = s2c(es);
+              c.strokeStyle = 'rgba(' + ec[0] + ',' + ec[1] + ',' + ec[2] + ',0.8)';
+            } else {
+              c.strokeStyle = 'rgba(200,200,200,0.4)';
+            }
+            c.beginPath();
+            c.moveTo(roomCX + ((grid.gX[di1] - vx0) / vw) * roomSize,
+                     roomCY + ((grid.gY[di1] - vy0) / vh) * roomSize);
+            c.lineTo(roomCX + ((grid.gX[di2] - vx0) / vw) * roomSize,
+                     roomCY + ((grid.gY[di2] - vy0) / vh) * roomSize);
+            c.stroke();
+          }
+        }
+        for (var dvx = 0; dvx <= N; dvx++) {
+          for (var dvy = 0; dvy < N; dvy++) {
+            var dvi1 = dvy * (N + 1) + dvx, dvi2 = (dvy + 1) * (N + 1) + dvx;
+            var vs = grid.sV[dvy * (N + 1) + dvx];
+            if (showSC) {
+              var vc = s2c(vs);
+              c.strokeStyle = 'rgba(' + vc[0] + ',' + vc[1] + ',' + vc[2] + ',0.8)';
+            } else {
+              c.strokeStyle = 'rgba(200,200,200,0.4)';
+            }
+            c.beginPath();
+            c.moveTo(roomCX + ((grid.gX[dvi1] - vx0) / vw) * roomSize,
+                     roomCY + ((grid.gY[dvi1] - vy0) / vh) * roomSize);
+            c.lineTo(roomCX + ((grid.gX[dvi2] - vx0) / vw) * roomSize,
+                     roomCY + ((grid.gY[dvi2] - vy0) / vh) * roomSize);
+            c.stroke();
+          }
+        }
+      }
+
+      // Reference grid in embedding mode
+      if (isEmb) {
+        c.strokeStyle = 'rgba(255,255,255,0.12)';
+        c.lineWidth = 0.3;
+        for (var ry = 0; ry <= N; ry++) {
+          c.beginPath();
+          for (var rx = 0; rx <= N; rx++) {
+            var ri = ry * (N + 1) + rx;
+            var rsx = roomCX + ((grid.oX[ri] - vx0) / vw) * roomSize;
+            var rsy = roomCY + ((grid.oY[ri] - vy0) / vh) * roomSize;
+            if (rx === 0) c.moveTo(rsx, rsy); else c.lineTo(rsx, rsy);
+          }
+          c.stroke();
+        }
+        for (var rx = 0; rx <= N; rx++) {
+          c.beginPath();
+          for (var ry = 0; ry <= N; ry++) {
+            var ri = ry * (N + 1) + rx;
+            var rsx = roomCX + ((grid.oX[ri] - vx0) / vw) * roomSize;
+            var rsy = roomCY + ((grid.oY[ri] - vy0) / vh) * roomSize;
+            if (ry === 0) c.moveTo(rsx, rsy); else c.lineTo(rsx, rsy);
+          }
+          c.stroke();
+        }
+      }
+
+      // Token dot
+      var tokX = roomCX + ((fx[ti] - vx0) / vw) * roomSize;
+      var tokY = roomCY + ((fy[ti] - vy0) / vh) * roomSize;
+      c.beginPath();
+      c.arc(tokX, tokY, Math.max(2, roomSize / 20), 0, Math.PI * 2);
+      c.fillStyle = tc[ti % tc.length];
+      c.fill();
+
+      // Token label at bottom row only
+      if (li === 0 && roomSize > 25) {
+        c.font = 'bold 6px monospace';
+        c.fillStyle = tc[ti % tc.length];
+        c.textAlign = 'center';
+        c.fillText('[' + ti + ']', roomCX + roomSize / 2, roomCY + roomSize + 8);
+      }
+    }
+  }
+
+  // HUD
+  c.font = '7px monospace';
+  c.fillStyle = 'rgba(255,255,255,0.3)';
+  c.textAlign = 'left';
+  c.fillText('FIBRE L' + layer + ' d' + dx + ',' + dy, 4, 10);
+}
+
+/**
+ * Helper: compute mode-aware cumulative deltas for a given layer
+ * using a specific sentence's data (not the global D).
+ */
+function computeEdxEdyForLayerMini(sentD, li, nP, dx, dy, amp, mode, activeDeltas, nLayers) {
+  var edxCum = new Float64Array(nP);
+  var edyCum = new Float64Array(nP);
+  var isEmb = (mode === 'embedding');
+  if (isEmb) return { edx: edxCum, edy: edyCum };
+
+  if (mode === 'single') {
+    for (var j = 0; j < nP; j++) {
+      edxCum[j] = activeDeltas[li][j][dx] * amp;
+      edyCum[j] = activeDeltas[li][j][dy] * amp;
+    }
+  } else if (mode === 'cumfwd') {
+    for (var cl = 0; cl <= li; cl++) {
+      for (var j = 0; j < nP; j++) {
+        edxCum[j] += activeDeltas[cl][j][dx] * amp;
+        edyCum[j] += activeDeltas[cl][j][dy] * amp;
+      }
+    }
+  } else { // cumbwd
+    for (var cl = li; cl < nLayers; cl++) {
+      for (var j = 0; j < nP; j++) {
+        edxCum[j] += activeDeltas[cl][j][dx] * amp;
+        edyCum[j] += activeDeltas[cl][j][dy] * amp;
+      }
+    }
+  }
+  return { edx: edxCum, edy: edyCum };
+}
+
+/**
+ * Helper: build a deformed grid with strain computation.
+ * Reusable across all mini panel renderers.
+ */
+function buildDeformedGridMini(vx0, vy0, vw, vh, N, fx, fy, edxCum, edyCum, nP, sig, t, isEmb, itpMethod) {
+  var nV = (N + 1) * (N + 1);
+  var oX = new Float64Array(nV), oY = new Float64Array(nV);
+  var gX = new Float64Array(nV), gY = new Float64Array(nV);
+
+  for (var gy = 0; gy <= N; gy++) {
+    for (var gx = 0; gx <= N; gx++) {
+      var gi = gy * (N + 1) + gx;
+      oX[gi] = vx0 + (gx / N) * vw;
+      oY[gi] = vy0 + (gy / N) * vh;
+    }
+  }
+
+  if (isEmb) {
+    for (var gi = 0; gi < nV; gi++) { gX[gi] = oX[gi]; gY[gi] = oY[gi]; }
+  } else {
+    for (var gi = 0; gi < nV; gi++) {
+      var px = oX[gi], py = oY[gi];
+      var iRes = interpolateGridPoint(px, py, fx, fy, edxCum, edyCum, nP, sig, itpMethod);
+      gX[gi] = px + t * iRes[0];
+      gY[gi] = py + t * iRes[1];
+    }
+  }
+
+  var sH = new Float64Array(N * (N + 1));
+  var sV = new Float64Array((N + 1) * N);
+  for (var ey = 0; ey <= N; ey++) {
+    for (var ex = 0; ex < N; ex++) {
+      var a = ey * (N + 1) + ex, b = a + 1;
+      var od = Math.hypot(oX[b] - oX[a], oY[b] - oY[a]);
+      var dd = Math.hypot(gX[b] - gX[a], gY[b] - gY[a]);
+      sH[ey * N + ex] = od > 1e-12 ? dd / od : 1;
+    }
+  }
+  for (var ey = 0; ey < N; ey++) {
+    for (var ex = 0; ex <= N; ex++) {
+      var a = ey * (N + 1) + ex, b = (ey + 1) * (N + 1) + ex;
+      var od = Math.hypot(oX[b] - oX[a], oY[b] - oY[a]);
+      var dd = Math.hypot(gX[b] - gX[a], gY[b] - gY[a]);
+      sV[ey * (N + 1) + ex] = od > 1e-12 ? dd / od : 1;
+    }
+  }
+
+  return { oX: oX, oY: oY, gX: gX, gY: gY, sH: sH, sV: sV, nV: nV };
+}
+
+/**
+ * Mini Fibre 3D panel — renders the 3D fibre bundle grid for one sentence
+ */
+function drawMiniPanelFibre3D(c, sentD, W, H) {
+  // Reuse drawMiniPanel3D but with fibre-style layout
+  // For simplicity in the multi-view, render as 3D with the fibre room structure
+  drawMiniPanel3D(c, sentD, W, H);
+}
+
+/**
+ * Mini Fibre Kelp panel — renders the kelp-style pathline view for one sentence
+ */
+function drawMiniPanelFibreKelp(c, sentD, W, H) {
+  var p = gp();
+  var nR = sentD.n_real;
+  var nLayers = sentD.n_layers;
+  var nP = sentD.n_points;
+  var dx = Math.min(p.dx, sentD.hidden_dim - 1);
+  var dy = Math.min(p.dy, sentD.hidden_dim - 1);
+  var isEmb = (p.mode === 'embedding');
+  var layer = Math.min(p.layer, nLayers - 1);
+  var amp = p.amp, t = p.t;
+  var mode = p.mode;
+
+  var decomp = document.getElementById('sel-decomp').value;
+  var activeDeltas = sentD.deltas;
+  if (decomp === 'attn' && sentD.attn_deltas) activeDeltas = sentD.attn_deltas;
+  if (decomp === 'mlp' && sentD.mlp_deltas) activeDeltas = sentD.mlp_deltas;
+
+  var attnDeltas = sentD.attn_deltas || null;
+  var mlpDeltas = sentD.mlp_deltas || null;
+
+  var fx = new Float64Array(nP), fy = new Float64Array(nP);
+  for (var i = 0; i < nP; i++) { fx[i] = sentD.fixed_pos[i][dx]; fy[i] = sentD.fixed_pos[i][dy]; }
+
+  var mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
+  for (var i = 0; i < nP; i++) {
+    if (fx[i] < mnx) mnx = fx[i]; if (fx[i] > mxx) mxx = fx[i];
+    if (fy[i] < mny) mny = fy[i]; if (fy[i] > mxy) mxy = fy[i];
+  }
+  var mr = Math.max(mxx - mnx, mxy - mny) || 1;
+  var cxv = (mnx + mxx) / 2, cyv = (mny + mxy) / 2;
+  var pd = 0.15;
+  var vx0 = cxv - mr * (0.5 + pd), vy0 = cyv - mr * (0.5 + pd);
+  var vw = mr * (1 + 2 * pd);
+
+  // Layout
+  var margin = 8;
+  var plotW = W - 2 * margin;
+  var plotH = H - 2 * margin;
+  var layerH = plotH / nLayers;
+
+  function SX(wx) { return margin + ((wx - vx0) / vw) * plotW; }
+  function LY(li) { return margin + (nLayers - 1 - li) * layerH + layerH * 0.5; }
+
+  var tc = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71',
+            '#e74c3c','#3498db','#9b59b6','#1abc9c','#e67e22'];
+
+  // Draw token pathlines
+  for (var ti = 0; ti < nR; ti++) {
+    var col = tc[ti % tc.length];
+    var path = [];
+
+    for (var li = 0; li < nLayers; li++) {
+      var cumDx = 0, cumDy = 0;
+      if (!isEmb) {
+        if (mode === 'single') {
+          cumDx = activeDeltas[li][ti][dx] * amp * t;
+          cumDy = activeDeltas[li][ti][dy] * amp * t;
+        } else if (mode === 'cumfwd') {
+          for (var cl = 0; cl <= li; cl++) {
+            cumDx += activeDeltas[cl][ti][dx] * amp * t;
+            cumDy += activeDeltas[cl][ti][dy] * amp * t;
+          }
+        } else {
+          for (var cl = li; cl < nLayers; cl++) {
+            cumDx += activeDeltas[cl][ti][dx] * amp * t;
+            cumDy += activeDeltas[cl][ti][dy] * amp * t;
+          }
+        }
+      }
+      path.push({ x: SX(fx[ti] + cumDx), y: LY(li) });
+    }
+
+    // Draw pathline
+    c.strokeStyle = col;
+    c.lineWidth = 1.5;
+    c.beginPath();
+    c.moveTo(path[0].x, path[0].y);
+    for (var li = 1; li < nLayers; li++) {
+      var prev = path[li - 1], curr = path[li];
+      c.quadraticCurveTo(prev.x, (prev.y + curr.y) / 2, curr.x, curr.y);
+    }
+    c.stroke();
+
+    // Attn/MLP arrows at current layer
+    if (!isEmb) {
+      var pt = path[layer];
+      var pixPerWorld = plotW / vw;
+      var maxArrow = layerH * 0.3;
+
+      if (attnDeltas) {
+        var avx = attnDeltas[layer][ti][dx] * amp * t * pixPerWorld;
+        if (Math.abs(avx) > 1.5) {
+          if (Math.abs(avx) > maxArrow) avx = maxArrow * Math.sign(avx);
+          c.strokeStyle = 'rgba(0,200,255,0.6)';
+          c.lineWidth = 0.8;
+          c.beginPath(); c.moveTo(pt.x, pt.y - 2); c.lineTo(pt.x + avx, pt.y - 2); c.stroke();
+        }
+      }
+      if (mlpDeltas) {
+        var mvx = mlpDeltas[layer][ti][dx] * amp * t * pixPerWorld;
+        if (Math.abs(mvx) > 1.5) {
+          if (Math.abs(mvx) > maxArrow) mvx = maxArrow * Math.sign(mvx);
+          c.strokeStyle = 'rgba(255,165,0,0.6)';
+          c.lineWidth = 0.8;
+          c.beginPath(); c.moveTo(pt.x, pt.y + 2); c.lineTo(pt.x + mvx, pt.y + 2); c.stroke();
+        }
+      }
+    }
+
+    // Node dots
+    for (var li = 0; li < nLayers; li++) {
+      var isActive = (li === layer);
+      c.beginPath();
+      c.arc(path[li].x, path[li].y, isActive ? 3 : 1.5, 0, Math.PI * 2);
+      c.fillStyle = col;
+      c.fill();
+    }
+
+    // Token label at bottom
+    c.font = 'bold 6px monospace';
+    c.fillStyle = col;
+    c.textAlign = 'center';
+    c.fillText('[' + ti + '] ' + sentD.tokens[ti], path[0].x, path[0].y + 10);
+  }
+
+  // Layer labels
+  for (var li = 0; li < nLayers; li++) {
+    var isActive = (li === layer);
+    c.font = (isActive ? 'bold ' : '') + '6px monospace';
+    c.fillStyle = isActive ? '#e94560' : '#444';
+    c.textAlign = 'right';
+    c.fillText('L' + li, margin - 2, LY(li) + 2);
+  }
+
+  // HUD
+  c.font = '7px monospace';
+  c.fillStyle = 'rgba(255,255,255,0.3)';
+  c.textAlign = 'left';
+  c.fillText('KELP L' + layer + ' d' + dx + ',' + dy, 4, 10);
+}
+
 // ---- Tab click handler ----
+// Sub-view click handler (inside the grids tab)
 document.getElementById('cv').addEventListener('click', function(e) {
-  if (viewMode !== 'multi' || !multiData) return;
+  if (viewMode !== 'multi' || !multiData || multiViewTab !== 'grids') return;
   var cv = document.getElementById('cv');
   var rect = cv.getBoundingClientRect();
   var mx = e.clientX - rect.left;
   var my = e.clientY - rect.top;
 
   var tabH = 28;
-  if (my < tabH) {
-    var tabs = ['grids', 'dims', 'heatmap', 'pairwise', 'profile'];
-    var tabW = cv.width / tabs.length;
-    var idx = Math.floor(mx / tabW);
-    if (idx >= 0 && idx < tabs.length) {
-      multiViewTab = tabs[idx];
+  var svBarY = tabH + 4;
+  var svBarH = 22;
+
+  if (my >= svBarY && my < svBarY + svBarH) {
+    var subViews = ['2d', '3d', 'fibre', 'fibre3d', 'fibrekelp'];
+    var svBarW = cv.width / subViews.length;
+    var idx = Math.floor(mx / svBarW);
+    if (idx >= 0 && idx < subViews.length) {
+      multiSubView = subViews[idx];
       drawMultiCanvas();
     }
   }
