@@ -2150,7 +2150,6 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:'Segoe UI',sans-serif;display:
 #sel-model{flex:1;background:#0d1117;color:#e0e0e0;border:1px solid #0f3460;padding:4px;font-size:11px;border-radius:4px}
 #main{flex:1;display:flex;align-items:center;justify-content:center;position:relative}
 canvas{background:#0d1117}
-#status{position:absolute;top:8px;left:50%;transform:translateX(-50%);background:rgba(15,52,96,.9);padding:4px 12px;border-radius:12px;font-size:10px;color:#53a8b6;pointer-events:none;z-index:10}
 #legend{position:absolute;top:8px;right:8px;background:rgba(15,52,96,.9);padding:5px 8px;border-radius:5px;font-size:9px}
 .li{display:flex;align-items:center;gap:4px;margin:2px 0}
 .lc{width:16px;height:7px;border-radius:2px}
@@ -2195,6 +2194,7 @@ canvas{background:#0d1117}
 </style></head><body>
 <div id="side">
 <h2>Metric Space Explorer</h2>
+<div id="status">Enter text and click Run</div>
 <div id="model-area">
 <label>Model:</label>
 <select id="sel-model">
@@ -2544,7 +2544,6 @@ ITP: <span id="i-itp">rbf</span>
 <div class="li"><div class="lc" style="background:#0f0"></div>Selected</div>
 <div class="li"><div class="lc" style="background:rgba(0,255,200,0.5)"></div>Neighbor</div>
 </div>
-<div id="status">Enter text and click Run</div>
 </div>
 <script>
 var diffeoCanvas = document.getElementById('diffeo-canvas');
@@ -2679,8 +2678,45 @@ function updateStrainStatsPanel(){
 }
 
 function autoParams(){
+    if(viewMode === 'multi'){
+        if(!multiData || !multiData.sentence_data || !multiData.sentence_data.length) return;
+        var sd = multiData.sentence_data[0];
+        if(!sd || !sd.fixed_pos) return;
+        var dx=+document.getElementById('sl-dx').value;
+        var dy=+document.getElementById('sl-dy').value;
+        var nP=sd.n_points;
+        var mnx=Infinity,mxx=-Infinity,mny=Infinity,mxy=-Infinity;
+        for(var i=0;i<nP;i++){
+            var x=sd.fixed_pos[i][dx],y=sd.fixed_pos[i][dy];
+            if(x<mnx)mnx=x;if(x>mxx)mxx=x;if(y<mny)mny=y;if(y>mxy)mxy=y;
+        }
+        var range=Math.max(mxx-mnx,mxy-mny)||1;
+        var sig=range*0.15;
+        var slSig=document.getElementById('sl-sig');
+        slSig.max=Math.max(20,range*2).toFixed(1);
+        slSig.value=sig.toFixed(2);
+        document.getElementById('v-sig').textContent=sig.toFixed(2);
+        var activeDeltas = sd.deltas;
+        var decomp = document.getElementById('sel-decomp').value;
+        if(decomp === 'attn' && sd.attn_deltas) activeDeltas = sd.attn_deltas;
+        if(decomp === 'mlp' && sd.mlp_deltas) activeDeltas = sd.mlp_deltas;
+        var norms=[];
+        for(var l=0;l<sd.n_layers;l++){
+            for(var p=0;p<nP;p++){
+                var ddx=activeDeltas[l][p][dx],ddy=activeDeltas[l][p][dy];
+                norms.push(Math.sqrt(ddx*ddx+ddy*ddy));
+            }
+        }
+        norms.sort(function(a,b){return a-b});
+        var med=norms[Math.floor(norms.length*0.75)]||1;
+        var amp=range*0.06/(med+1e-12);
+        amp=Math.max(0.1,Math.min(500,amp));
+        document.getElementById('sl-amp').value=amp.toFixed(1);
+        document.getElementById('v-amp').textContent=amp.toFixed(1);
+        return;
+    }
     if(!D)return;
-    if(viewMode === 'multi') return;
+
     var dx=+document.getElementById('sl-dx').value;
     var dy=+document.getElementById('sl-dy').value;
     var nP=D.n_points;
@@ -4945,13 +4981,13 @@ function renderDiffeoOverlay(time) {
 }
 
 function draw() {
-    if (!D) return;
-
-    // --- Multi-sentence view (was added by _prevDrawForMulti wrapper) ---
+    // Multi-sentence view doesn't need D — it uses multiData
     if (viewMode === 'multi') {
-        drawMultiCanvas();
+        if (multiData) drawMultiCanvas();
         return;
     }
+
+    if (!D) return;
 
     // --- Fibre bundle views (was added by _origDraw2 wrapper) ---
     if (viewMode === 'fibrekelp') {
