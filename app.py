@@ -3291,21 +3291,6 @@ function s2c(s){
     var f2=(s-1)/.5;return[~~(120+f2*113),~~(100-f2*31),~~(100-f2*4)];
 }
 
-function draw(){
-    if(!D)return;
-    if(viewMode==='3d'){draw3D();return}
-    draw2D();
-}
-
-var _prevDrawForMulti = draw;
-draw = function() {
-  if (viewMode === 'multi') {
-    drawMultiCanvas();
-    return;
-  }
-  _prevDrawForMulti();
-};
-
 function draw2D(){
     var p=gp(),cv=document.getElementById('cv'),c=cv.getContext('2d');
     var W=cv.width,H=cv.height;
@@ -4883,17 +4868,43 @@ onData = function() {
   }
 };
 
-var _origDraw = draw;
-draw = function() {
-  if (viewMode === 'multi') {
-    drawMultiCanvas();
-    return;
-  }
-  _origDraw();
-  if (diffeoState.active && D) {
-    rebuildDiffeo();
-  }
-};
+function draw() {
+    if (!D) return;
+
+    // --- Multi-sentence view (was added by _prevDrawForMulti wrapper) ---
+    if (viewMode === 'multi') {
+        drawMultiCanvas();
+        return;
+    }
+
+    // --- Fibre bundle views (was added by _origDraw2 wrapper) ---
+    if (viewMode === 'fibrekelp') {
+        drawFibreBundleKelp();
+        return;
+    }
+    if (viewMode === 'fibre3d') {
+        drawFibreBundle3DGrid();
+        return;
+    }
+    if (viewMode === 'fibre') {
+        drawFibreBundle();
+        return;
+    }
+
+    // --- 3D view (original draw logic) ---
+    if (viewMode === '3d') {
+        draw3D();
+        return;
+    }
+
+    // --- Default: 2D view ---
+    draw2D();
+
+    // --- Diffeomorphism overlay rebuild (was added by the diffeo wrapper) ---
+    if (diffeoState.active && D) {
+        rebuildDiffeo();
+    }
+}
 
 // ============================================================
 // FIBRE BUNDLE VIEW — Neuron Pixel Grids Stacked as Kelp Rooms
@@ -5042,24 +5053,6 @@ onData = function() {
   if (viewMode.startsWith('fibre') && D) {
     fetchFibreNeuronData();
   }
-};
-
-// Extend draw() to handle fibre mode
-var _origDraw2 = draw;
-draw = function() {
-  if (viewMode === 'fibrekelp') {
-    drawFibreBundleKelp();
-    return;
-  }
-  if (viewMode === 'fibre3d') {
-    drawFibreBundle3DGrid();
-    return;
-  }
-  if (viewMode === 'fibre') {
-    drawFibreBundle();
-    return;
-  }
-  _origDraw2();
 };
 
 // Extend key handler for fibre-specific controls
