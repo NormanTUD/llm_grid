@@ -464,13 +464,13 @@ class TestHTTPHandlers(unittest.TestCase):
         body = json.dumps({"text": "hello", "model": "gpt2"}).encode()
         result = app.handle_post_run(body)
         self.assertEqual(result, b'{"ok":true}')
-        mock_pt.assert_called_once_with("hello", "gpt2")
+        mock_pt.assert_called_once_with("hello", "gpt2", itp_method='rbf')
 
     @patch("app.process_text", return_value='{"ok":true}')
     def test_handle_post_run_no_model(self, mock_pt):
         body = json.dumps({"text": "hello"}).encode()
         app.handle_post_run(body)
-        mock_pt.assert_called_once_with("hello", None)
+        mock_pt.assert_called_once_with("hello", None, itp_method='rbf')
 
 
 # ===================================================================
@@ -1064,7 +1064,7 @@ class TestHTTPHandlerEdgeCases(unittest.TestCase):
         with patch("app.process_text", return_value='{}') as mock_pt:
             body = json.dumps({"text": "hello", "model": ""}).encode()
             app.handle_post_run(body)
-            mock_pt.assert_called_once_with("hello", None)
+            mock_pt.assert_called_once_with("hello", None, itp_method='rbf')
 
     def test_handle_post_run_invalid_json(self):
         body = b"not json at all"
