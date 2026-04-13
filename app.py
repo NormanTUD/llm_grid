@@ -2559,15 +2559,6 @@ var rotX=-0.4, rotY=0.6, rotZ=0;
 var dragActive=false, dragLastX=0, dragLastY=0;
 var focalLength=600;
 
-function setViewMode(mode){
-    viewMode=mode;
-    document.getElementById('btn-2d').className=(mode==='2d'?'active':'');
-    document.getElementById('btn-3d').className=(mode==='3d'?'active':'');
-    document.getElementById('btn-fibre').className=(mode==='fibre'?'active':'');
-    document.getElementById('dz-row').style.display=(mode==='3d'?'flex':'none');
-    draw();
-}
-
 /** Return the active deltas array based on decomposition selector */
 function getActiveDeltas(){
     if(!D) return null;
@@ -4943,77 +4934,93 @@ var fibreState = {
   flowArrowScale: 1.0,
 };
 
-// Extend setViewMode to handle fibre
-var _origSetViewMode = setViewMode;
-setViewMode = function(mode) {
-  if (mode === 'fibrekelp') {
-    viewMode = 'fibrekelp';
-    document.getElementById('btn-2d').className = '';
-    document.getElementById('btn-3d').className = '';
-    document.getElementById('btn-fibre').className = '';
-    document.getElementById('btn-fibre3d').className = '';
-    document.getElementById('btn-fibrekelp').className = 'active';
-    document.getElementById('dz-row').style.display = 'none';
-    draw();
-  } else if (mode === 'fibre3d') {
-    viewMode = 'fibre3d';
-    document.getElementById('btn-2d').className = '';
-    document.getElementById('btn-3d').className = '';
-    document.getElementById('btn-fibre').className = '';
-    document.getElementById('btn-fibre3d').className = 'active';
-    document.getElementById('btn-fibrekelp').className = '';
-    document.getElementById('dz-row').style.display = 'flex';
-    if (D && !fibreState.neuronData && !fibreState.loading) {
-      fetchFibreNeuronData();
+function setViewMode(mode) {
+    // ---- Multi-view button visibility (from multi wrapper) ----
+    var multiBtn = document.getElementById('btn-multi-view');
+    if (multiBtn) {
+        multiBtn.style.display = multiData ? 'inline-block' : 'none';
     }
-    draw();
-  } else if (mode === 'fibre') {
-    viewMode = 'fibre';
-    document.getElementById('btn-2d').className = '';
-    document.getElementById('btn-3d').className = '';
-    document.getElementById('btn-fibre').className = 'active';
-    document.getElementById('btn-fibre3d').className = '';
-    document.getElementById('btn-fibrekelp').className = '';
-    document.getElementById('dz-row').style.display = 'none';
-    if (D && !fibreState.neuronData && !fibreState.loading) {
-      fetchFibreNeuronData();
+
+    // ---- Clear ALL view-toggle button active states ----
+    var allBtnIds = ['btn-2d', 'btn-3d', 'btn-fibre', 'btn-fibre3d', 'btn-fibrekelp'];
+    for (var i = 0; i < allBtnIds.length; i++) {
+        var el = document.getElementById(allBtnIds[i]);
+        if (el) el.className = '';
     }
-    draw();
-  } else {
-    document.getElementById('btn-fibre').className = '';
-    document.getElementById('btn-fibre3d').className = '';
-    document.getElementById('btn-fibrekelp').className = '';
-    _origSetViewMode(mode);
-  }
-};
+    if (multiBtn) multiBtn.className = '';
 
-// At the END of the script, AFTER all the existing setViewMode wrappers:
-
-var _prevSetViewMode = setViewMode;
-setViewMode = function(mode) {
-  // Hide/show the multi-view button based on whether we have multi data
-  var multiBtn = document.getElementById('btn-multi-view');
-  if (multiBtn) {
-    multiBtn.style.display = multiData ? 'inline-block' : 'none';
-  }
-
-  if (mode === 'multi') {
-    viewMode = 'multi';
-    // Clear all other active buttons
-    ['btn-2d','btn-3d','btn-fibre','btn-fibre3d','btn-fibrekelp'].forEach(function(id){
-      var el = document.getElementById(id);
-      if (el) el.className = '';
-    });
-    if (multiBtn) multiBtn.className = 'active';
+    // ---- Dim Z row: only visible in 3d and fibre3d ----
     var dzRow = document.getElementById('dz-row');
-    if (dzRow) dzRow.style.display = 'none';
-    drawMultiCanvas();
-    return;
-  }
-  if (multiBtn) multiBtn.className = '';
-  _prevSetViewMode(mode);
-};
 
+    // ================================================================
+    // MULTI mode (from the multi wrapper)
+    // ================================================================
+    if (mode === 'multi') {
+        viewMode = 'multi';
+        if (multiBtn) multiBtn.className = 'active';
+        if (dzRow) dzRow.style.display = 'none';
+        drawMultiCanvas();
+        return;
+    }
+
+    // ================================================================
+    // FIBRE KELP mode (from the fibre wrapper)
+    // ================================================================
+    if (mode === 'fibrekelp') {
+        viewMode = 'fibrekelp';
+        document.getElementById('btn-fibrekelp').className = 'active';
+        if (dzRow) dzRow.style.display = 'none';
+        draw();
+        return;
+    }
+
+    // ================================================================
+    // FIBRE 3D mode (from the fibre wrapper)
+    // ================================================================
+    if (mode === 'fibre3d') {
+        viewMode = 'fibre3d';
+        document.getElementById('btn-fibre3d').className = 'active';
+        if (dzRow) dzRow.style.display = 'flex';
+        if (D && !fibreState.neuronData && !fibreState.loading) {
+            fetchFibreNeuronData();
+        }
+        draw();
+        return;
+    }
+
+    // ================================================================
+    // FIBRE (2D) mode (from the fibre wrapper)
+    // ================================================================
+    if (mode === 'fibre') {
+        viewMode = 'fibre';
+        document.getElementById('btn-fibre').className = 'active';
+        if (dzRow) dzRow.style.display = 'none';
+        if (D && !fibreState.neuronData && !fibreState.loading) {
+            fetchFibreNeuronData();
+        }
+        draw();
+        return;
+    }
+
+    // ================================================================
+    // 3D mode (from the original)
+    // ================================================================
+    if (mode === '3d') {
+        viewMode = '3d';
+        document.getElementById('btn-3d').className = 'active';
+        if (dzRow) dzRow.style.display = 'flex';
+        draw();
+        return;
+    }
+
+    // ================================================================
+    // 2D mode — default (from the original)
+    // ================================================================
+    viewMode = '2d';
+    document.getElementById('btn-2d').className = 'active';
+    if (dzRow) dzRow.style.display = 'none';
+    draw();
+}
 
 function fetchFibreNeuronData() {
   if (!D || fibreState.loading) return;
