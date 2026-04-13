@@ -2258,33 +2258,30 @@ The capital of Germany is Berlin</textarea>
   <div id="multi-layer-select" style="display:none;margin-top:4px">
     <div class="cr">
       <label>Layer:</label>
-      <select id="multi-layer" onchange="renderMultiLayer()" style="flex:1;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;padding:2px;font-size:10px"></select>
+      <select id="multi-layer" onchange="renderMultiLayer();if(viewMode==='multi')drawMultiCanvas()" style="flex:1;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;padding:2px;font-size:10px"></select>
     </div>
     <div class="cr" style="margin-top:3px">
       <label>Show:</label>
-      <select id="multi-show" onchange="renderMultiLayer()" style="flex:1;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;padding:2px;font-size:10px">
+      <select id="multi-show" onchange="renderMultiLayer();if(viewMode==='multi')drawMultiCanvas()" style="flex:1;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;padding:2px;font-size:10px">
         <option value="most">Most Different Dims</option>
         <option value="least">Least Different Dims</option>
       </select>
     </div>
     <div class="cr" style="margin-top:3px">
       <label>Top K:</label>
-      <input type="range" id="multi-topk" min="5" max="50" value="20" step="1" oninput="document.getElementById('v-multi-topk').textContent=this.value;renderMultiLayer()">
+      <input type="range" id="multi-topk" min="5" max="50" value="20" step="1" oninput="document.getElementById('v-multi-topk').textContent=this.value;renderMultiLayer();if(viewMode==='multi')drawMultiCanvas()">
       <span class="v" id="v-multi-topk">20</span>
     </div>
   </div>
-  <!-- Dimension comparison chart -->
   <div id="multi-dim-chart" style="display:none;margin-top:6px">
-    <canvas id="multi-dim-cv" width="340" height="250" style="border:1px solid #0f3460;border-radius:4px;display:block;width:100%"></canvas>
+    <canvas id="multi-dim-cv" width="340" height="300" style="border:1px solid #0f3460;border-radius:4px;display:block;width:100%"></canvas>
   </div>
-  <!-- Pairwise similarity matrix -->
   <div id="multi-pairwise" style="display:none;margin-top:6px">
-    <div style="color:#53a8b6;font-weight:bold;font-size:10px;margin-bottom:3px">Pairwise Cosine Similarity</div>
+    <div style="color:#53a8b6;font-size:9px;font-weight:bold;margin-bottom:2px">Pairwise Cosine Similarity</div>
     <canvas id="multi-pair-cv" width="200" height="200" style="border:1px solid #0f3460;border-radius:4px;display:block"></canvas>
   </div>
-  <!-- Layer divergence profile -->
   <div id="multi-layer-profile" style="display:none;margin-top:6px">
-    <div style="color:#e94560;font-weight:bold;font-size:10px;margin-bottom:3px">Layer-by-Layer Divergence</div>
+    <div style="color:#e94560;font-size:9px;font-weight:bold;margin-bottom:2px">Layer Divergence Profile</div>
     <canvas id="multi-layerprof-cv" width="340" height="80" style="border:1px solid #0f3460;border-radius:4px;display:block;width:100%"></canvas>
   </div>
 </div>
@@ -2465,6 +2462,7 @@ ITP: <span id="i-itp">rbf</span>
 <button id="btn-fibrekelp" onclick="setViewMode('fibrekelp')">Fibre Kelp</button>
 <button id="btn-2d" class="active" onclick="setViewMode('2d')">2D</button>
 <button id="btn-3d" onclick="setViewMode('3d')">3D</button>
+<button id="btn-multi-view" onclick="setViewMode('multi')" style="display:none">Multi Compare</button>
 </div>
 <h3>Layer &amp; Deformation</h3>
 <div class="cr"><label>Layer:</label><input type="range" id="sl-layer" min="0" max="11" value="0" step="1"><span class="v" id="v-layer">0</span></div>
@@ -3298,6 +3296,15 @@ function draw(){
     if(viewMode==='3d'){draw3D();return}
     draw2D();
 }
+
+var _prevDrawForMulti = draw;
+draw = function() {
+  if (viewMode === 'multi') {
+    drawMultiCanvas();
+    return;
+  }
+  _prevDrawForMulti();
+};
 
 function draw2D(){
     var p=gp(),cv=document.getElementById('cv'),c=cv.getContext('2d');
@@ -4876,9 +4883,12 @@ onData = function() {
   }
 };
 
-// Hook into draw so decomposition/layer changes trigger rebuild
 var _origDraw = draw;
 draw = function() {
+  if (viewMode === 'multi') {
+    drawMultiCanvas();
+    return;
+  }
   _origDraw();
   if (diffeoState.active && D) {
     rebuildDiffeo();
@@ -4915,6 +4925,11 @@ var fibreState = {
   showConnections: true,   // show diffeomorphism lines between layers
   connectionDensity: 0.1,  // fraction of neurons to connect
   colormap: 'grayscale',   // 'grayscale', 'coolhot', 'viridis'
+  showTransportFrame: false,
+  showAttnField: false,
+  showMlpField: false,
+  showFlowLines: true,
+  flowArrowScale: 1.0,
 };
 
 // Extend setViewMode to handle fibre
@@ -4960,6 +4975,34 @@ setViewMode = function(mode) {
     _origSetViewMode(mode);
   }
 };
+
+// At the END of the script, AFTER all the existing setViewMode wrappers:
+
+var _prevSetViewMode = setViewMode;
+setViewMode = function(mode) {
+  // Hide/show the multi-view button based on whether we have multi data
+  var multiBtn = document.getElementById('btn-multi-view');
+  if (multiBtn) {
+    multiBtn.style.display = multiData ? 'inline-block' : 'none';
+  }
+
+  if (mode === 'multi') {
+    viewMode = 'multi';
+    // Clear all other active buttons
+    ['btn-2d','btn-3d','btn-fibre','btn-fibre3d','btn-fibrekelp'].forEach(function(id){
+      var el = document.getElementById(id);
+      if (el) el.className = '';
+    });
+    if (multiBtn) multiBtn.className = 'active';
+    var dzRow = document.getElementById('dz-row');
+    if (dzRow) dzRow.style.display = 'none';
+    drawMultiCanvas();
+    return;
+  }
+  if (multiBtn) multiBtn.className = '';
+  _prevSetViewMode(mode);
+};
+
 
 function fetchFibreNeuronData() {
   if (!D || fibreState.loading) return;
@@ -8606,6 +8649,12 @@ function runMulti() {
     renderMultiLayerProfile();
     populateMultiLayerSelect();
     renderMultiLayer();
+
+        // Show the multi-view button and switch to multi view
+    var multiBtn = document.getElementById('btn-multi-view');
+    if (multiBtn) multiBtn.style.display = 'inline-block';
+    setViewMode('multi');
+
   })
   .catch(function(e) {
     document.getElementById('multi-status').innerHTML =
@@ -8860,6 +8909,1023 @@ function renderMultiLayerProfile() {
   }
 }
 
+
+// ============================================================
+// MULTI-SENTENCE: FULL MAIN CANVAS VISUALIZATION
+// ============================================================
+
+var multiHoveredDim = -1;
+var multiHoveredSentence = -1;
+var multiViewTab = 'grids';
+
+function drawMultiCanvas() {
+  var cv = document.getElementById('cv');
+  var c = cv.getContext('2d');
+  var W = cv.width, H = cv.height;
+  c.clearRect(0, 0, W, H);
+
+  if (!multiData) {
+    c.font = '16px monospace';
+    c.fillStyle = '#555';
+    c.textAlign = 'center';
+    c.fillText('Run Multi-Sentence Compare first', W / 2, H / 2);
+    return;
+  }
+
+  // Draw tab bar at top
+  var tabs = [
+    { id: 'grids', label: '🗺️ Deformation Grids' },
+    { id: 'dims', label: '📊 Dimension Comparison' },
+    { id: 'heatmap', label: '🔥 Variance Heatmap' },
+    { id: 'pairwise', label: '🔗 Pairwise Similarity' },
+    { id: 'profile', label: '📈 Layer Profile' },
+  ];
+  var tabH = 28;
+  var tabW = W / tabs.length;
+  for (var ti = 0; ti < tabs.length; ti++) {
+    var tx = ti * tabW;
+    var isActive = (tabs[ti].id === multiViewTab);
+    c.fillStyle = isActive ? '#1a1a4e' : '#0d1117';
+    c.fillRect(tx, 0, tabW, tabH);
+    c.strokeStyle = isActive ? '#7b68ee' : '#0f3460';
+    c.lineWidth = isActive ? 2 : 0.5;
+    c.strokeRect(tx, 0, tabW, tabH);
+    c.font = (isActive ? 'bold ' : '') + '11px monospace';
+    c.fillStyle = isActive ? '#7b68ee' : '#888';
+    c.textAlign = 'center';
+    c.fillText(tabs[ti].label, tx + tabW / 2, tabH / 2 + 4);
+  }
+
+  // Dispatch to the active tab
+  var drawArea = { x: 0, y: tabH + 4, w: W, h: H - tabH - 4 };
+
+  if (multiViewTab === 'grids') {
+    drawMultiGridComparison(c, drawArea);
+  } else if (multiViewTab === 'dims') {
+    drawMultiDimComparison(c, drawArea);
+  } else if (multiViewTab === 'heatmap') {
+    drawMultiVarianceHeatmap(c, drawArea);
+  } else if (multiViewTab === 'pairwise') {
+    drawMultiPairwiseMatrix(c, drawArea);
+  } else if (multiViewTab === 'profile') {
+    drawMultiLayerProfile_Main(c, drawArea);
+  }
+}
+
+// ---- Tab click handler ----
+document.getElementById('cv').addEventListener('click', function(e) {
+  if (viewMode !== 'multi' || !multiData) return;
+  var cv = document.getElementById('cv');
+  var rect = cv.getBoundingClientRect();
+  var mx = e.clientX - rect.left;
+  var my = e.clientY - rect.top;
+
+  var tabH = 28;
+  if (my < tabH) {
+    var tabs = ['grids', 'dims', 'heatmap', 'pairwise', 'profile'];
+    var tabW = cv.width / tabs.length;
+    var idx = Math.floor(mx / tabW);
+    if (idx >= 0 && idx < tabs.length) {
+      multiViewTab = tabs[idx];
+      drawMultiCanvas();
+    }
+  }
+});
+
+// ============================================================
+// TAB 1: DIMENSION COMPARISON (the main one you want)
+// ============================================================
+function drawMultiDimComparison(c, area) {
+  var layerIdx = +document.getElementById('multi-layer').value;
+  var showMode = document.getElementById('multi-show').value;
+  var topK = +document.getElementById('multi-topk').value;
+  var lc = multiData.layer_comparisons[layerIdx];
+
+  var dims = (showMode === 'most') ? lc.most_different_dims : lc.least_different_dims;
+  dims = dims.slice(0, topK);
+  var nSent = multiData.n_sentences;
+  var colors = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71','#e74c3c','#3498db','#9b59b6'];
+
+  var margin = { left: 70, right: 180, top: 50, bottom: 60 };
+  var plotW = area.w - margin.left - margin.right;
+  var plotH = area.h - margin.top - margin.bottom;
+  var ox = area.x + margin.left;
+  var oy = area.y + margin.top;
+
+  // Title
+  c.font = 'bold 14px monospace';
+  c.fillStyle = '#7b68ee';
+  c.textAlign = 'center';
+  c.fillText(
+    (showMode === 'most' ? 'Most' : 'Least') + ' Different Dimensions — ' +
+    (layerIdx === 0 ? 'Embedding' : 'Layer ' + (layerIdx - 1)),
+    area.x + area.w / 2, oy - 20
+  );
+
+  if (dims.length === 0) {
+    c.font = '14px monospace';
+    c.fillStyle = '#555';
+    c.fillText('No dimension data available', area.x + area.w / 2, oy + plotH / 2);
+    return;
+  }
+
+  // Find global value range
+  var globalMin = Infinity, globalMax = -Infinity;
+  for (var di = 0; di < dims.length; di++) {
+    for (var si = 0; si < nSent; si++) {
+      var v = dims[di].values[si];
+      if (v < globalMin) globalMin = v;
+      if (v > globalMax) globalMax = v;
+    }
+  }
+  var valRange = globalMax - globalMin || 1;
+
+  // Compute bar layout
+  var barGroupH = Math.max(12, Math.floor(plotH / dims.length) - 3);
+  var barH = Math.max(3, Math.floor((barGroupH - 2) / nSent) - 1);
+
+  // Zero line position
+  var zeroFrac = (0 - globalMin) / valRange;
+  var zeroX = ox + zeroFrac * plotW;
+
+  // Draw zero line
+  c.strokeStyle = 'rgba(255,255,255,0.15)';
+  c.lineWidth = 1;
+  c.setLineDash([4, 4]);
+  c.beginPath();
+  c.moveTo(zeroX, oy);
+  c.lineTo(zeroX, oy + plotH);
+  c.stroke();
+  c.setLineDash([]);
+
+  // Draw axis labels
+  c.font = '9px monospace';
+  c.fillStyle = '#666';
+  c.textAlign = 'center';
+  // Min label
+  c.fillText(globalMin.toFixed(3), ox, oy + plotH + 20);
+  // Max label
+  c.fillText(globalMax.toFixed(3), ox + plotW, oy + plotH + 20);
+  // Zero label
+  if (zeroFrac > 0.05 && zeroFrac < 0.95) {
+    c.fillText('0', zeroX, oy + plotH + 20);
+  }
+
+  // Draw each dimension row
+  for (var di = 0; di < dims.length; di++) {
+    var d = dims[di];
+    var y0 = oy + di * (barGroupH + 3);
+
+    // Alternating row background
+    if (di % 2 === 0) {
+      c.fillStyle = 'rgba(255,255,255,0.02)';
+      c.fillRect(ox - 5, y0 - 1, plotW + 10, barGroupH + 2);
+    }
+
+    // Dim label (left side)
+    c.font = 'bold 10px monospace';
+    c.fillStyle = '#a0a0c0';
+    c.textAlign = 'right';
+    c.fillText('dim ' + d.dim, ox - 10, y0 + barGroupH / 2 + 4);
+
+    // One bar per sentence
+    for (var si = 0; si < nSent; si++) {
+      var v = d.values[si];
+      var barX = ox + ((v - globalMin) / valRange) * plotW;
+
+      var by = y0 + si * (barH + 1);
+      var bw = barX - zeroX;
+
+      // Bar with gradient
+      var col = colors[si % colors.length];
+      c.fillStyle = col;
+      c.globalAlpha = 0.85;
+      if (bw >= 0) {
+        c.fillRect(zeroX, by, bw, barH);
+      } else {
+        c.fillRect(barX, by, -bw, barH);
+      }
+      c.globalAlpha = 1.0;
+
+      // Value label at end of bar
+      if (barGroupH > 15 && barH >= 5) {
+        c.font = '7px monospace';
+        c.fillStyle = '#888';
+        c.textAlign = bw >= 0 ? 'left' : 'right';
+        var labelX = bw >= 0 ? barX + 3 : barX - 3;
+        c.fillText(v.toFixed(3), labelX, by + barH - 1);
+      }
+    }
+
+    // Variance indicator on the right
+    var maxVar = dims[0].variance || 1;
+    var varBarW = Math.min(100, Math.max(4, (d.variance / maxVar) * 100));
+    var varX = ox + plotW + 10;
+    c.fillStyle = 'rgba(123,104,238,0.3)';
+    c.fillRect(varX, y0, varBarW, barGroupH);
+    c.font = '8px monospace';
+    c.fillStyle = '#7b68ee';
+    c.textAlign = 'left';
+    c.fillText('σ²=' + d.variance.toExponential(1), varX + varBarW + 4, y0 + barGroupH / 2 + 3);
+
+    // Range indicator
+    c.fillStyle = '#555';
+    c.fillText('Δ=' + d.range.toFixed(3), varX + varBarW + 4, y0 + barGroupH / 2 + 13);
+  }
+
+  // Legend (bottom right)
+  var legX = ox + plotW + 10;
+  var legY = oy + plotH - nSent * 16 - 10;
+  c.font = 'bold 10px monospace';
+  c.fillStyle = '#888';
+  c.textAlign = 'left';
+  c.fillText('Sentences:', legX, legY - 6);
+
+  for (var si = 0; si < nSent; si++) {
+    var ly = legY + si * 16;
+    c.fillStyle = colors[si % colors.length];
+    c.fillRect(legX, ly, 14, 10);
+    c.font = '9px monospace';
+    c.fillStyle = '#a0a0c0';
+    var sentText = multiData.sentences[si].text;
+    if (sentText.length > 25) sentText = sentText.substring(0, 25) + '…';
+    c.fillText('[' + si + '] ' + sentText, legX + 18, ly + 8);
+  }
+
+  // HUD
+  c.font = '10px monospace';
+  c.fillStyle = 'rgba(255,255,255,0.3)';
+  c.textAlign = 'left';
+  c.fillText(
+    dims.length + ' dimensions | ' + nSent + ' sentences | ' +
+    'Use sidebar controls to change layer/mode/topK',
+    area.x + 10, area.y + area.h - 5
+  );
+}
+
+// ============================================================
+// TAB 2: VARIANCE HEATMAP (dimensions × layers)
+// ============================================================
+function drawMultiVarianceHeatmap(c, area) {
+  var nLayers = multiData.layer_comparisons.length;
+  var topK = Math.min(+document.getElementById('multi-topk').value, 50);
+
+  // Get the globally most different dimensions
+  var globalDims = multiData.summary.global_most_different_dims.slice(0, topK);
+  if (globalDims.length === 0) {
+    c.font = '14px monospace';
+    c.fillStyle = '#555';
+    c.textAlign = 'center';
+    c.fillText('No data', area.x + area.w / 2, area.y + area.h / 2);
+    return;
+  }
+
+  var margin = { left: 60, right: 30, top: 50, bottom: 50 };
+  var plotW = area.w - margin.left - margin.right;
+  var plotH = area.h - margin.top - margin.bottom;
+  var ox = area.x + margin.left;
+  var oy = area.y + margin.top;
+
+  var cellW = Math.max(4, Math.floor(plotW / nLayers));
+  var cellH = Math.max(4, Math.floor(plotH / globalDims.length));
+
+  // Title
+  c.font = 'bold 14px monospace';
+  c.fillStyle = '#f5a623';
+  c.textAlign = 'center';
+  c.fillText('Cross-Sentence Variance Heatmap (Top ' + globalDims.length + ' Dims × Layers)',
+    area.x + area.w / 2, oy - 20);
+
+  // Find max variance for color scaling
+  var maxVar = 0;
+  for (var di = 0; di < globalDims.length; di++) {
+    var dimIdx = globalDims[di].dim;
+    for (var li = 0; li < nLayers; li++) {
+      var v = multiData.layer_comparisons[li].dim_variance[dimIdx];
+      if (v > maxVar) maxVar = v;
+    }
+  }
+  if (maxVar < 1e-12) maxVar = 1;
+
+  // Draw cells
+  for (var di = 0; di < globalDims.length; di++) {
+    var dimIdx = globalDims[di].dim;
+    for (var li = 0; li < nLayers; li++) {
+      var v = multiData.layer_comparisons[li].dim_variance[dimIdx];
+      var intensity = Math.min(1, v / maxVar);
+
+      // Color: black -> purple -> red -> yellow -> white
+      var r, g, b;
+      if (intensity < 0.25) {
+        var t = intensity / 0.25;
+        r = Math.floor(t * 80); g = 0; b = Math.floor(t * 120);
+      } else if (intensity < 0.5) {
+        var t = (intensity - 0.25) / 0.25;
+        r = 80 + Math.floor(t * 153); g = Math.floor(t * 40); b = 120 - Math.floor(t * 24);
+      } else if (intensity < 0.75) {
+        var t = (intensity - 0.5) / 0.25;
+        r = 233; g = 40 + Math.floor(t * 180); b = 96 - Math.floor(t * 96);
+      } else {
+        var t = (intensity - 0.75) / 0.25;
+        r = 233 + Math.floor(t * 22); g = 220 + Math.floor(t * 35); b = Math.floor(t * 200);
+      }
+
+      c.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
+      c.fillRect(ox + li * cellW, oy + di * cellH, cellW - 1, cellH - 1);
+    }
+
+    // Dim label
+    c.font = '8px monospace';
+    c.fillStyle = '#888';
+    c.textAlign = 'right';
+    c.fillText('d' + dimIdx, ox - 4, oy + di * cellH + cellH / 2 + 3);
+  }
+
+  // Layer labels
+  c.textAlign = 'center';
+  for (var li = 0; li < nLayers; li++) {
+    if (nLayers <= 30 || li % 2 === 0) {
+      c.font = '8px monospace';
+      c.fillStyle = '#666';
+      c.fillText(li === 0 ? 'E' : 'L' + (li - 1), ox + li * cellW + cellW / 2, oy + plotH + 14);
+    }
+  }
+
+  // Axis labels
+  c.font = 'bold 10px monospace';
+  c.fillStyle = '#53a8b6';
+  c.textAlign = 'center';
+  c.fillText('Layer →', ox + plotW / 2, oy + plotH + 35);
+
+  c.save();
+  c.translate(ox - 45, oy + plotH / 2);
+  c.rotate(-Math.PI / 2);
+  c.fillText('Dimension (by global variance) →', 0, 0);
+  c.restore();
+
+  // Color legend
+  var legW = 150, legH = 12;
+  var legX = ox + plotW - legW;
+  var legY = oy - 15;
+  for (var i = 0; i < legW; i++) {
+    var t = i / legW;
+    var r2, g2, b2;
+    if (t < 0.25) { var f = t / 0.25; r2 = Math.floor(f * 80); g2 = 0; b2 = Math.floor(f * 120); }
+    else if (t < 0.5) { var f = (t - 0.25) / 0.25; r2 = 80 + Math.floor(f * 153); g2 = Math.floor(f * 40); b2 = 120 - Math.floor(f * 24); }
+    else if (t < 0.75) { var f = (t - 0.5) / 0.25; r2 = 233; g2 = 40 + Math.floor(f * 180); b2 = 96 - Math.floor(f * 96); }
+    else { var f = (t - 0.75) / 0.25; r2 = 233 + Math.floor(f * 22); g2 = 220 + Math.floor(f * 35); b2 = Math.floor(f * 200); }
+    c.fillStyle = 'rgb(' + r2 + ',' + g2 + ',' + b2 + ')';
+    c.fillRect(legX + i, legY, 1, legH);
+  }
+  c.font = '8px monospace';
+  c.fillStyle = '#888';
+  c.textAlign = 'left';
+  c.fillText('0', legX, legY - 2);
+  c.textAlign = 'right';
+  c.fillText(maxVar.toExponential(1), legX + legW, legY - 2);
+  c.textAlign = 'center';
+  c.fillText('variance', legX + legW / 2, legY + legH + 10);
+}
+
+// ============================================================
+// TAB 3: PAIRWISE SIMILARITY MATRIX (large, readable)
+// ============================================================
+function drawMultiPairwiseMatrix(c, area) {
+  var layerIdx = +document.getElementById('multi-layer').value;
+  var lc = multiData.layer_comparisons[layerIdx];
+  var nSent = multiData.n_sentences;
+  var cosMatrix = lc.pairwise_cosine;
+  var l2Matrix = lc.pairwise_l2;
+  var colors = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71','#e74c3c','#3498db','#9b59b6'];
+
+  var margin = { left: 120, right: 40, top: 80, bottom: 120 };
+  var plotSize = Math.min(area.w - margin.left - margin.right, area.h - margin.top - margin.bottom);
+  var cellSize = Math.floor(plotSize / nSent);
+  var ox = area.x + margin.left;
+  var oy = area.y + margin.top;
+
+  // Title
+  c.font = 'bold 14px monospace';
+  c.fillStyle = '#53a8b6';
+  c.textAlign = 'center';
+  c.fillText(
+    'Pairwise Cosine Similarity — ' +
+    (layerIdx === 0 ? 'Embedding' : 'Layer ' + (layerIdx - 1)),
+    area.x + area.w / 2, oy - 30
+  );
+
+  // Draw matrix cells
+  for (var i = 0; i < nSent; i++) {
+    for (var j = 0; j < nSent; j++) {
+      var val = cosMatrix[i][j];
+      // Color: -1 = deep blue, 0 = black, 1 = bright green
+      var r, g, b;
+      if (val < 0) {
+        var t = Math.min(1, -val);
+        r = 0; g = 0; b = Math.floor(40 + t * 180);
+      } else {
+        var t = Math.min(1, val);
+        r = Math.floor(t * 20); g = Math.floor(40 + t * 180); b = Math.floor(t * 80);
+      }
+      c.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
+      c.fillRect(ox + j * cellSize, oy + i * cellSize, cellSize - 2, cellSize - 2);
+
+      // Value text
+      c.font = (cellSize > 40 ? 'bold 12px' : cellSize > 25 ? '10px' : '8px') + ' monospace';
+      c.fillStyle = val > 0.6 ? '#000' : '#fff';
+      c.textAlign = 'center';
+      c.fillText(val.toFixed(3),
+        ox + j * cellSize + (cellSize - 2) / 2,
+        oy + i * cellSize + (cellSize - 2) / 2 + 4);
+
+      // L2 distance below
+      if (cellSize > 50) {
+        c.font = '8px monospace';
+        c.fillStyle = val > 0.6 ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.4)';
+        c.fillText('L2=' + l2Matrix[i][j].toFixed(1),
+          ox + j * cellSize + (cellSize - 2) / 2,
+          oy + i * cellSize + (cellSize - 2) / 2 + 16);
+      }
+    }
+
+    // Row labels (left)
+    c.font = '10px monospace';
+    c.fillStyle = colors[i % colors.length];
+    c.textAlign = 'right';
+    var rowLabel = '[' + i + '] ' + multiData.sentences[i].text.substring(0, 15);
+    c.fillText(rowLabel, ox - 8, oy + i * cellSize + cellSize / 2 + 3);
+
+    // Column labels (bottom, rotated)
+    c.save();
+    c.translate(ox + i * cellSize + cellSize / 2, oy + nSent * cellSize + 8);
+    c.rotate(Math.PI / 4);
+    c.font = '9px monospace';
+    c.fillStyle = colors[i % colors.length];
+    c.textAlign = 'left';
+    var colLabel = '[' + i + '] ' + multiData.sentences[i].text.substring(0, 20);
+    c.fillText(colLabel, 0, 0);
+    c.restore();
+  }
+
+  // Color legend
+  var legX = ox + nSent * cellSize + 20;
+  var legY = oy;
+  var legH = Math.min(200, nSent * cellSize);
+  for (var i = 0; i < legH; i++) {
+    var val = 1.0 - (i / legH) * 2; // 1 at top, -1 at bottom
+    var r, g, b;
+    if (val < 0) { var t = -val; r = 0; g = 0; b = Math.floor(40 + t * 180); }
+    else { var t = val; r = Math.floor(t * 20); g = Math.floor(40 + t * 180); b = Math.floor(t * 80); }
+    c.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
+    c.fillRect(legX, legY + i, 15, 1);
+  }
+  c.font = '9px monospace';
+  c.fillStyle = '#888';
+  c.textAlign = 'left';
+  c.fillText('1.0', legX + 20, legY + 4);
+  c.fillText('0.0', legX + 20, legY + legH / 2 + 4);
+  c.fillText('-1.0', legX + 20, legY + legH + 4);
+}
+
+// ============================================================
+// TAB 4: LAYER DIVERGENCE PROFILE (large, with annotations)
+// ============================================================
+function drawMultiLayerProfile_Main(c, area) {
+  var variances = multiData.summary.layer_total_variances;
+  var nL = variances.length;
+  var maxVar = Math.max.apply(null, variances) || 1;
+
+  var margin = { left: 70, right: 40, top: 50, bottom: 50 };
+  var plotW = area.w - margin.left - margin.right;
+  var plotH = area.h - margin.top - margin.bottom;
+  var ox = area.x + margin.left;
+  var oy = area.y + margin.top;
+
+  // Title
+  c.font = 'bold 14px monospace';
+  c.fillStyle = '#e94560';
+  c.textAlign = 'center';
+  c.fillText('Layer-by-Layer Cross-Sentence Divergence', area.x + area.w / 2, oy - 20);
+
+  var barW = Math.max(8, Math.floor(plotW / nL) - 1);
+  var baseY = plotH + oy;
+
+  // Draw bars and line
+  var points = [];
+  for (var i = 0; i < nL; i++) {
+    var h = (variances[i] / maxVar) * plotH;
+    var x = ox + i * (barW + 1);
+    var y = baseY - h;
+    points.push({ x: x + barW / 2, y: y });
+
+    // Highlight most divergent layer
+    var isMost = (i === multiData.summary.most_divergent_layer);
+    var isLeast = (i === multiData.summary.least_divergent_layer);
+
+    // Bar
+    var frac = variances[i] / maxVar;
+    if (isMost) {
+      c.fillStyle = '#e94560';
+    } else if (isLeast) {
+      c.fillStyle = '#53a8b6';
+    } else {
+      c.fillStyle = 'rgb(' + Math.floor(frac * 200) + ',' +
+                    Math.floor((1 - frac) * 120 + 50) + ',' +
+                    Math.floor((1 - frac) * 180) + ')';
+    }
+    c.fillRect(x, y, barW, h);
+
+    // Glow for most divergent
+    if (isMost) {
+      c.shadowColor = '#e94560';
+      c.shadowBlur = 10;
+      c.fillRect(x, y, barW, h);
+      c.shadowBlur = 0;
+    }
+
+    // Layer label
+    c.font = '9px monospace';
+    c.fillStyle = isMost ? '#e94560' : isLeast ? '#53a8b6' : '#666';
+    c.textAlign = 'center';
+    c.fillText(i === 0 ? 'Emb' : 'L' + (i - 1), x + barW / 2, baseY + 16);
+
+    // Value label on top of bar
+    if (barW > 15 || nL <= 20) {
+      c.font = '8px monospace';
+      c.fillStyle = '#888';
+      c.fillText(variances[i].toFixed(1), x + barW / 2, y - 4);
+    }
+  }
+
+  // Connect with a line
+  c.strokeStyle = 'rgba(123,104,238,0.5)';
+  c.lineWidth = 1.5;
+  c.beginPath();
+  for (var i = 0; i < points.length; i++) {
+    if (i === 0) c.moveTo(points[i].x, points[i].y);
+    else c.lineTo(points[i].x, points[i].y);
+  }
+  c.stroke();
+
+  // Dots on the line
+  for (var i = 0; i < points.length; i++) {
+    var isMost = (i === multiData.summary.most_divergent_layer);
+    c.beginPath();
+    c.arc(points[i].x, points[i].y, isMost ? 5 : 3, 0, Math.PI * 2);
+    c.fillStyle = isMost ? '#e94560' : '#7b68ee';
+    c.fill();
+  }
+
+  // Title
+  c.font = 'bold 14px monospace';
+  c.fillStyle = '#e94560';
+  c.textAlign = 'center';
+  c.fillText('Layer-by-Layer Cross-Sentence Divergence', area.x + area.w / 2, oy - 20);
+
+  // Axis labels
+  c.font = 'bold 10px monospace';
+  c.fillStyle = '#53a8b6';
+  c.textAlign = 'center';
+  c.fillText('Layer →', ox + (nL * (barW + 1)) / 2, baseY + 35);
+
+  c.save();
+  c.translate(ox - 45, oy + plotH / 2);
+  c.rotate(-Math.PI / 2);
+  c.fillText('Total Variance (cross-sentence) →', 0, 0);
+  c.restore();
+
+  // Annotations
+  c.font = '10px monospace';
+  c.textAlign = 'left';
+  c.fillStyle = '#e94560';
+  var mostIdx = multiData.summary.most_divergent_layer;
+  c.fillText('▲ Most divergent: ' +
+    (mostIdx === 0 ? 'Embedding' : 'Layer ' + (mostIdx - 1)) +
+    ' (var=' + variances[mostIdx].toFixed(2) + ')',
+    ox + 10, oy - 5);
+
+  c.fillStyle = '#53a8b6';
+  var leastIdx = multiData.summary.least_divergent_layer;
+  c.fillText('▼ Least divergent: ' +
+    (leastIdx === 0 ? 'Embedding' : 'Layer ' + (leastIdx - 1)) +
+    ' (var=' + variances[leastIdx].toFixed(2) + ')',
+    ox + 10, oy + 8);
+
+  // Sentence legend at bottom
+  var nSent = multiData.n_sentences;
+  var colors = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71','#e74c3c','#3498db','#9b59b6'];
+  var legY2 = baseY + 40;
+  c.font = '9px monospace';
+  c.textAlign = 'left';
+  c.fillStyle = '#888';
+  c.fillText('Sentences compared:', ox, legY2);
+  for (var si = 0; si < nSent; si++) {
+    var sentText = multiData.sentences[si].text;
+    if (sentText.length > 50) sentText = sentText.substring(0, 50) + '…';
+    c.fillStyle = colors[si % colors.length];
+    c.fillRect(ox, legY2 + 14 + si * 14, 10, 8);
+    c.fillStyle = '#a0a0c0';
+    c.fillText('[' + si + '] ' + sentText + ' (' + multiData.sentences[si].n_tokens + ' tok)',
+      ox + 14, legY2 + 21 + si * 14);
+  }
+
+  // HUD
+  c.font = '10px monospace';
+  c.fillStyle = 'rgba(255,255,255,0.3)';
+  c.textAlign = 'left';
+  c.fillText(
+    nL + ' layers | ' + nSent + ' sentences | ' +
+    'Variance = how differently sentences are represented at each layer',
+    area.x + 10, area.y + area.h - 5
+  );
+}
+
+// New tab: side-by-side deformation grids
+// ============================================================
+// MULTI-GRID COMPARISON: Side-by-side deformation grids
+// Each sentence gets its own panel with the full 2D deformed
+// grid visualization, using the same rendering as draw2D.
+// ============================================================
+
+function drawMultiGridComparison(c, area) {
+  if (!multiData || !multiData.sentence_data || multiData.sentence_data.length === 0) {
+    c.font = '14px monospace';
+    c.fillStyle = '#555';
+    c.textAlign = 'center';
+    c.fillText('No sentence data available — re-run Multi Compare', area.x + area.w / 2, area.y + area.h / 2);
+    return;
+  }
+
+  var nSent = multiData.sentence_data.length;
+  var p = gp(); // get current params (layer, t, amp, dims, etc.)
+
+  // Layout: divide the area into nSent columns with small gaps
+  var gap = 6;
+  var panelW = Math.floor((area.w - gap * (nSent - 1)) / nSent);
+  var panelH = area.h - 30; // leave room for sentence labels at bottom
+  var panelY = area.y;
+
+  var sentColors = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71','#e74c3c','#3498db','#9b59b6'];
+
+  for (var si = 0; si < nSent; si++) {
+    var sentD = multiData.sentence_data[si];
+    if (!sentD || !sentD.fixed_pos || !sentD.deltas) continue;
+
+    var panelX = area.x + si * (panelW + gap);
+
+    // Draw panel background
+    c.fillStyle = 'rgba(13,17,23,0.8)';
+    c.fillRect(panelX, panelY, panelW, panelH);
+
+    // Panel border
+    c.strokeStyle = sentColors[si % sentColors.length];
+    c.lineWidth = 1.5;
+    c.strokeRect(panelX, panelY, panelW, panelH);
+
+    // Render the deformed grid for this sentence
+    drawMiniDeformedGrid(c, sentD, p, panelX, panelY, panelW, panelH);
+
+    // Sentence label below the panel
+    c.font = 'bold 9px monospace';
+    c.fillStyle = sentColors[si % sentColors.length];
+    c.textAlign = 'center';
+    var labelText = '[' + si + '] ' + (sentD.text || '').substring(0, Math.floor(panelW / 5.5));
+    if ((sentD.text || '').length > Math.floor(panelW / 5.5)) labelText += '…';
+    c.fillText(labelText, panelX + panelW / 2, panelY + panelH + 14);
+
+    // Token count and model info
+    c.font = '8px monospace';
+    c.fillStyle = '#666';
+    c.fillText(sentD.n_real + ' tokens | ' + sentD.n_layers + ' layers',
+      panelX + panelW / 2, panelY + panelH + 24);
+  }
+
+  // HUD at top
+  c.font = '10px monospace';
+  c.fillStyle = 'rgba(255,255,255,0.4)';
+  c.textAlign = 'left';
+  c.fillText(
+    'Layer ' + p.layer + '/' + (multiData.sentence_data[0].n_layers - 1) +
+    '  t=' + p.t.toFixed(2) +
+    '  amp=' + p.amp.toFixed(1) +
+    '  Dims:' + p.dx + ',' + p.dy +
+    '  Mode:' + p.mode +
+    '  ITP:' + document.getElementById('sel-itp').value.toUpperCase() +
+    '  |  Use sidebar controls to adjust all panels simultaneously',
+    area.x + 10, area.y + area.h - 2
+  );
+}
+
+/**
+ * Draw a complete 2D deformed grid visualization for a single sentence's data,
+ * clipped to a rectangular panel. This is a self-contained mini version of draw2D
+ * that accepts arbitrary data and target rectangle.
+ *
+ * @param {CanvasRenderingContext2D} c - canvas context
+ * @param {Object} sentD - sentence data object (same structure as global D)
+ * @param {Object} p - parameters from gp() (layer, t, amp, dx, dy, mode, etc.)
+ * @param {number} px - panel x origin
+ * @param {number} py - panel y origin
+ * @param {number} pw - panel width
+ * @param {number} ph - panel height
+ */
+function drawMiniDeformedGrid(c, sentD, p, px, py, pw, ph) {
+  var nP = sentD.n_points;
+  var nR = sentD.n_real;
+  var dx = p.dx, dy = p.dy;
+  var isEmb = (p.mode === 'embedding');
+
+  // Clamp dims to this sentence's hidden_dim
+  if (dx >= sentD.hidden_dim) dx = 0;
+  if (dy >= sentD.hidden_dim) dy = Math.min(1, sentD.hidden_dim - 1);
+
+  // Use the active deltas (respect decomposition selector)
+  var decomp = document.getElementById('sel-decomp').value;
+  var activeDeltas = sentD.deltas;
+  if (decomp === 'attn' && sentD.attn_deltas) activeDeltas = sentD.attn_deltas;
+  if (decomp === 'mlp' && sentD.mlp_deltas) activeDeltas = sentD.mlp_deltas;
+
+  // Clamp layer to this sentence's layer count
+  var layer = Math.min(p.layer, sentD.n_layers - 1);
+  var amp = p.amp;
+  var t = p.t;
+
+  // Extract base positions
+  var fx = new Float64Array(nP), fy = new Float64Array(nP);
+  for (var i = 0; i < nP; i++) {
+    fx[i] = sentD.fixed_pos[i][dx];
+    fy[i] = sentD.fixed_pos[i][dy];
+  }
+
+  // Compute effective deltas based on mode
+  var edx = new Float64Array(nP), edy = new Float64Array(nP);
+  if (!isEmb) {
+    for (var j = 0; j < nP; j++) {
+      var sx2 = 0, sy2 = 0;
+      if (p.mode === 'single') {
+        sx2 = activeDeltas[layer][j][dx];
+        sy2 = activeDeltas[layer][j][dy];
+      } else if (p.mode === 'cumfwd') {
+        for (var l = 0; l <= layer; l++) {
+          sx2 += activeDeltas[l][j][dx];
+          sy2 += activeDeltas[l][j][dy];
+        }
+      } else { // cumbwd
+        for (var l2 = layer; l2 < sentD.n_layers; l2++) {
+          sx2 += activeDeltas[l2][j][dx];
+          sy2 += activeDeltas[l2][j][dy];
+        }
+      }
+      edx[j] = sx2 * amp;
+      edy[j] = sy2 * amp;
+    }
+  }
+
+  // Compute view bounds
+  var mnx = fx[0], mxx = fx[0], mny = fy[0], mxy = fy[0];
+  for (var i2 = 1; i2 < nP; i2++) {
+    if (fx[i2] < mnx) mnx = fx[i2]; if (fx[i2] > mxx) mxx = fx[i2];
+    if (fy[i2] < mny) mny = fy[i2]; if (fy[i2] > mxy) mxy = fy[i2];
+  }
+  var mr = Math.max(mxx - mnx, mxy - mny) || 1;
+  var cxv = (mnx + mxx) / 2, cyv = (mny + mxy) / 2;
+  var pd2 = 0.12;
+  var vx0 = cxv - mr * (0.5 + pd2), vy0 = cyv - mr * (0.5 + pd2);
+  var vw = mr * (1 + 2 * pd2), vh = vw;
+
+  // Margin inside the panel
+  var M = 8;
+  var dW = pw - 2 * M, dH = ph - 2 * M;
+
+  function SX(x) { return px + M + ((x - vx0) / vw) * dW; }
+  function SY(y) { return py + M + ((y - vy0) / vh) * dH; }
+
+  // Build grid
+  var N = Math.max(8, Math.min(25, p.gr));
+  var nV = (N + 1) * (N + 1);
+  var oX = new Float64Array(nV), oY = new Float64Array(nV);
+  var gX = new Float64Array(nV), gY = new Float64Array(nV);
+
+  for (var gy = 0; gy <= N; gy++) {
+    for (var gx = 0; gx <= N; gx++) {
+      var gi = gy * (N + 1) + gx;
+      oX[gi] = vx0 + (gx / N) * vw;
+      oY[gi] = vy0 + (gy / N) * vh;
+    }
+  }
+
+  var sig = p.sig;
+  var itpMethod = document.getElementById('sel-itp').value;
+
+  if (isEmb) {
+    for (var gi2 = 0; gi2 < nV; gi2++) { gX[gi2] = oX[gi2]; gY[gi2] = oY[gi2]; }
+  } else {
+    for (var gi3 = 0; gi3 < nV; gi3++) {
+      var gpx = oX[gi3], gpy = oY[gi3];
+      var interp = interpolateGridPoint(gpx, gpy, fx, fy, edx, edy, nP, sig, itpMethod);
+      gX[gi3] = gpx + t * interp[0];
+      gY[gi3] = gpy + t * interp[1];
+    }
+  }
+
+  // Compute strain
+  var sH = new Float64Array(N * (N + 1));
+  var sVa = new Float64Array((N + 1) * N);
+  for (var ey2 = 0; ey2 <= N; ey2++) {
+    for (var ex2 = 0; ex2 < N; ex2++) {
+      var a = ey2 * (N + 1) + ex2, b = a + 1;
+      var od = Math.hypot(oX[b] - oX[a], oY[b] - oY[a]);
+      var dd = Math.hypot(gX[b] - gX[a], gY[b] - gY[a]);
+      sH[ey2 * N + ex2] = od > 1e-12 ? dd / od : 1;
+    }
+  }
+  for (var ey3 = 0; ey3 < N; ey3++) {
+    for (var ex3 = 0; ex3 <= N; ex3++) {
+      var a2 = ey3 * (N + 1) + ex3, b2 = (ey3 + 1) * (N + 1) + ex3;
+      var od2 = Math.hypot(oX[b2] - oX[a2], oY[b2] - oY[a2]);
+      var dd2 = Math.hypot(gX[b2] - gX[a2], gY[b2] - gY[a2]);
+      sVa[ey3 * (N + 1) + ex3] = od2 > 1e-12 ? dd2 / od2 : 1;
+    }
+  }
+
+  // ---- Strain heatmap ----
+  if (p.heat && !isEmb) {
+    for (var hy = 0; hy < N; hy++) {
+      for (var hx = 0; hx < N; hx++) {
+        var avg = (sH[hy * N + hx] + sH[(hy + 1) * N + hx] +
+                   sVa[hy * (N + 1) + hx] + sVa[hy * (N + 1) + hx + 1]) / 4;
+        var co = s2c(avg);
+        var i00 = hy * (N + 1) + hx, i10 = i00 + 1;
+        var i01 = (hy + 1) * (N + 1) + hx, i11 = i01 + 1;
+        c.beginPath();
+        c.moveTo(SX(gX[i00]), SY(gY[i00]));
+        c.lineTo(SX(gX[i10]), SY(gY[i10]));
+        c.lineTo(SX(gX[i11]), SY(gY[i11]));
+        c.lineTo(SX(gX[i01]), SY(gY[i01]));
+        c.closePath();
+        c.fillStyle = 'rgba(' + co[0] + ',' + co[1] + ',' + co[2] + ',0.35)';
+        c.fill();
+      }
+    }
+  }
+
+  // ---- Reference grid ----
+  if (p.ref) {
+    c.strokeStyle = isEmb ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.07)';
+    c.lineWidth = 0.4;
+    for (var ry2 = 0; ry2 <= N; ry2++) {
+      c.beginPath();
+      for (var rx2 = 0; rx2 <= N; rx2++) {
+        var ri = ry2 * (N + 1) + rx2;
+        if (rx2 === 0) c.moveTo(SX(oX[ri]), SY(oY[ri]));
+        else c.lineTo(SX(oX[ri]), SY(oY[ri]));
+      }
+      c.stroke();
+    }
+    for (var rx3 = 0; rx3 <= N; rx3++) {
+      c.beginPath();
+      for (var ry3 = 0; ry3 <= N; ry3++) {
+        var ri3 = ry3 * (N + 1) + rx3;
+        if (ry3 === 0) c.moveTo(SX(oX[ri3]), SY(oY[ri3]));
+        else c.lineTo(SX(oX[ri3]), SY(oY[ri3]));
+      }
+      c.stroke();
+    }
+  }
+
+  // ---- Deformed grid ----
+  if (p.grid && !isEmb) {
+    c.lineWidth = 0.8;
+    // Horizontal edges
+    for (var dhy = 0; dhy <= N; dhy++) {
+      for (var dhx = 0; dhx < N; dhx++) {
+        var di1 = dhy * (N + 1) + dhx, di2 = di1 + 1;
+        var es = sH[dhy * N + dhx];
+        if (p.sc) {
+          var ec = s2c(es);
+          c.strokeStyle = 'rgba(' + ec[0] + ',' + ec[1] + ',' + ec[2] + ',0.85)';
+        } else {
+          c.strokeStyle = 'rgba(200,200,200,0.5)';
+        }
+        c.beginPath();
+        c.moveTo(SX(gX[di1]), SY(gY[di1]));
+        c.lineTo(SX(gX[di2]), SY(gY[di2]));
+        c.stroke();
+      }
+    }
+    // Vertical edges
+    for (var dvx = 0; dvx <= N; dvx++) {
+      for (var dvy = 0; dvy < N; dvy++) {
+        var dvi1 = dvy * (N + 1) + dvx, dvi2 = (dvy + 1) * (N + 1) + dvx;
+        var vs = sVa[dvy * (N + 1) + dvx];
+        if (p.sc) {
+          var vc = s2c(vs);
+          c.strokeStyle = 'rgba(' + vc[0] + ',' + vc[1] + ',' + vc[2] + ',0.85)';
+        } else {
+          c.strokeStyle = 'rgba(200,200,200,0.5)';
+        }
+        c.beginPath();
+        c.moveTo(SX(gX[dvi1]), SY(gY[dvi1]));
+        c.lineTo(SX(gX[dvi2]), SY(gY[dvi2]));
+        c.stroke();
+      }
+    }
+  }
+
+  // ---- Vector arrows ----
+  if (p.vec && !isEmb) {
+    var step = Math.max(1, Math.floor(N / 8));
+    c.lineWidth = 1.0;
+    for (var viy = 0; viy <= N; viy += step) {
+      for (var vix = 0; vix <= N; vix += step) {
+        var vi = viy * (N + 1) + vix;
+        var ax = SX(oX[vi]), ay = SY(oY[vi]);
+        var bx = SX(gX[vi]), by = SY(gY[vi]);
+        var al = Math.hypot(bx - ax, by - ay);
+        if (al < 2) continue;
+        c.strokeStyle = 'rgba(255,255,100,0.5)';
+        c.fillStyle = 'rgba(255,255,100,0.5)';
+        c.beginPath(); c.moveTo(ax, ay); c.lineTo(bx, by); c.stroke();
+        var aa = Math.atan2(by - ay, bx - ax), hl = Math.min(5, al * 0.3);
+        c.beginPath(); c.moveTo(bx, by);
+        c.lineTo(bx - hl * Math.cos(aa - 0.4), by - hl * Math.sin(aa - 0.4));
+        c.lineTo(bx - hl * Math.cos(aa + 0.4), by - hl * Math.sin(aa + 0.4));
+        c.closePath(); c.fill();
+      }
+    }
+  }
+
+  // ---- Probe points ----
+  if (p.syn) {
+    for (var pi = nR; pi < nP; pi++) {
+      c.beginPath(); c.arc(SX(fx[pi]), SY(fy[pi]), 1.5, 0, Math.PI * 2);
+      c.fillStyle = 'rgba(100,200,255,0.15)'; c.fill();
+    }
+  }
+
+  // ---- Real token dots ----
+  if (p.tok) {
+    var tc = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71',
+              '#e74c3c','#3498db','#9b59b6','#1abc9c','#e67e22'];
+    for (var ti = 0; ti < nR; ti++) {
+      var tx2 = SX(fx[ti]), ty2 = SY(fy[ti]);
+      var col = tc[ti % tc.length];
+
+      // Glow
+      var grad = c.createRadialGradient(tx2, ty2, 0, tx2, ty2, 12);
+      grad.addColorStop(0, 'rgba(255,255,255,0.06)');
+      grad.addColorStop(1, 'rgba(255,255,255,0)');
+      c.beginPath(); c.arc(tx2, ty2, 12, 0, Math.PI * 2);
+      c.fillStyle = grad; c.fill();
+
+      // Dot
+      c.beginPath(); c.arc(tx2, ty2, 4, 0, Math.PI * 2);
+      c.fillStyle = col; c.fill();
+      c.strokeStyle = '#fff'; c.lineWidth = 1; c.stroke();
+
+      // Label
+      c.font = 'bold 8px monospace';
+      c.lineWidth = 2;
+      c.strokeStyle = 'rgba(0,0,0,0.9)';
+      var lb = '[' + ti + '] ' + sentD.tokens[ti];
+      // Truncate label if panel is narrow
+      if (lb.length > Math.floor(pw / 7)) lb = lb.substring(0, Math.floor(pw / 7)) + '…';
+      c.strokeText(lb, tx2 + 6, ty2 - 5);
+      c.fillStyle = '#fff';
+      c.fillText(lb, tx2 + 6, ty2 - 5);
+    }
+
+    // Token sequence line in embedding mode
+    if (isEmb && nR > 1) {
+      c.strokeStyle = 'rgba(233,69,96,0.3)';
+      c.lineWidth = 1;
+      c.setLineDash([3, 3]);
+      c.beginPath();
+      c.moveTo(SX(fx[0]), SY(fy[0]));
+      for (var ti2 = 1; ti2 < nR; ti2++) c.lineTo(SX(fx[ti2]), SY(fy[ti2]));
+      c.stroke();
+      c.setLineDash([]);
+    }
+  }
+
+  // ---- Panel HUD (layer/mode info) ----
+  c.font = '8px monospace';
+  c.fillStyle = 'rgba(255,255,255,0.35)';
+  c.textAlign = 'left';
+  if (isEmb) {
+    c.fillText('EMB d' + dx + ',' + dy, px + M + 2, py + M + 8);
+  } else {
+    c.fillText('L' + layer + ' t=' + t.toFixed(1) + ' a=' + amp.toFixed(0) + ' d' + dx + ',' + dy,
+      px + M + 2, py + M + 8);
+  }
+
+  // Show strain stats if available
+  if (sentD.strain_stats && sentD.strain_stats[layer]) {
+    var ss = sentD.strain_stats[layer];
+    c.fillText('strain: μ=' + ss.mean.toFixed(2) + ' σ²=' + ss.variance.toFixed(3),
+      px + M + 2, py + M + 17);
+  }
+}
 </script></body></html>"""
 
 # ============================================================
@@ -10703,6 +11769,17 @@ def handle_multi_run(body_bytes):
             ],
         }
     }
+
+    full_results = []
+    for idx, text in enumerate(sentences):
+        text = text.strip()
+        if not text:
+            continue
+        json_str = process_text(text, model_name, itp_method=itp_method)
+        full_results.append(json.loads(json_str))
+
+    # Return both the comparison data AND the full per-sentence data
+    response["sentence_data"] = full_results  # <-- ADD THIS
 
     return json.dumps(response, cls=SafeFloatEncoder).encode()
 
