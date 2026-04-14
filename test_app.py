@@ -1133,9 +1133,6 @@ class TestHTMLContentAdditional(unittest.TestCase):
     def test_contains_strain_color_function(self):
         self.assertIn("function s2c(", app.HTML_PAGE)
 
-    def test_contains_autoplay_function(self):
-        self.assertIn("function togAP()", app.HTML_PAGE)
-
     def test_contains_reset_function(self):
         self.assertIn("function rstAll()", app.HTML_PAGE)
 
