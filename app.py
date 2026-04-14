@@ -12643,7 +12643,7 @@ def handle_multi_run(body_bytes):
         max_abs_per_layer = np.stack([np.abs(la).max(axis=0) for la in layer_activations], axis=0)
 
         # Compute per-layer norms (L2 of mean activation)
-        layer_norms = [float(np.linalg.norm(mean_per_layer[l])) for l in range(n_layers + 1)]
+        layer_norms = [float(np.linalg.norm(mean_per_layer[lay])) for lay in range(n_layers + 1)]
 
         all_results.append({
             "index": idx,
