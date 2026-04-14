@@ -2193,224 +2193,374 @@ canvas{background:#0d1117}
 #compare-divergence-chart canvas{border:1px solid #0f3460;border-radius:4px}
 </style></head><body>
 <div id="side">
+
+<!-- ═══════════════════════════════════════════════ -->
+<!-- SECTION: HEADER & STATUS                        -->
+<!-- ═══════════════════════════════════════════════ -->
 <h2>Metric Space Explorer</h2>
 <div id="status">Enter text and click Run</div>
+
+<!-- ═══════════════════════════════════════════════ -->
+<!-- SECTION: INPUT                                  -->
+<!-- ═══════════════════════════════════════════════ -->
 <div id="model-area">
-<label>Model:</label>
-<select id="sel-model">
-<option value="gpt2">GPT-2 (124M)</option>
-<option value="gpt2-medium">GPT-2 Medium (355M)</option>
-<option value="gpt2-large">GPT-2 Large (774M)</option>
-<option value="gpt2-xl">GPT-2 XL (1.5B)</option>
-<option value="distilbert-base-uncased">DistilBERT</option>
-<option value="bert-base-uncased">BERT Base</option>
-<option value="bert-large-uncased">BERT Large</option>
-<option value="roberta-base">RoBERTa Base</option>
-<option value="EleutherAI/pythia-160m">Pythia 160M</option>
-<option value="EleutherAI/pythia-410m">Pythia 410M</option>
-<option value="EleutherAI/pythia-1.4b">Pythia 1.4B</option>
-<option value="EleutherAI/pythia-2.8b">Pythia 2.8B</option>
-<option value="facebook/opt-1.3b">OPT 1.3B</option>
-<option value="microsoft/phi-2">Phi-2 (2.7B)</option>
-<option value="microsoft/deberta-v3-large">DeBERTa-v3 Large</option>
-</select>
+  <label>Model:</label>
+  <select id="sel-model">
+    <option value="gpt2">GPT-2 (124M)</option>
+    <option value="gpt2-medium">GPT-2 Medium (355M)</option>
+    <option value="gpt2-large">GPT-2 Large (774M)</option>
+    <option value="gpt2-xl">GPT-2 XL (1.5B)</option>
+    <option value="distilbert-base-uncased">DistilBERT</option>
+    <option value="bert-base-uncased">BERT Base</option>
+    <option value="bert-large-uncased">BERT Large</option>
+    <option value="roberta-base">RoBERTa Base</option>
+    <option value="EleutherAI/pythia-160m">Pythia 160M</option>
+    <option value="EleutherAI/pythia-410m">Pythia 410M</option>
+    <option value="EleutherAI/pythia-1.4b">Pythia 1.4B</option>
+    <option value="EleutherAI/pythia-2.8b">Pythia 2.8B</option>
+    <option value="facebook/opt-1.3b">OPT 1.3B</option>
+    <option value="microsoft/phi-2">Phi-2 (2.7B)</option>
+    <option value="microsoft/deberta-v3-large">DeBERTa-v3 Large</option>
+  </select>
 </div>
 <div id="text-area">
-<input id="txt-in" type="text" placeholder="Enter text..." value="The quick brown fox jumps over the lazy dog">
-<button id="btn-run" onclick="runText()">Run</button>
+  <input id="txt-in" type="text" placeholder="Enter text..." value="The quick brown fox jumps over the lazy dog">
+  <button id="btn-run" onclick="runText()">Run</button>
 </div>
-<div class="cb" style="margin-bottom:4px">
-  <input type="checkbox" id="cb-compare" onchange="toggleCompareMode()">
-  <label for="cb-compare" style="color:#53a8b6;font-weight:bold">⚡ Compare Mode</label>
+
+<!-- ═══════════════════════════════════════════════ -->
+<!-- SECTION: MODEL INFO                             -->
+<!-- ═══════════════════════════════════════════════ -->
+<div id="info">
+  Model: <span id="i-mod">-</span> |
+  Points: <span id="i-pts">-</span> (<span id="i-real">-</span> real + <span id="i-syn">-</span> probes)<br>
+  Layers: <span id="i-lay">-</span> | Dim: <span id="i-dim">-</span> |
+  Tokens: <span id="i-tok">-</span> |
+  ITP: <span id="i-itp">rbf</span>
 </div>
-<div id="compare-area">
-  <div style="font-size:10px;color:#888;margin-bottom:4px">
-    Enter a second text to compare activations side-by-side.
-    See where the model processes them differently.
+
+<!-- ═══════════════════════════════════════════════ -->
+<!-- SECTION: VIEW & NAVIGATION                      -->
+<!-- ═══════════════════════════════════════════════ -->
+<details open>
+  <summary style="color:#e94560;font-size:12px;font-weight:bold;cursor:pointer;padding:4px 0;border-bottom:1px solid #0f3460">🗺️ View &amp; Navigation</summary>
+
+  <h3 style="margin-top:6px">View Mode</h3>
+  <div class="view-toggle">
+    <button id="btn-fibre" onclick="setViewMode('fibre')">Fibre Bundle</button>
+    <button id="btn-fibre3d" onclick="setViewMode('fibre3d')">Fibre 3D</button>
+    <button id="btn-fibrekelp" onclick="setViewMode('fibrekelp')">Fibre Kelp</button>
+    <button id="btn-2d" class="active" onclick="setViewMode('2d')">2D</button>
+    <button id="btn-3d" onclick="setViewMode('3d')">3D</button>
+    <button id="btn-multi-view" onclick="setViewMode('multi')" style="display:none">Multi Compare</button>
   </div>
-  <div style="display:flex;gap:4px;margin-bottom:4px">
-    <input id="txt-b" type="text" placeholder="Second text (e.g. false version)..."
-           value="The capital of France is Berlin">
-    <button id="btn-compare" onclick="runCompare()">Compare</button>
+
+  <h3>Layer &amp; Deformation</h3>
+  <div class="cr"><label>Layer:</label><input type="range" id="sl-layer" min="0" max="11" value="0" step="1"><span class="v" id="v-layer">0</span></div>
+  <div class="cr"><label>Deform t:</label><input type="range" id="sl-t" min="0" max="1" value="1.0" step="0.01"><span class="v" id="v-t">1.00</span></div>
+  <div class="cr"><label>Amplify:</label><input type="range" id="sl-amp" min="0.1" max="500" value="1" step="0.1"><span class="v" id="v-amp">1.0</span></div>
+  <div class="cr"><label>Mode:</label>
+    <select id="sel-mode">
+      <option value="cumfwd">Layers 0→L (Cumulative)</option>
+      <option value="cumbwd">Layers L→End (Cumulative)</option>
+      <option value="single">This Layer Only</option>
+      <option value="embedding">Raw Embedding Space</option>
+    </select>
   </div>
-  <div id="compare-summary"></div>
-  <div id="compare-divergence-chart"></div>
-  <div id="compare-panel"></div>
-</div>
-<!-- Multi-Sentence Comparison -->
-<div class="cb" style="margin-bottom:4px">
-  <input type="checkbox" id="cb-multi" onchange="toggleMultiMode()">
-  <label for="cb-multi" style="color:#7b68ee;font-weight:bold">🔬 Multi-Sentence Compare</label>
-</div>
-<div id="multi-area" style="display:none">
-  <div style="font-size:10px;color:#888;margin-bottom:4px">
-    Enter multiple sentences (one per line). Each will be analyzed independently, then compared dimension-by-dimension.
+  <div class="cr"><label>Decomposition:</label>
+    <select id="sel-decomp">
+      <option value="full">Full Residual</option>
+      <option value="attn">Attention Only</option>
+      <option value="mlp">MLP Only</option>
+    </select>
   </div>
-  <textarea id="multi-txt" rows="6" style="width:100%;background:#0d1117;color:#e0e0e0;border:1px solid #0f3460;padding:6px;font-size:11px;border-radius:4px;font-family:monospace;resize:vertical"
+
+  <h3>Dimensions</h3>
+  <div class="cr"><label>Dim X:</label><input type="range" id="sl-dx" min="0" max="767" value="0" step="1"><span class="v" id="v-dx">0</span></div>
+  <div class="cr"><label>Dim Y:</label><input type="range" id="sl-dy" min="0" max="767" value="1" step="1"><span class="v" id="v-dy">1</span></div>
+  <div class="cr" id="dz-row" style="display:none"><label>Dim Z:</label><input type="range" id="sl-dz" min="0" max="767" value="2" step="1"><span class="v" id="v-dz">2</span></div>
+</details>
+
+<!-- ═══════════════════════════════════════════════ -->
+<!-- SECTION: DISPLAY OPTIONS                        -->
+<!-- ═══════════════════════════════════════════════ -->
+<details open>
+  <summary style="color:#53a8b6;font-size:12px;font-weight:bold;cursor:pointer;padding:4px 0;border-bottom:1px solid #0f3460">🎨 Display Options</summary>
+
+  <h3 style="margin-top:6px">Grid &amp; Interpolation</h3>
+  <div class="cr"><label>Method:</label>
+    <select id="sel-itp">
+      <option value="rbf" selected>Gaussian RBF</option>
+      <option value="tps">Thin Plate Spline</option>
+      <option value="idw">Inverse Distance (Shepard)</option>
+      <option value="mls">Moving Least Squares</option>
+      <option value="nn">Nearest Neighbor</option>
+      <option value="wendland">Wendland C2 (Compact)</option>
+    </select>
+  </div>
+  <div class="cr"><label>Bandwidth σ:</label><input type="range" id="sl-sig" min="0.01" max="20" value="1.0" step="0.01"><span class="v" id="v-sig">1.00</span></div>
+  <div class="cr"><label>Grid Res:</label><input type="range" id="sl-gr" min="10" max="80" value="30" step="1"><span class="v" id="v-gr">30</span></div>
+
+  <h3>Visibility</h3>
+  <div class="cb"><input type="checkbox" id="cb-grid" checked><label for="cb-grid">Deformed Grid</label></div>
+  <div class="cb"><input type="checkbox" id="cb-heat" checked><label for="cb-heat">Strain Heatmap</label></div>
+  <div class="cb"><input type="checkbox" id="cb-ref" checked><label for="cb-ref">Reference Grid</label></div>
+  <div class="cb"><input type="checkbox" id="cb-tok" checked><label for="cb-tok">Real Tokens</label></div>
+  <div class="cb"><input type="checkbox" id="cb-syn"><label for="cb-syn">Probe Points</label></div>
+  <div class="cb"><input type="checkbox" id="cb-sc" checked><label for="cb-sc">Strain Color</label></div>
+  <div class="cb"><input type="checkbox" id="cb-vec"><label for="cb-vec">Vector Arrows</label></div>
+  <div class="cb"><input type="checkbox" id="cb-vocnb" checked><label for="cb-vocnb">Show Nearby Vocab Words</label></div>
+</details>
+
+<!-- ═══════════════════════════════════════════════ -->
+<!-- SECTION: SELECTION & NEIGHBORS                  -->
+<!-- ═══════════════════════════════════════════════ -->
+<details open>
+  <summary style="color:#f5a623;font-size:12px;font-weight:bold;cursor:pointer;padding:4px 0;border-bottom:1px solid #0f3460">🔍 Selection &amp; Neighbors</summary>
+
+  <h3 style="margin-top:6px">Selected Tokens <span style="font-weight:normal;font-size:9px;color:#666">(click canvas)</span></h3>
+  <div id="selected-tokens"><span style="color:#555;font-size:10px">Click on a token dot to select it</span></div>
+
+  <div id="neighbor-panel">
+    <h4 id="nb-title">Neighbors</h4>
+    <div id="nb-list"></div>
+  </div>
+
+  <h3>Neighbor Tracing</h3>
+  <div class="cr"><label>K Neighbors:</label><input type="range" id="sl-kn" min="1" max="20" value="5" step="1"><span class="v" id="v-kn">5</span></div>
+  <div class="cb"><input type="checkbox" id="cb-nb" checked><label for="cb-nb">Show Neighbor Lines</label></div>
+  <div class="cb"><input type="checkbox" id="cb-nblabel" checked><label for="cb-nblabel">Show Neighbor Labels</label></div>
+
+  <h3>Predicted Next Token</h3>
+  <div id="next-token-panel" style="background:#0f3460;padding:6px;border-radius:4px;font-size:11px;line-height:1.6">
+    <span style="color:#555">Run a prompt to see predictions</span>
+  </div>
+</details>
+
+<!-- ═══════════════════════════════════════════════ -->
+<!-- SECTION: STRAIN STATISTICS                      -->
+<!-- ═══════════════════════════════════════════════ -->
+<details>
+  <summary style="color:#2ecc71;font-size:12px;font-weight:bold;cursor:pointer;padding:4px 0;border-bottom:1px solid #0f3460">📊 Strain Statistics</summary>
+  <div id="strain-stats-panel" style="margin-top:6px"></div>
+</details>
+
+<!-- ═══════════════════════════════════════════════ -->
+<!-- SECTION: ANALYSIS TOOLS                         -->
+<!-- ═══════════════════════════════════════════════ -->
+
+<!-- ---- Compare Mode ---- -->
+<details>
+  <summary style="color:#53a8b6;font-size:12px;font-weight:bold;cursor:pointer;padding:4px 0;border-bottom:1px solid #0f3460">⚡ Compare Mode</summary>
+  <div style="margin-top:6px">
+    <div class="cb" style="margin-bottom:4px">
+      <input type="checkbox" id="cb-compare" onchange="toggleCompareMode()">
+      <label for="cb-compare" style="color:#53a8b6;font-weight:bold">Enable Compare Mode</label>
+    </div>
+    <div id="compare-area">
+      <div style="font-size:10px;color:#888;margin-bottom:4px">
+        Enter a second text to compare activations side-by-side.
+        See where the model processes them differently.
+      </div>
+      <div style="display:flex;gap:4px;margin-bottom:4px">
+        <input id="txt-b" type="text" placeholder="Second text (e.g. false version)..."
+               value="The capital of France is Berlin">
+        <button id="btn-compare" onclick="runCompare()">Compare</button>
+      </div>
+      <div id="compare-summary"></div>
+      <div id="compare-divergence-chart"></div>
+      <div id="compare-panel"></div>
+    </div>
+  </div>
+</details>
+
+<!-- ---- Multi-Sentence Compare ---- -->
+<details>
+  <summary style="color:#7b68ee;font-size:12px;font-weight:bold;cursor:pointer;padding:4px 0;border-bottom:1px solid #0f3460">🔬 Multi-Sentence Compare</summary>
+  <div style="margin-top:6px">
+    <div class="cb" style="margin-bottom:4px">
+      <input type="checkbox" id="cb-multi" onchange="toggleMultiMode()">
+      <label for="cb-multi" style="color:#7b68ee;font-weight:bold">Enable Multi-Compare</label>
+    </div>
+    <div id="multi-area" style="display:none">
+      <div style="font-size:10px;color:#888;margin-bottom:4px">
+        Enter multiple sentences (one per line). Each will be analyzed independently, then compared dimension-by-dimension.
+      </div>
+      <textarea id="multi-txt" rows="6" style="width:100%;background:#0d1117;color:#e0e0e0;border:1px solid #0f3460;padding:6px;font-size:11px;border-radius:4px;font-family:monospace;resize:vertical"
 >The capital of France is Paris
 The capital of France is Berlin
 The capital of Germany is Berlin</textarea>
-  <button id="btn-multi" onclick="runMulti()" style="margin-top:4px;width:100%;background:#7b68ee;color:#fff;border:none;padding:6px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:bold">
-    Compare Sentences
-  </button>
-  <div id="multi-status" style="margin-top:4px;font-size:9px;color:#555"></div>
-  <div id="multi-summary" style="display:none;margin-top:6px;background:#0f3460;padding:8px;border-radius:4px;font-size:10px;line-height:1.5"></div>
-  <div id="multi-layer-select" style="display:none;margin-top:4px">
-    <div class="cr">
-      <label>Layer:</label>
-      <select id="multi-layer" onchange="renderMultiLayer();if(viewMode==='multi')drawMultiCanvas()" style="flex:1;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;padding:2px;font-size:10px"></select>
+      <button id="btn-multi" onclick="runMulti()" style="margin-top:4px;width:100%;background:#7b68ee;color:#fff;border:none;padding:6px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:bold">
+        Compare Sentences
+      </button>
+      <div id="multi-status" style="margin-top:4px;font-size:9px;color:#555"></div>
+      <div id="multi-summary" style="display:none;margin-top:6px;background:#0f3460;padding:8px;border-radius:4px;font-size:10px;line-height:1.5"></div>
+      <div id="multi-layer-select" style="display:none;margin-top:4px">
+        <div class="cr">
+          <label>Layer:</label>
+          <select id="multi-layer" onchange="renderMultiLayer();if(viewMode==='multi')drawMultiCanvas()" style="flex:1;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;padding:2px;font-size:10px"></select>
+        </div>
+        <div class="cr" style="margin-top:3px">
+          <label>Show:</label>
+          <select id="multi-show" onchange="renderMultiLayer();if(viewMode==='multi')drawMultiCanvas()" style="flex:1;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;padding:2px;font-size:10px">
+            <option value="most">Most Different Dims</option>
+            <option value="least">Least Different Dims</option>
+          </select>
+        </div>
+        <div class="cr" style="margin-top:3px">
+          <label>Top K:</label>
+          <input type="range" id="multi-topk" min="5" max="50" value="20" step="1" oninput="document.getElementById('v-multi-topk').textContent=this.value;renderMultiLayer();if(viewMode==='multi')drawMultiCanvas()">
+          <span class="v" id="v-multi-topk">20</span>
+        </div>
+      </div>
+      <div id="multi-dim-chart" style="display:none;margin-top:6px">
+        <canvas id="multi-dim-cv" width="340" height="300" style="border:1px solid #0f3460;border-radius:4px;display:block;width:100%"></canvas>
+      </div>
+      <div id="multi-pairwise" style="display:none;margin-top:6px">
+        <div style="color:#53a8b6;font-size:9px;font-weight:bold;margin-bottom:2px">Pairwise Cosine Similarity</div>
+        <canvas id="multi-pair-cv" width="200" height="200" style="border:1px solid #0f3460;border-radius:4px;display:block"></canvas>
+      </div>
+      <div id="multi-layer-profile" style="display:none;margin-top:6px">
+        <div style="color:#e94560;font-size:9px;font-weight:bold;margin-bottom:2px">Layer Divergence Profile</div>
+        <canvas id="multi-layerprof-cv" width="340" height="80" style="border:1px solid #0f3460;border-radius:4px;display:block;width:100%"></canvas>
+      </div>
     </div>
-    <div class="cr" style="margin-top:3px">
-      <label>Show:</label>
-      <select id="multi-show" onchange="renderMultiLayer();if(viewMode==='multi')drawMultiCanvas()" style="flex:1;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;padding:2px;font-size:10px">
-        <option value="most">Most Different Dims</option>
-        <option value="least">Least Different Dims</option>
-      </select>
-    </div>
-    <div class="cr" style="margin-top:3px">
-      <label>Top K:</label>
-      <input type="range" id="multi-topk" min="5" max="50" value="20" step="1" oninput="document.getElementById('v-multi-topk').textContent=this.value;renderMultiLayer();if(viewMode==='multi')drawMultiCanvas()">
-      <span class="v" id="v-multi-topk">20</span>
-    </div>
   </div>
-  <div id="multi-dim-chart" style="display:none;margin-top:6px">
-    <canvas id="multi-dim-cv" width="340" height="300" style="border:1px solid #0f3460;border-radius:4px;display:block;width:100%"></canvas>
-  </div>
-  <div id="multi-pairwise" style="display:none;margin-top:6px">
-    <div style="color:#53a8b6;font-size:9px;font-weight:bold;margin-bottom:2px">Pairwise Cosine Similarity</div>
-    <canvas id="multi-pair-cv" width="200" height="200" style="border:1px solid #0f3460;border-radius:4px;display:block"></canvas>
-  </div>
-  <div id="multi-layer-profile" style="display:none;margin-top:6px">
-    <div style="color:#e94560;font-size:9px;font-weight:bold;margin-bottom:2px">Layer Divergence Profile</div>
-    <canvas id="multi-layerprof-cv" width="340" height="80" style="border:1px solid #0f3460;border-radius:4px;display:block;width:100%"></canvas>
-  </div>
-</div>
-<div id="info">
-Model: <span id="i-mod">-</span> |
-Points: <span id="i-pts">-</span> (<span id="i-real">-</span> real + <span id="i-syn">-</span> probes)<br>
-Layers: <span id="i-lay">-</span> | Dim: <span id="i-dim">-</span> |
-Tokens: <span id="i-tok">-</span> |
-ITP: <span id="i-itp">rbf</span>
-</div>
+</details>
 
-<h3>Predicted Next Token</h3>
-<div id="next-token-panel" style="background:#0f3460;padding:6px;border-radius:4px;font-size:11px;line-height:1.6">
-<span style="color:#555">Run a prompt to see predictions</span>
-</div>
-<h3>Neuron Activation Grid</h3>
-<div id="neuron-grid-controls" style="margin-bottom:4px">
-  <div class="cr">
-    <label>Norm:</label>
-    <select id="ng-norm" style="flex:1;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;padding:2px;font-size:10px">
-      <option value="layer">Per-Layer (relative)</option>
-      <option value="global">Global (absolute)</option>
-    </select>
-  </div>
-  <div class="cr" style="margin-top:3px">
-    <label>Pixel size:</label>
-    <input type="range" id="ng-pixsize" min="1" max="6" value="2" step="1">
-    <span class="v" id="v-ng-pixsize">2</span>
-  </div>
-  <div class="cb" style="margin-top:3px">
-    <input type="checkbox" id="ng-absval"><label for="ng-absval">Use |activation| (absolute value)</label>
-  </div>
-  <button onclick="fetchNeuronGrid()" style="margin-top:4px;background:#53a8b6;color:#fff;border:none;padding:4px 12px;border-radius:3px;cursor:pointer;font-size:10px;font-weight:bold;width:100%">
-    Load Neuron Grid
-  </button>
-</div>
-<div id="neuron-grid-panel" style="background:#0a0a1a;padding:6px;border-radius:4px;max-height:500px;overflow:auto;display:none">
-</div>
-<h3>Diffeomorphism Spectrum</h3>
-<div id="spectrum-panel" style="background:#0f3460;padding:8px;border-radius:4px;font-size:10px">
-  <div style="display:flex;gap:4px;margin-bottom:6px">
-    <button onclick="fetchDiffeoSpectrum()" style="flex:1;background:#53a8b6;color:#fff;border:none;padding:4px 8px;border-radius:3px;cursor:pointer;font-size:10px;font-weight:bold">
-      Analyze Spectrum
-    </button>
-    <button onclick="fetchDiffeoSpectrum(document.getElementById('txt-b').value)" style="flex:1;background:#f5a623;color:#fff;border:none;padding:4px 8px;border-radius:3px;cursor:pointer;font-size:10px;font-weight:bold">
-      Compare Spectra
-    </button>
-  </div>
-  <div id="spectrum-results" style="max-height:350px;overflow-y:auto"></div>
-</div>
-
-<h3>Contrastive Feature Scanner</h3>
-<div id="contrastive-panel" style="background:#0f3460;padding:8px;border-radius:4px;font-size:10px">
-  <div style="color:#888;font-size:9px;margin-bottom:6px">
-    Automatically find which geometric operations distinguish behaviors.
-    Click a behavior to scan:
-  </div>
-  <div style="display:flex;flex-wrap:wrap;gap:3px;margin-bottom:6px">
-    <button onclick="runContrastiveScan('math')" style="background:#e94560;color:#fff;border:none;padding:3px 10px;border-radius:10px;cursor:pointer;font-size:9px">🔢 Math</button>
-    <button onclick="runContrastiveScan('refusal')" style="background:#7b68ee;color:#fff;border:none;padding:3px 10px;border-radius:10px;cursor:pointer;font-size:9px">🚫 Refusal</button>
-    <button onclick="runContrastiveScan('code')" style="background:#2ecc71;color:#fff;border:none;padding:3px 10px;border-radius:10px;cursor:pointer;font-size:9px">💻 Code</button>
-    <button onclick="runContrastiveScan('reasoning')" style="background:#f5a623;color:#fff;border:none;padding:3px 10px;border-radius:10px;cursor:pointer;font-size:9px">🧠 Reasoning</button>
-  </div>
-  <div id="contrastive-results" style="max-height:400px;overflow-y:auto"></div>
-</div>
-<h3>SAE Feature Inspector</h3>
-<div id="sae-panel" style="background:#0f3460;padding:8px;border-radius:4px;font-size:10px">
-  <div id="sae-status" style="color:#555;margin-bottom:6px">Loading SAE info...</div>
-  <div id="sae-controls" style="display:none">
-    <div class="cr">
-      <label>Layer:</label>
-      <select id="sae-layer" style="flex:1;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;padding:2px;font-size:10px"></select>
-    </div>
-    <div class="cr" style="margin-top:4px">
-      <label>Token:</label>
-      <select id="sae-token" style="flex:1;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;padding:2px;font-size:10px">
-        <option value="0">Run text first</option>
-      </select>
-    </div>
-    <div class="cr" style="margin-top:4px">
-      <label>Top K:</label>
-      <input type="range" id="sae-topk" min="5" max="50" value="20" step="1">
-      <span class="v" id="v-sae-topk">20</span>
-    </div>
-    <button onclick="fetchSAEFeatures()" style="margin-top:6px;background:#53a8b6;color:#fff;border:none;padding:4px 12px;border-radius:3px;cursor:pointer;font-size:10px;font-weight:bold;width:100%">Inspect Features</button>
-    <div id="sae-features-list" style="margin-top:8px;max-height:250px;overflow-y:auto"></div>
-    <div id="sae-intervention" style="display:none;margin-top:8px;border-top:1px solid #1a1a2e;padding-top:6px">
-      <div style="color:#e94560;font-weight:bold;margin-bottom:4px">⚡ Intervention</div>
+<!-- ---- Neuron Activation Grid ---- -->
+<details>
+  <summary style="color:#53a8b6;font-size:12px;font-weight:bold;cursor:pointer;padding:4px 0;border-bottom:1px solid #0f3460">🧠 Neuron Activation Grid</summary>
+  <div style="margin-top:6px">
+    <div id="neuron-grid-controls" style="margin-bottom:4px">
       <div class="cr">
-        <label>Feature:</label>
-        <input type="number" id="sae-int-feature" min="0" value="0" style="width:70px;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;padding:2px;font-size:10px">
+        <label>Norm:</label>
+        <select id="ng-norm" style="flex:1;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;padding:2px;font-size:10px">
+          <option value="layer">Per-Layer (relative)</option>
+          <option value="global">Global (absolute)</option>
+        </select>
       </div>
       <div class="cr" style="margin-top:3px">
-        <label>Clamp to:</label>
-        <input type="range" id="sae-int-clamp" min="-10" max="50" value="0" step="0.5" style="flex:1">
-        <span class="v" id="v-sae-clamp">0.0</span>
+        <label>Pixel size:</label>
+        <input type="range" id="ng-pixsize" min="1" max="6" value="2" step="1">
+        <span class="v" id="v-ng-pixsize">2</span>
       </div>
-      <div style="display:flex;gap:4px;margin-top:4px">
-        <button onclick="runSAEIntervention()" style="flex:1;background:#e94560;color:#fff;border:none;padding:4px 8px;border-radius:3px;cursor:pointer;font-size:10px;font-weight:bold">Apply</button>
-        <button onclick="clearSAEIntervention()" style="flex:1;background:#555;color:#fff;border:none;padding:4px 8px;border-radius:3px;cursor:pointer;font-size:10px">Clear</button>
+      <div class="cb" style="margin-top:3px">
+        <input type="checkbox" id="ng-absval"><label for="ng-absval">Use |activation| (absolute value)</label>
       </div>
-      <div id="sae-int-results" style="margin-top:6px"></div>
+      <button onclick="fetchNeuronGrid()" style="margin-top:4px;background:#53a8b6;color:#fff;border:none;padding:4px 12px;border-radius:3px;cursor:pointer;font-size:10px;font-weight:bold;width:100%">
+        Load Neuron Grid
+      </button>
+    </div>
+    <div id="neuron-grid-panel" style="background:#0a0a1a;padding:6px;border-radius:4px;max-height:500px;overflow:auto;display:none">
     </div>
   </div>
-</div>
-<h3>Holographic Curvature Analysis</h3>
-<div id="curvature-panel" style="background:#0f3460;padding:8px;border-radius:4px;font-size:10px">
-  <div style="color:#888;font-size:9px;margin-bottom:6px">
-    Decode Ricci &amp; Sectional curvature from the fiber bundle structure.
-    Identifies curvature singularities, syntactic junctions, entropy collapses,
-    and gravitational sources.
+</details>
+
+<!-- ---- SAE Feature Inspector ---- -->
+<details>
+  <summary style="color:#2ecc71;font-size:12px;font-weight:bold;cursor:pointer;padding:4px 0;border-bottom:1px solid #0f3460">🔎 SAE Feature Inspector</summary>
+  <div id="sae-panel" style="background:#0f3460;padding:8px;border-radius:4px;font-size:10px;margin-top:6px">
+    <div id="sae-status" style="color:#555;margin-bottom:6px">Loading SAE info...</div>
+    <div id="sae-controls" style="display:none">
+      <div class="cr">
+        <label>Layer:</label>
+        <select id="sae-layer" style="flex:1;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;padding:2px;font-size:10px"></select>
+      </div>
+      <div class="cr" style="margin-top:4px">
+        <label>Token:</label>
+        <select id="sae-token" style="flex:1;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;padding:2px;font-size:10px">
+          <option value="0">Run text first</option>
+        </select>
+      </div>
+      <div class="cr" style="margin-top:4px">
+        <label>Top K:</label>
+        <input type="range" id="sae-topk" min="5" max="50" value="20" step="1">
+        <span class="v" id="v-sae-topk">20</span>
+      </div>
+      <button onclick="fetchSAEFeatures()" style="margin-top:6px;background:#53a8b6;color:#fff;border:none;padding:4px 12px;border-radius:3px;cursor:pointer;font-size:10px;font-weight:bold;width:100%">Inspect Features</button>
+      <div id="sae-features-list" style="margin-top:8px;max-height:250px;overflow-y:auto"></div>
+      <div id="sae-intervention" style="display:none;margin-top:8px;border-top:1px solid #1a1a2e;padding-top:6px">
+        <div style="color:#e94560;font-weight:bold;margin-bottom:4px">⚡ Intervention</div>
+        <div class="cr">
+          <label>Feature:</label>
+          <input type="number" id="sae-int-feature" min="0" value="0" style="width:70px;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;padding:2px;font-size:10px">
+        </div>
+        <div class="cr" style="margin-top:3px">
+          <label>Clamp to:</label>
+          <input type="range" id="sae-int-clamp" min="-10" max="50" value="0" step="0.5" style="flex:1">
+          <span class="v" id="v-sae-clamp">0.0</span>
+        </div>
+        <div style="display:flex;gap:4px;margin-top:4px">
+          <button onclick="runSAEIntervention()" style="flex:1;background:#e94560;color:#fff;border:none;padding:4px 8px;border-radius:3px;cursor:pointer;font-size:10px;font-weight:bold">Apply</button>
+          <button onclick="clearSAEIntervention()" style="flex:1;background:#555;color:#fff;border:none;padding:4px 8px;border-radius:3px;cursor:pointer;font-size:10px">Clear</button>
+        </div>
+        <div id="sae-int-results" style="margin-top:6px"></div>
+      </div>
+    </div>
   </div>
-  <div class="cr">
-    <label>k-NN:</label>
-    <input type="range" id="curv-k" min="3" max="20" value="8" step="1">
-    <span class="v" id="v-curv-k">8</span>
+</details>
+
+<!-- ---- Diffeomorphism Spectrum ---- -->
+<details>
+  <summary style="color:#f5a623;font-size:12px;font-weight:bold;cursor:pointer;padding:4px 0;border-bottom:1px solid #0f3460">🌊 Diffeomorphism Spectrum</summary>
+  <div id="spectrum-panel" style="background:#0f3460;padding:8px;border-radius:4px;font-size:10px;margin-top:6px">
+    <div style="display:flex;gap:4px;margin-bottom:6px">
+      <button onclick="fetchDiffeoSpectrum()" style="flex:1;background:#53a8b6;color:#fff;border:none;padding:4px 8px;border-radius:3px;cursor:pointer;font-size:10px;font-weight:bold">
+        Analyze Spectrum
+      </button>
+      <button onclick="fetchDiffeoSpectrum(document.getElementById('txt-b').value)" style="flex:1;background:#f5a623;color:#fff;border:none;padding:4px 8px;border-radius:3px;cursor:pointer;font-size:10px;font-weight:bold">
+        Compare Spectra
+      </button>
+    </div>
+    <div id="spectrum-results" style="max-height:350px;overflow-y:auto"></div>
   </div>
-  <div class="cr" style="margin-top:3px">
-    <label>PCA d:</label>
-    <input type="range" id="curv-d" min="4" max="64" value="16" step="1">
-    <span class="v" id="v-curv-d">16</span>
+</details>
+
+<!-- ---- Contrastive Feature Scanner ---- -->
+<details>
+  <summary style="color:#e94560;font-size:12px;font-weight:bold;cursor:pointer;padding:4px 0;border-bottom:1px solid #0f3460">🎯 Contrastive Feature Scanner</summary>
+  <div id="contrastive-panel" style="background:#0f3460;padding:8px;border-radius:4px;font-size:10px;margin-top:6px">
+    <div style="color:#888;font-size:9px;margin-bottom:6px">
+      Automatically find which geometric operations distinguish behaviors.
+      Click a behavior to scan:
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:3px;margin-bottom:6px">
+      <button onclick="runContrastiveScan('math')" style="background:#e94560;color:#fff;border:none;padding:3px 10px;border-radius:10px;cursor:pointer;font-size:9px">🔢 Math</button>
+      <button onclick="runContrastiveScan('refusal')" style="background:#7b68ee;color:#fff;border:none;padding:3px 10px;border-radius:10px;cursor:pointer;font-size:9px">🚫 Refusal</button>
+      <button onclick="runContrastiveScan('code')" style="background:#2ecc71;color:#fff;border:none;padding:3px 10px;border-radius:10px;cursor:pointer;font-size:9px">💻 Code</button>
+      <button onclick="runContrastiveScan('reasoning')" style="background:#f5a623;color:#fff;border:none;padding:3px 10px;border-radius:10px;cursor:pointer;font-size:9px">🧠 Reasoning</button>
+    </div>
+    <div id="contrastive-results" style="max-height:400px;overflow-y:auto"></div>
   </div>
-  <div class="cr" style="margin-top:3px">
-    <label>Top K sing.:</label>
-    <input type="range" id="curv-topk" min="3" max="25" value="10" step="1">
-    <span class="v" id="v-curv-topk">10</span>
-  </div>
-  <div style="display:flex;gap:4px;margin-top:6px">
-    <button id="btn-curvature" onclick="runCurvatureAnalysis()" style="flex:1;background:#7b68ee;color:#fff;border:none;padding:5px 10px;border-radius:3px;cursor:pointer;font-size:10px;font-weight:bold">
+</details>
+
+<!-- ---- Holographic Curvature Analysis ---- -->
+<details>
+  <summary style="color:#7b68ee;font-size:12px;font-weight:bold;cursor:pointer;padding:4px 0;border-bottom:1px solid #0f3460">🌀 Holographic Curvature Analysis</summary>
+  <div id="curvature-panel" style="background:#0f3460;padding:8px;border-radius:4px;font-size:10px;margin-top:6px">
+    <div style="color:#888;font-size:9px;margin-bottom:6px">
+      Decode Ricci &amp; Sectional curvature from the fiber bundle structure.
+      Identifies curvature singularities, syntactic junctions, entropy collapses,
+      and gravitational sources.
+    </div>
+    <div class="cr">
+      <label>k-NN:</label>
+      <input type="range" id="curv-k" min="3" max="20" value="8" step="1">
+      <span class="v" id="v-curv-k">8</span>
+    </div>
+    <div class="cr" style="margin-top:3px">
+      <label>PCA d:</label>
+      <input type="range" id="curv-d" min="4" max="64" value="16" step="1">
+      <span class="v" id="v-curv-d">16</span>
+    </div>
+    <div class="cr" style="margin-top:3px">
+      <label>Top K sing.:</label>
+      <input type="range" id="curv-topk" min="3" max="25" value="10" step="1">
+      <span class="v" id="v-curv-topk">10</span>
+    </div>
+    <div style="display:flex;gap:4px;margin-top:6px">
+      <button id="btn-curvature" onclick="runCurvatureAnalysis()" style="flex:1;background:#7b68ee;color:#fff;border:none;padding:5px 10px;border-radius:3px;cursor:pointer;font-size:10px;font-weight:bold">
       Analyze Curvature
     </button>
   </div>
@@ -2448,108 +2598,63 @@ ITP: <span id="i-itp">rbf</span>
     <canvas id="curv-surprisal-cv" width="340" height="140" style="border:1px solid #0f3460;border-radius:4px;display:block;width:100%"></canvas>
     <div id="curv-corr-bars" style="margin-top:4px"></div>
   </div>
+</details>
+
+<!-- ═══════════════════════════════════════════════ -->
+<!-- SECTION: KEYBOARD SHORTCUTS                     -->
+<!-- ═══════════════════════════════════════════════ -->
+<details>
+  <summary style="color:#888;font-size:11px;cursor:pointer;padding:4px 0;border-bottom:1px solid #0f3460">⌨️ Keyboard Shortcuts</summary>
+  <div id="keys" style="margin-top:4px;font-size:8px;color:#555;line-height:1.3">
+    <b>Keys:</b> ←→ Dim X | ↑↓ Dim Y | Shift+←→ Dim Z (±1) | Shift+↑↓ Dim Z (±10) | PgUp/PgDn Dim Z (3D) | [/] Layer | ;/' t | A/Z Amp | Space Auto | R Reset | D Next Dim Pair | 0 Reset Zoom<br>
+    <b>Mouse:</b> Scroll=Zoom | Shift+Drag=Pan | Click=Select Token | Drag=Rotate (3D)
+  </div>
+</details>
+
 </div>
-<h3>Selected Tokens (click canvas to select)</h3>
-<div id="selected-tokens"><span style="color:#555;font-size:10px">Click on a token dot to select it</span></div>
-<div id="neighbor-panel">
-<h4 id="nb-title">Neighbors</h4>
-<div id="nb-list"></div>
-</div>
-<h3>View Mode</h3>
-<div class="view-toggle">
-<button id="btn-fibre" onclick="setViewMode('fibre')">Fibre Bundle</button>
-<button id="btn-fibre3d" onclick="setViewMode('fibre3d')">Fibre 3D</button>
-<button id="btn-fibrekelp" onclick="setViewMode('fibrekelp')">Fibre Kelp</button>
-<button id="btn-2d" class="active" onclick="setViewMode('2d')">2D</button>
-<button id="btn-3d" onclick="setViewMode('3d')">3D</button>
-<button id="btn-multi-view" onclick="setViewMode('multi')" style="display:none">Multi Compare</button>
-</div>
-<h3>Layer &amp; Deformation</h3>
-<div class="cr"><label>Layer:</label><input type="range" id="sl-layer" min="0" max="11" value="0" step="1"><span class="v" id="v-layer">0</span></div>
-<div class="cr"><label>Deform t:</label><input type="range" id="sl-t" min="0" max="1" value="1.0" step="0.01"><span class="v" id="v-t">1.00</span></div>
-<div class="cr"><label>Amplify:</label><input type="range" id="sl-amp" min="0.1" max="500" value="1" step="0.1"><span class="v" id="v-amp">1.0</span></div>
-<div class="cr"><label>Mode:</label>
-<select id="sel-mode">
-<option value="cumfwd">Layers 0→L (Cumulative)</option>
-<option value="cumbwd">Layers L→End (Cumulative)</option>
-<option value="single">This Layer Only</option>
-<option value="embedding">Raw Embedding Space</option>
-</select>
-</div>
-<div class="cr"><label>Decomposition:</label>
-<select id="sel-decomp">
-<option value="full">Full Residual</option>
-<option value="attn">Attention Only</option>
-<option value="mlp">MLP Only</option>
-</select>
-</div>
-<h3>Strain Statistics</h3>
-<div id="strain-stats-panel"></div>
-<h3>Dimensions</h3>
-<div class="cr"><label>Dim X:</label><input type="range" id="sl-dx" min="0" max="767" value="0" step="1"><span class="v" id="v-dx">0</span></div>
-<div class="cr"><label>Dim Y:</label><input type="range" id="sl-dy" min="0" max="767" value="1" step="1"><span class="v" id="v-dy">1</span></div>
-<div class="cr" id="dz-row" style="display:none"><label>Dim Z:</label><input type="range" id="sl-dz" min="0" max="767" value="2" step="1"><span class="v" id="v-dz">2</span></div>
-<h3>Neighbor Tracing</h3>
-<div class="cr"><label>K Neighbors:</label><input type="range" id="sl-kn" min="1" max="20" value="5" step="1"><span class="v" id="v-kn">5</span></div>
-<div class="cb"><input type="checkbox" id="cb-nb" checked><label for="cb-nb">Show Neighbor Lines</label></div>
-<div class="cb"><input type="checkbox" id="cb-nblabel" checked><label for="cb-nblabel">Show Neighbor Labels</label></div>
-<h3>Interpolation &amp; Grid</h3>
-<div class="cr"><label>Method:</label>
-<select id="sel-itp">
-<option value="rbf" selected>Gaussian RBF</option>
-<option value="tps">Thin Plate Spline</option>
-<option value="idw">Inverse Distance (Shepard)</option>
-<option value="mls">Moving Least Squares</option>
-<option value="nn">Nearest Neighbor</option>
-<option value="wendland">Wendland C2 (Compact)</option>
-</select>
-</div>
-<div class="cr"><label>Bandwidth σ:</label><input type="range" id="sl-sig" min="0.01" max="20" value="1.0" step="0.01"><span class="v" id="v-sig">1.00</span></div>
-<div class="cr"><label>Grid Res:</label><input type="range" id="sl-gr" min="10" max="80" value="30" step="1"><span class="v" id="v-gr">30</span></div>
-<h3>Interpolation &amp; Grid</h3>
-<div class="cr"><label>Method:</label>
-<select id="sel-itp">
-<option value="rbf" selected>Gaussian RBF</option>
-<option value="tps">Thin Plate Spline</option>
-<option value="idw">Inverse Distance (Shepard)</option>
-<option value="mls">Moving Least Squares</option>
-<option value="nn">Nearest Neighbor</option>
-<option value="wendland">Wendland C2 (Compact)</option>
-</select>
-</div>
-<div class="cr"><label>Bandwidth σ:</label><input type="range" id="sl-sig" min="0.01" max="20" value="1.0" step="0.01"><span class="v" id="v-sig">1.00</span></div>
-<div class="cr"><label>Grid Res:</label><input type="range" id="sl-gr" min="10" max="80" value="30" step="1"><span class="v" id="v-gr">30</span></div>
-<h3>Display</h3>
-<div class="cb"><input type="checkbox" id="cb-grid" checked><label for="cb-grid">Deformed Grid</label></div>
-<div class="cb"><input type="checkbox" id="cb-vocnb" checked><label for="cb-vocnb">Show Nearby Vocab Words</label></div>
-<div class="cb"><input type="checkbox" id="cb-heat" checked><label for="cb-heat">Strain Heatmap</label></div>
-<div class="cb"><input type="checkbox" id="cb-ref" checked><label for="cb-ref">Reference Grid</label></div>
-<div class="cb"><input type="checkbox" id="cb-tok" checked><label for="cb-tok">Real Tokens</label></div>
-<div class="cb"><input type="checkbox" id="cb-syn"><label for="cb-syn">Probe Points</label></div>
-<div class="cb"><input type="checkbox" id="cb-sc" checked><label for="cb-sc">Strain Color</label></div>
-<div class="cb"><input type="checkbox" id="cb-vec"><label for="cb-vec">Vector Arrows</label></div>
-<div id="keys"><b>Keys:</b> ←→ Dim X | ↑↓ Dim Y | Shift+←→ Dim Z (±1) | Shift+↑↓ Dim Z (±10) | PgUp/PgDn Dim Z (3D) | [/] Layer | ;/' t | A/Z Amp | Space Auto | R Reset | D Next Dim Pair | 0 Reset Zoom<br>
-<b>Mouse:</b> Scroll=Zoom | Shift+Drag=Pan | Click=Select Token | Drag=Rotate (3D)</div>
-</div>
+
 <div id="main">
-<div class="diffeo-canvas-wrap" id="diffeo-wrap" style="display:none">
-  <canvas id="diffeo-canvas"></canvas>
+  <canvas id="cv" width="800" height="800"></canvas>
 </div>
-<canvas id="cv"></canvas>
-<div id="legend">
-<div class="li"><div class="lc" style="background:linear-gradient(90deg,#0077b6,#666,#e94560)"></div>Strain</div>
-<div class="li"><div class="lc" style="background:#0077b6"></div>Contraction</div>
-<div class="li"><div class="lc" style="background:#666"></div>Isometry</div>
-<div class="li"><div class="lc" style="background:#e94560"></div>Expansion</div>
-<div class="li"><div class="lc" style="background:#0f0"></div>Selected</div>
-<div class="li"><div class="lc" style="background:rgba(0,255,200,0.5)"></div>Neighbor</div>
-</div>
-</div>
+
 <script>
 var diffeoCanvas = document.getElementById('diffeo-canvas');
 var diffeoCtx = diffeoCanvas ? diffeoCanvas.getContext('2d') : null;
 var diffeoAnimId = null;
 var diffeoTime = 0;
+
+// State for fibre bundle view
+var fibreState = {
+  neuronData: null,       // cached neuron grid data from server
+  loading: false,
+  normMode: 'layer',      // 'layer' or 'global'
+  pixSize: 2,
+  useAbs: false,
+  roomSpacing: 80,        // vertical gap between layer rooms
+  roomWidth: 0,           // computed
+  roomHeight: 0,          // computed
+  tokenSpacing: 0,        // computed
+  dimX: 0,                // which hidden dim maps to X sort within room
+  dimY: 1,                // which hidden dim maps to Y sort within room
+  dimZ: 2,                // depth axis for 3D projection
+  show3D: false,          // toggle pseudo-3D stacking
+  rotX: -0.3,
+  rotY: 0.4,
+  dragActive: false,
+  dragLastX: 0,
+  dragLastY: 0,
+  scrollY: 0,             // vertical scroll offset
+  selectedToken: -1,
+  hoveredNeuron: null,
+  showConnections: true,   // show diffeomorphism lines between layers
+  connectionDensity: 0.1,  // fraction of neurons to connect
+  colormap: 'grayscale',   // 'grayscale', 'coolhot', 'viridis'
+  showTransportFrame: false,
+  showAttnField: false,
+  showMlpField: false,
+  showFlowLines: true,
+  flowArrowScale: 1.0,
+};
 
 var diffeoState = {
   active: false,
@@ -5021,39 +5126,6 @@ function draw() {
 // ============================================================
 // FIBRE BUNDLE VIEW — Neuron Pixel Grids Stacked as Kelp Rooms
 // ============================================================
-
-// State for fibre bundle view
-var fibreState = {
-  neuronData: null,       // cached neuron grid data from server
-  loading: false,
-  normMode: 'layer',      // 'layer' or 'global'
-  pixSize: 2,
-  useAbs: false,
-  roomSpacing: 80,        // vertical gap between layer rooms
-  roomWidth: 0,           // computed
-  roomHeight: 0,          // computed
-  tokenSpacing: 0,        // computed
-  dimX: 0,                // which hidden dim maps to X sort within room
-  dimY: 1,                // which hidden dim maps to Y sort within room
-  dimZ: 2,                // depth axis for 3D projection
-  show3D: false,          // toggle pseudo-3D stacking
-  rotX: -0.3,
-  rotY: 0.4,
-  dragActive: false,
-  dragLastX: 0,
-  dragLastY: 0,
-  scrollY: 0,             // vertical scroll offset
-  selectedToken: -1,
-  hoveredNeuron: null,
-  showConnections: true,   // show diffeomorphism lines between layers
-  connectionDensity: 0.1,  // fraction of neurons to connect
-  colormap: 'grayscale',   // 'grayscale', 'coolhot', 'viridis'
-  showTransportFrame: false,
-  showAttnField: false,
-  showMlpField: false,
-  showFlowLines: true,
-  flowArrowScale: 1.0,
-};
 
 function setViewMode(mode) {
     // ---- Multi-view button visibility (from multi wrapper) ----
