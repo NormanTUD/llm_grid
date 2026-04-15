@@ -5650,160 +5650,344 @@ function drawFibre3DAxes(c, roomSize, mr, proj3Df, dx, dy, dz) {
     }
 }
 
-/**
- * Top-level: the refactored drawFibreBundle3DGrid.
- * Orchestrates all passes using the helpers above.
- */
-function drawFibreBundle3DGrid() {
-    var cv = document.getElementById('cv');
-    var c = cv.getContext('2d');
-    var W = cv.width, H = cv.height;
-    c.clearRect(0, 0, W, H);
+// ============================================================
+// REFACTORED renderCompareGrids — broken into composable helpers
+// ============================================================
 
-    if (!D) {
-        c.font = '14px monospace';
-        c.fillStyle = '#555';
-        c.fillText('Run a prompt first', W / 2 - 80, H / 2);
+/**
+ * Compute the pixel grid layout dimensions from the hidden dimension count.
+ * Reusable anywhere a neuron-grid layout is needed.
+ *
+ * @param {number} hiddenDim - number of hidden dimensions
+ * @returns {Object} { gridCols, gridRows }
+ */
+function computeNeuronGridLayout(hiddenDim) {
+    var gridCols = Math.ceil(Math.sqrt(hiddenDim));
+    var gridRows = Math.ceil(hiddenDim / gridCols);
+    return { gridCols: gridCols, gridRows: gridRows };
+}
+
+/**
+ * Build the HTML header for a single compared token block,
+ * showing the A and B token labels and whether they match.
+ *
+ * @param {number} ti - token index
+ * @param {string} tokA - token string from text A
+ * @param {string} tokB - token string from text B
+ * @returns {string} HTML string
+ */
+function buildCompareTokenHeader(ti, tokA, tokB) {
+    var same = (tokA === tokB);
+    var html = '<div style="font-size:10px;margin-bottom:3px">';
+    html += '<span style="color:#53a8b6;font-weight:bold">[' + ti + '] A: ' + tokA + '</span>';
+    if (!same) {
+        html += ' <span style="color:#e94560">≠</span> ';
+        html += '<span style="color:#f5a623;font-weight:bold">B: ' + tokB + '</span>';
+    } else {
+        html += ' <span style="color:#2ecc71">=</span> ';
+        html += '<span style="color:#f5a623">B: ' + tokB + '</span>';
+    }
+    html += '</div>';
+    return html;
+}
+
+/**
+ * Build the HTML for a single column of stacked layer canvases.
+ * Each canvas represents one layer's activation/diff data for one token.
+ *
+ * @param {string} idPrefix - canvas ID prefix (e.g. 'cmp-a')
+ * @param {string} columnLabel - display label (e.g. 'Text A')
+ * @param {string} labelColor - CSS color for the label
+ * @param {number} ti - token index
+ * @param {number} nLayers - number of layers
+ * @param {number} gridCols - neuron grid columns
+ * @param {number} gridRows - neuron grid rows
+ * @param {number} pixSize - pixel size per neuron
+ * @param {string[]} tokens - token strings (for tooltip)
+ * @param {string} layerPrefix - tooltip prefix (e.g. 'A Token')
+ * @returns {string} HTML string for the column
+ */
+function buildCompareCanvasColumn(idPrefix, columnLabel, labelColor, ti,
+    nLayers, gridCols, gridRows, pixSize, tokens, layerPrefix) {
+
+    var cw = gridCols * pixSize;
+    var ch = gridRows * pixSize;
+    var html = '<div style="text-align:center">';
+    html += '<div style="color:' + labelColor + ';font-size:8px;font-weight:bold;margin-bottom:2px">' +
+            columnLabel + '</div>';
+
+    for (var li = 0; li < nLayers; li++) {
+        var cid = idPrefix + '-' + ti + '-' + li;
+        var layerName = (li === 0 ? 'Embedding' : 'Layer ' + (li - 1));
+        html += '<canvas id="' + cid + '" width="' + cw + '" height="' + ch + '" ' +
+                'style="display:block;image-rendering:pixelated;margin-bottom:1px" ' +
+                'title="' + layerPrefix + ' ' + ti + ' ' + layerName + '"></canvas>';
+    }
+
+    html += '</div>';
+    return html;
+}
+
+/**
+ * Build the HTML for the layer labels column (rightmost column in each token block).
+ *
+ * @param {number} nLayers - number of layers
+ * @param {number} gridRows - neuron grid rows
+ * @param {number} pixSize - pixel size per neuron
+ * @param {number} onsetLayer - divergence onset layer index (-1 if none)
+ * @returns {string} HTML string for the layer labels column
+ */
+function buildCompareLayerLabels(nLayers, gridRows, pixSize, onsetLayer) {
+    var html = '<div style="text-align:left;padding-top:12px">';
+    for (var li = 0; li < nLayers; li++) {
+        var isOnset = (onsetLayer >= 0 && li === onsetLayer + 1);
+        var lh = gridRows * pixSize + 1;
+        html += '<div style="height:' + lh + 'px;line-height:' + lh + 'px;font-size:7px;' +
+                'color:' + (isOnset ? '#f5a623' : '#555') + ';' +
+                'font-weight:' + (isOnset ? 'bold' : 'normal') + '">';
+        html += (li === 0 ? 'Emb' : 'L' + (li - 1));
+        if (isOnset) html += ' ⚡';
+        html += '</div>';
+    }
+    html += '</div>';
+    return html;
+}
+
+/**
+ * Build the complete HTML for a single token's comparison block,
+ * containing all four data columns (A, B, Diff, Magnitude) plus layer labels.
+ *
+ * @param {number} ti - token index
+ * @param {Object} d - compareData object
+ * @param {number} gridCols - neuron grid columns
+ * @param {number} gridRows - neuron grid rows
+ * @param {number} pixSize - pixel size per neuron
+ * @returns {string} HTML string for the entire token block
+ */
+function buildCompareTokenBlock(ti, d, gridCols, gridRows, pixSize) {
+    var tokA = d.tokens_a[ti];
+    var tokB = d.tokens_b[ti];
+
+    var html = '<div style="margin-bottom:10px;border-bottom:1px solid #0f3460;padding-bottom:6px">';
+
+    // Token header (A vs B label)
+    html += buildCompareTokenHeader(ti, tokA, tokB);
+
+    // Four side-by-side columns + layer labels
+    html += '<div style="display:flex;gap:8px;align-items:flex-start">';
+
+    html += buildCompareCanvasColumn('cmp-a', 'Text A', '#53a8b6', ti,
+        d.n_layers, gridCols, gridRows, pixSize, d.tokens_a, 'A Token');
+
+    html += buildCompareCanvasColumn('cmp-b', 'Text B', '#f5a623', ti,
+        d.n_layers, gridCols, gridRows, pixSize, d.tokens_b, 'B Token');
+
+    html += buildCompareCanvasColumn('cmp-d', 'A − B', '#e94560', ti,
+        d.n_layers, gridCols, gridRows, pixSize, d.tokens_a, 'Diff Token');
+
+    html += buildCompareCanvasColumn('cmp-m', '|Diff|', '#f5a623', ti,
+        d.n_layers, gridCols, gridRows, pixSize, d.tokens_a, 'Magnitude Token');
+
+    html += buildCompareLayerLabels(d.n_layers, gridRows, pixSize, d.onset_layer);
+
+    html += '</div>'; // end flex row
+    html += '</div>'; // end token block
+
+    return html;
+}
+
+/**
+ * Compute the RGB color for a single neuron value given a color mode.
+ * Reusable for any neuron-grid rendering that needs diverging, hot, or grayscale colors.
+ *
+ * @param {number} val - normalized value in [0, 1]
+ * @param {string} colorMode - 'grayscale', 'diverging', or 'hot'
+ * @returns {number[]} [r, g, b] clamped to [0, 255]
+ */
+function computeCompareNeuronColor(val, colorMode) {
+    var r, g, b;
+
+    if (colorMode === 'diverging') {
+        // 0 = B >> A (blue), 0.5 = no diff (black), 1 = A >> B (red)
+        if (val < 0.5) {
+            var intensity = (0.5 - val) * 2;
+            r = 0;
+            g = Math.floor(intensity * 80);
+            b = Math.floor(intensity * 220);
+        } else {
+            var intensity = (val - 0.5) * 2;
+            r = Math.floor(intensity * 233);
+            g = Math.floor(intensity * 50);
+            b = Math.floor(intensity * 30);
+        }
+    } else if (colorMode === 'hot') {
+        // black -> red -> orange -> yellow -> white
+        if (val < 0.25) {
+            var t = val / 0.25;
+            r = Math.floor(t * 180); g = 0; b = 0;
+        } else if (val < 0.5) {
+            var t = (val - 0.25) / 0.25;
+            r = 180 + Math.floor(t * 75); g = Math.floor(t * 120); b = 0;
+        } else if (val < 0.75) {
+            var t = (val - 0.5) / 0.25;
+            r = 255; g = 120 + Math.floor(t * 135); b = Math.floor(t * 50);
+        } else {
+            var t = (val - 0.75) / 0.25;
+            r = 255; g = 255; b = 50 + Math.floor(t * 205);
+        }
+    } else {
+        // Grayscale
+        var v = Math.floor(val * 255);
+        r = v; g = v; b = v;
+    }
+
+    return [
+        Math.max(0, Math.min(255, r)),
+        Math.max(0, Math.min(255, g)),
+        Math.max(0, Math.min(255, b))
+    ];
+}
+
+/**
+ * Fill an ImageData buffer with neuron activation pixels for a single layer/token.
+ * Reusable for any neuron-grid canvas rendering (compare mode, neuron grid panel, etc.).
+ *
+ * @param {ImageData} imgData - the ImageData to fill
+ * @param {number[]} acts - activation values (length = hiddenDim), normalized [0,1]
+ * @param {number} hiddenDim - number of active neurons
+ * @param {number} gridCols - grid columns
+ * @param {number} gridRows - grid rows
+ * @param {number} pixSize - pixel size per neuron
+ * @param {string} colorMode - 'grayscale', 'diverging', or 'hot'
+ */
+function fillNeuronImageData(imgData, acts, hiddenDim, gridCols, gridRows, pixSize, colorMode) {
+    // Fill active neurons
+    for (var ni = 0; ni < hiddenDim; ni++) {
+        var val = acts[ni];
+        var rgb = computeCompareNeuronColor(val, colorMode);
+
+        var col = ni % gridCols;
+        var row = Math.floor(ni / gridCols);
+
+        for (var py = 0; py < pixSize; py++) {
+            for (var px = 0; px < pixSize; px++) {
+                var ix = (row * pixSize + py) * (gridCols * pixSize) + (col * pixSize + px);
+                var offset = ix * 4;
+                imgData.data[offset]     = rgb[0];
+                imgData.data[offset + 1] = rgb[1];
+                imgData.data[offset + 2] = rgb[2];
+                imgData.data[offset + 3] = 255;
+            }
+        }
+    }
+
+    // Fill remaining pixels (padding) dark
+    for (var ni = hiddenDim; ni < gridCols * gridRows; ni++) {
+        var col = ni % gridCols;
+        var row = Math.floor(ni / gridCols);
+        for (var py = 0; py < pixSize; py++) {
+            for (var px = 0; px < pixSize; px++) {
+                var ix = (row * pixSize + py) * (gridCols * pixSize) + (col * pixSize + px);
+                var offset = ix * 4;
+                imgData.data[offset]     = 10;
+                imgData.data[offset + 1] = 5;
+                imgData.data[offset + 2] = 20;
+                imgData.data[offset + 3] = 255;
+            }
+        }
+    }
+}
+
+/**
+ * Render a single compare-mode neuron grid canvas.
+ * Uses fillNeuronImageData and computeCompareNeuronColor internally.
+ *
+ * @param {string} canvasId
+ * @param {number[]} acts - array of hiddenDim floats in [0,1]
+ * @param {number} hiddenDim
+ * @param {number} gridCols
+ * @param {number} gridRows
+ * @param {number} pixSize
+ * @param {string} colorMode - 'grayscale', 'diverging', or 'hot'
+ */
+function drawCompareCanvas(canvasId, acts, hiddenDim, gridCols, gridRows, pixSize, colorMode) {
+    var cv = document.getElementById(canvasId);
+    if (!cv) return;
+    var ctx = cv.getContext('2d');
+
+    if (!acts || acts.length === 0) {
+        ctx.fillStyle = '#0a0515';
+        ctx.fillRect(0, 0, cv.width, cv.height);
         return;
     }
 
-    // ---- Gather parameters ----
-    var params = getFibre3DParams();
+    var imgData = ctx.createImageData(gridCols * pixSize, gridRows * pixSize);
+    fillNeuronImageData(imgData, acts, hiddenDim, gridCols, gridRows, pixSize, colorMode);
+    ctx.putImageData(imgData, 0, 0);
+}
 
-    // ---- Extract base positions in all 3 dims ----
-    var pos3 = extractPositions3D(D, params.nP, params.dx, params.dy, params.dz);
-    var fx = pos3.fx, fy = pos3.fy, fz = pos3.fz;
+/**
+ * Draw all compare canvases for a single token across all layers.
+ * Handles all four columns (A, B, Diff, Magnitude).
+ *
+ * @param {number} ti - token index
+ * @param {Object} d - compareData object
+ * @param {number} hiddenDim
+ * @param {number} gridCols
+ * @param {number} gridRows
+ * @param {number} pixSize
+ */
+function drawCompareTokenCanvases(ti, d, hiddenDim, gridCols, gridRows, pixSize) {
+    for (var li = 0; li < d.n_layers; li++) {
+        drawCompareCanvas('cmp-a-' + ti + '-' + li,
+            d.activations_a[li][ti], hiddenDim, gridCols, gridRows, pixSize, 'grayscale');
+        drawCompareCanvas('cmp-b-' + ti + '-' + li,
+            d.activations_b[li][ti], hiddenDim, gridCols, gridRows, pixSize, 'grayscale');
+        drawCompareCanvas('cmp-d-' + ti + '-' + li,
+            d.diff[li][ti], hiddenDim, gridCols, gridRows, pixSize, 'diverging');
+        drawCompareCanvas('cmp-m-' + ti + '-' + li,
+            d.diff_magnitude[li][ti], hiddenDim, gridCols, gridRows, pixSize, 'hot');
+    }
+}
 
-    // ---- Compute view bounds ----
-    var bounds = computeViewBounds3D(fx, fy, fz, params.nP, 0.12);
-    var cx3 = bounds.cx, cy3 = bounds.cy, cz3 = bounds.cz;
-    var mr = bounds.mr;
+/**
+ * Top-level: the refactored renderCompareGrids.
+ * Orchestrates HTML generation and canvas rendering using the helpers above.
+ */
+function renderCompareGrids() {
+    var d = compareData;
+    var panel = document.getElementById('compare-panel');
+    panel.style.display = 'block';
 
-    // ---- Room layout ----
-    var roomLayout = computeFibre3DRoomLayout(params.nTokens, params.nLayers, mr);
+    var hiddenDim = d.hidden_dim;
+    var layout = computeNeuronGridLayout(hiddenDim);
+    var gridCols = layout.gridCols;
+    var gridRows = layout.gridRows;
+    var pixSize = 2;
 
-    // ---- 3D projector ----
-    var proj3Df = makeFibre3DProjector(W, H);
+    // ---- Build all HTML ----
+    var html = '';
 
-    // ---- Precompute per-layer raw deltas (3D) ----
-    var edxAll = [], edyAll = [], edzAll = [];
-    for (var lay = 0; lay < params.nLayers; lay++) {
-        var edxL = new Float64Array(params.nP);
-        var edyL = new Float64Array(params.nP);
-        var edzL = new Float64Array(params.nP);
-        for (var j = 0; j < params.nP; j++) {
-            edxL[j] = params.activeDeltas[lay][j][params.dx] * params.amp;
-            edyL[j] = params.activeDeltas[lay][j][params.dy] * params.amp;
-            edzL[j] = params.activeDeltas[lay][j][params.dz] * params.amp;
-        }
-        edxAll.push(edxL); edyAll.push(edyL); edzAll.push(edzL);
+    // Explanatory header
+    html += '<div style="color:#888;font-size:9px;margin-bottom:6px">';
+    html += 'Each row = one aligned token position. Three columns: ';
+    html += '<span style="color:#53a8b6">A</span> | ';
+    html += '<span style="color:#f5a623">B</span> | ';
+    html += '<span style="color:#e94560">Diff</span> (red=A>B, blue=B>A, black=same). ';
+    html += 'Each pixel = one neuron dimension. Rows within each grid = layers (top=embedding, bottom=last).';
+    html += '</div>';
+
+    // One block per aligned token
+    for (var ti = 0; ti < d.n_common; ti++) {
+        html += buildCompareTokenBlock(ti, d, gridCols, gridRows, pixSize);
     }
 
-    // ---- 3D grid resolution ----
-    var N3 = Math.max(3, Math.min(8, Math.floor(params.gr / 6)));
+    panel.innerHTML = html;
 
-    // ---- Collect all drawable elements for depth sorting ----
-    var allEdges = [];
-    var allQuads = [];
-    var allPoints = [];
-
-    var tc = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71',
-              '#e74c3c','#3498db','#9b59b6','#1abc9c','#e67e22'];
-
-    for (var li = 0; li < params.nLayers; li++) {
-        var rowIdx = params.nLayers - 1 - li;
-        var isCurrentLayer = (li === params.currentLayer);
-
-        // Compute cumulative deltas for this layer
-        var layerDeltas = computeCumulativeDeltas3DFromRaw(
-            edxAll, edyAll, edzAll, li, params.nP, params.nLayers,
-            params.mode, params.isEmb
-        );
-
-        // Build the 3D deformed grid
-        var grid = buildFibre3DRoomGrid(
-            bounds.vx0, bounds.vy0, bounds.vz0,
-            bounds.vx1, bounds.vy1, bounds.vz1,
-            N3, fx, fy, fz,
-            layerDeltas.edx, layerDeltas.edy, layerDeltas.edz,
-            params.nP, params.sig, params.t, params.isEmb
-        );
-
-        for (var ti = 0; ti < params.nTokens; ti++) {
-            var roomCenterX = (ti - (params.nTokens - 1) / 2) * (roomLayout.roomSize + roomLayout.gapX);
-            var roomCenterY = (rowIdx - (params.nLayers - 1) / 2) * (roomLayout.roomSize + roomLayout.gapY);
-
-            // ---- 3D Grid edges ----
-            collectRoomGridEdges(allEdges, grid, roomCenterX, roomCenterY,
-                cx3, cy3, cz3, roomLayout.sc3, proj3Df,
-                isCurrentLayer, params.showGrid, params.isEmb);
-
-            // ---- Strain heatmap faces ----
-            collectRoomHeatmapFaces(allQuads, grid, roomCenterX, roomCenterY,
-                cx3, cy3, cz3, roomLayout.sc3, proj3Df,
-                isCurrentLayer, params.showHeat, params.isEmb);
-
-            // ---- Room border (wireframe box) ----
-            collectRoomBorderEdges(allEdges, roomCenterX, roomCenterY,
-                roomLayout.roomSize, proj3Df, isCurrentLayer);
-
-            // ---- Token dot ----
-            collectRoomTokenPoint(allPoints, fx, fy, fz, ti,
-                layerDeltas.edx, layerDeltas.edy, layerDeltas.edz,
-                params.t, params.isEmb,
-                roomCenterX, roomCenterY, cx3, cy3, cz3, roomLayout.sc3, proj3Df,
-                li, isCurrentLayer, tc[ti % tc.length]);
-
-            // ---- Token label at bottom layer ----
-            if (li === 0) {
-                collectRoomTokenLabel(allPoints, ti, roomCenterX, roomCenterY,
-                    roomLayout.roomSize, proj3Df, tc[ti % tc.length],
-                    '[' + ti + '] ' + D.tokens[ti]);
-            }
-        }
-
-        // ---- Layer label ----
-        var layerLabelX = -(params.nTokens / 2) * (roomLayout.roomSize + roomLayout.gapX) - 30;
-        var layerLabelY = (rowIdx - (params.nLayers - 1) / 2) * (roomLayout.roomSize + roomLayout.gapY);
-        collectLayerLabel(allPoints, li, layerLabelX, layerLabelY, proj3Df, isCurrentLayer);
-
-        // ---- Inter-layer connections ----
-        if (li > 0 && fibreState.showConnections) {
-            var prevRowIdx = params.nLayers - li;
-            for (var ti2 = 0; ti2 < params.nTokens; ti2++) {
-                collectInterLayerPathlines(allEdges, ti2, prevRowIdx, rowIdx,
-                    params.nLayers, roomLayout.roomSize, roomLayout.gapY, roomLayout.gapX,
-                    params.nTokens, proj3Df, isCurrentLayer, tc[ti2 % tc.length]);
-            }
-        }
+    // ---- Draw on all canvases ----
+    for (var ti = 0; ti < d.n_common; ti++) {
+        drawCompareTokenCanvases(ti, d, hiddenDim, gridCols, gridRows, pixSize);
     }
-
-    // ---- Render all depth-sorted elements ----
-    renderFibre3DQuads(c, allQuads);
-    renderFibre3DEdges(c, allEdges, params.showSC);
-    renderFibre3DPoints(c, allPoints);
-
-    // ---- 3D axes ----
-    drawFibre3DAxes(c, roomLayout.roomSize, mr, proj3Df, params.dx, params.dy, params.dz);
-
-    // ---- HUD ----
-    var decompLabel = getDecompLabel();
-    c.font = '11px monospace';
-    c.fillStyle = 'rgba(255,255,255,0.45)';
-    c.textAlign = 'left';
-    if (params.isEmb) {
-        c.fillText('FIBRE BUNDLE 3D  EMBEDDING  Dims:' + params.dx + ',' + params.dy + ',' + params.dz +
-                   '  Layers:' + params.nLayers + '  Tokens:' + params.nTokens + '  Drag to rotate', 12, 16);
-    } else {
-        c.fillText('FIBRE BUNDLE 3D  Layer ' + params.currentLayer + '/' + (params.nLayers - 1) +
-                   '  t=' + params.t.toFixed(2) + '  amp=' + params.amp.toFixed(1) +
-                   '  Dims:' + params.dx + ',' + params.dy + ',' + params.dz +
-                   '  Mode:' + params.mode + '  Decomp:' + decompLabel +
-                   '  Drag to rotate', 12, 16);
-    }
-    c.font = '9px monospace';
-    c.fillStyle = 'rgba(255,255,255,0.3)';
-    c.fillText('Zoom: ' + zoomLevel.toFixed(2) + 'x  (Scroll=zoom, Shift+drag=pan, 0=reset)', 12, H - 8);
 }
 
 window.addEventListener('mouseup', function(e) {
