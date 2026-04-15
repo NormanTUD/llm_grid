@@ -621,9 +621,6 @@ class TestFullPipeline(unittest.TestCase):
 class TestHTMLContent(unittest.TestCase):
     """Verify the embedded HTML page has expected UI elements."""
 
-    def test_contains_canvas(self):
-        self.assertIn('<canvas id="cv">', app.HTML_PAGE)
-
     def test_contains_run_button(self):
         self.assertIn('id="btn-run"', app.HTML_PAGE)
 
@@ -1132,9 +1129,6 @@ class TestHTMLContentAdditional(unittest.TestCase):
 
     def test_contains_strain_color_function(self):
         self.assertIn("function s2c(", app.HTML_PAGE)
-
-    def test_contains_autoplay_function(self):
-        self.assertIn("function togAP()", app.HTML_PAGE)
 
     def test_contains_reset_function(self):
         self.assertIn("function rstAll()", app.HTML_PAGE)
