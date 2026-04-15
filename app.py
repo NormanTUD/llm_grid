@@ -3452,7 +3452,7 @@ def compute_spectrum_for_text(text):
 def _compute_geometric_invariants(eigenvalues, eigenvectors, J_proj, K, delta, principal_dirs, hidden_dim):
     """
     Compute geometric invariants from a Jacobian's eigendecomposition.
-    
+
     Args:
         eigenvalues: np.ndarray of complex eigenvalues (sorted by magnitude)
         eigenvectors: np.ndarray of eigenvectors (columns, sorted)
@@ -3461,7 +3461,7 @@ def _compute_geometric_invariants(eigenvalues, eigenvectors, J_proj, K, delta, p
         delta: np.ndarray of shape (hidden_dim,) — the residual delta for this token
         principal_dirs: np.ndarray of shape (K, hidden_dim)
         hidden_dim: int
-    
+
     Returns:
         dict of geometric invariants
     """
@@ -3540,7 +3540,7 @@ def _aggregate_contrastive_invariants(pos_spectra, neg_spectra, n_layers):
     """
     For each layer, compute mean geometric invariants for positive vs negative
     sets and find the biggest differences (effect sizes).
-    
+
     Returns:
         layer_contrasts: list of dicts (one per layer)
         best_layer: int
@@ -3617,7 +3617,7 @@ def _compare_eigenvalue_distributions(pos_spectra, neg_spectra, ranked_layers, t
     """
     For the top-N most contrastive layers, compare eigenvalue magnitude
     distributions between positive and negative sets.
-    
+
     Returns:
         list of dicts with histogram data and KL divergence
     """
