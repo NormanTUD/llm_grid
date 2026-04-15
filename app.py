@@ -5418,35 +5418,6 @@ def extract_eigenvalue_flow(hidden_states, n_layers):
         })
     return flow
 
-def extract_connection_field(hidden_states, k_neighbors=8, pca_d=16):
-    """
-    Extract the connection 1-form of the fiber bundle.
-    This is the 'rule for parallel transport' — pure geometry,
-    no matter content.
-    """
-    # ... (uses your existing Procrustes alignment code)
-    # But instead of measuring deviation from identity,
-    # store the FULL rotation matrices as the connection
-
-    # The connection A_μ at layer l, token i is:
-    # A[l][i] = log(R[l][i])  (matrix logarithm of Procrustes rotation)
-    # This is a Lie-algebra-valued 1-form — the morphing itself
-
-    from scipy.linalg import logm
-    connections = []
-    for lay in range(n_layers):
-        layer_conn = []
-        for i in range(seq_len):
-            R = procrustes_rotations[lay][i]
-            # Matrix log gives the infinitesimal generator
-            A = logm(R)  # This IS the connection, the morphing rule
-            layer_conn.append(A.real)
-        connections.append(layer_conn)
-    return connections
-
-# Add to handler_map in Handler.do_POST:
-#   "/morphing_analysis": handle_morphing_analysis,
-
 def handle_morphing_analysis(body_bytes):
     """
     Extract pure morphing data: Jacobian field, eigenvalue flow,
