@@ -3794,6 +3794,315 @@ function computeFibreRoomLayout(W, H, nTokens, nLayers, zoomLevel) {
     };
 }
 
+// ============================================================
+// REFACTORED drawFibreBundle — fully decomposed into reusable helpers
+// ============================================================
+
+/**
+ * Gather all fibre-2D-specific parameters from the DOM and data model.
+ * Returns a self-contained config so downstream helpers never touch the DOM.
+ */
+function getFibre2DParams() {
+    var hiddenDim = D.hidden_dim;
+    var dxVal = Math.min(+document.getElementById('sl-dx').value, hiddenDim - 1);
+    var dyVal = Math.min(+document.getElementById('sl-dy').value, hiddenDim - 1);
+
+    var activeDeltas = getActiveDeltas();
+    if (!activeDeltas) activeDeltas = D.deltas;
+
+    return {
+        nTokens:      D.n_real,
+        nLayers:      D.n_layers,
+        hiddenDim:    hiddenDim,
+        nP:           D.n_points,
+        dx:           dxVal,
+        dy:           dyVal,
+        amp:          +document.getElementById('sl-amp').value,
+        t:            +document.getElementById('sl-t').value,
+        sig:          +document.getElementById('sl-sig').value,
+        currentLayer: +document.getElementById('sl-layer').value,
+        showGrid:     document.getElementById('cb-grid').checked,
+        showHeat:     document.getElementById('cb-heat').checked,
+        showSC:       document.getElementById('cb-sc').checked,
+        showVec:      document.getElementById('cb-vec').checked,
+        mode:         document.getElementById('sel-mode').value,
+        itpMethod:    document.getElementById('sel-itp').value,
+        isEmb:        document.getElementById('sel-mode').value === 'embedding',
+        activeDeltas: activeDeltas,
+        attnDeltas:   D.attn_deltas || null,
+        mlpDeltas:    D.mlp_deltas || null,
+    };
+}
+
+/**
+ * Compute the grid resolution N for a fibre room based on room size.
+ * Reusable anywhere a room-level grid resolution is needed.
+ */
+function computeFibreGridResolution(roomSize, minN, maxN, divisor) {
+    return Math.max(minN || 4, Math.min(maxN || 16, Math.floor(roomSize / (divisor || 4))));
+}
+
+/**
+ * Draw a single fibre room: background, border, deformed grid, heatmap,
+ * reference grid, vector fields, transport frame, and token dot.
+ *
+ * This is the core per-room renderer extracted from the inner loop of
+ * drawFibreBundle. It can be reused by any view that needs to render
+ * a single deformation room at a given canvas position.
+ *
+ * @param {CanvasRenderingContext2D} c
+ * @param {Object} opts - all room-specific options:
+ *   roomCX, roomCY, roomSize, N,
+ *   vx0, vy0, vw, vh,
+ *   fx, fy, edxCum, edyCum,
+ *   nP, sig, t, isEmb, itpMethod,
+ *   isCurrentLayer, showGrid, showHeat, showSC, showVec,
+ *   showAttnField, showMlpField, showTransportFrame,
+ *   attnDeltas, mlpDeltas, layerIdx, dx, dy, amp,
+ *   tokenIdx, tokenColor, flowArrowScale
+ */
+function drawFibreSingleRoom(c, opts) {
+    var roomCX = opts.roomCX, roomCY = opts.roomCY, roomSize = opts.roomSize;
+    var N = opts.N;
+    var vx0 = opts.vx0, vy0 = opts.vy0, vw = opts.vw, vh = opts.vh;
+
+    // 1. Room background & border
+    drawFibreRoomBackground(c, roomCX, roomCY, roomSize, opts.isCurrentLayer);
+
+    // 2. Build deformed grid (reuses existing helper)
+    var grid = buildDeformedGrid2D(
+        vx0, vy0, vw, vh, N,
+        opts.fx, opts.fy, opts.edxCum, opts.edyCum,
+        opts.nP, opts.sig, opts.t, opts.isEmb, opts.itpMethod
+    );
+
+    // 3. Strain heatmap
+    if (opts.showHeat && !opts.isEmb) {
+        drawStrainHeatmapInRoom(c, grid, N, roomCX, roomCY, roomSize, vx0, vy0, vw, vh);
+    }
+
+    // 4. Grid lines
+    if (opts.showGrid && !opts.isEmb) {
+        drawGridLinesInRoom(c, grid, N, roomCX, roomCY, roomSize, vx0, vy0, vw, vh, opts.showSC);
+    }
+
+    // 5. Reference grid (embedding mode)
+    if (opts.isEmb) {
+        drawReferenceGridInRoom(c, grid, N, roomCX, roomCY, roomSize, vx0, vy0, vw, vh);
+    }
+
+    // 6. Component vector field overlays
+    if (opts.showAttnField && opts.attnDeltas && !opts.isEmb) {
+        drawComponentVectorField(
+            c, grid, N, roomCX, roomCY, roomSize,
+            vx0, vy0, vw, vh,
+            opts.fx, opts.fy, opts.nP, opts.sig,
+            opts.attnDeltas, opts.layerIdx, opts.dx, opts.dy, opts.amp, opts.t,
+            'rgba(0,200,255,0.55)', opts.itpMethod
+        );
+    }
+    if (opts.showMlpField && opts.mlpDeltas && !opts.isEmb) {
+        drawComponentVectorField(
+            c, grid, N, roomCX, roomCY, roomSize,
+            vx0, vy0, vw, vh,
+            opts.fx, opts.fy, opts.nP, opts.sig,
+            opts.mlpDeltas, opts.layerIdx, opts.dx, opts.dy, opts.amp, opts.t,
+            'rgba(255,165,0,0.55)', opts.itpMethod
+        );
+    }
+
+    // 7. Transport frame at the token position
+    if (opts.showTransportFrame && !opts.isEmb && opts.tokenIdx !== undefined) {
+        var tokSX = roomCX + ((opts.fx[opts.tokenIdx] + opts.t * opts.edxCum[opts.tokenIdx] - vx0) / vw) * roomSize;
+        var tokSY = roomCY + ((opts.fy[opts.tokenIdx] + opts.t * opts.edyCum[opts.tokenIdx] - vy0) / vh) * roomSize;
+        drawTransportFrame(c, tokSX, tokSY, opts.edxCum, opts.edyCum,
+            opts.fx, opts.fy, opts.tokenIdx, opts.nP, opts.sig, roomSize / 5);
+    }
+
+    // 8. Token dot with strain ring
+    if (opts.tokenIdx !== undefined) {
+        drawFibreTokenDot(
+            c, opts.fx[opts.tokenIdx], opts.fy[opts.tokenIdx],
+            opts.edxCum[opts.tokenIdx], opts.edyCum[opts.tokenIdx], opts.t,
+            roomCX, roomCY, roomSize, vx0, vy0, vw, vh,
+            opts.tokenColor, opts.isEmb, N
+        );
+    }
+}
+
+/**
+ * Draw predicted next-token markers across all token columns for a single layer.
+ * Extracted from the inner layer loop of drawFibreBundle.
+ *
+ * @param {CanvasRenderingContext2D} c
+ * @param {Object} D - global data
+ * @param {Float64Array} edxCum - cumulative x deltas for this layer
+ * @param {Float64Array} edyCum - cumulative y deltas for this layer
+ * @param {Float64Array} fx - base x positions
+ * @param {Float64Array} fy - base y positions
+ * @param {number} t - deformation parameter
+ * @param {number} nP - total points
+ * @param {number} nTokens - real token count
+ * @param {Object} layout - room layout from computeFibreRoomLayout
+ * @param {number} roomCY - y position of this layer's row
+ * @param {number} vx0, vy0, vw, vh - view bounds
+ * @param {boolean} isCurrentLayer
+ */
+function drawFibrePredictedTokensInLayer(c, D, edxCum, edyCum, fx, fy, t, nP, nTokens,
+    layout, roomCY, vx0, vy0, vw, vh, isCurrentLayer) {
+
+    if (!D.predicted_indices || D.predicted_indices.length === 0) return;
+
+    for (var pi2 = 0; pi2 < D.predicted_indices.length; pi2++) {
+        var pidx = D.predicted_indices[pi2];
+        if (pidx >= nP) continue;
+        var prob = D.predicted_probs ? D.predicted_probs[pi2] : 0;
+
+        var predWX = fx[pidx] + t * edxCum[pidx];
+        var predWY = fy[pidx] + t * edyCum[pidx];
+
+        for (var ti2 = 0; ti2 < nTokens; ti2++) {
+            var roomCX2 = layout.startX + ti2 * (layout.roomSize + layout.gapX);
+
+            var predScreenX = roomCX2 + ((predWX - vx0) / vw) * layout.roomSize;
+            var predScreenY = roomCY + ((predWY - vy0) / vh) * layout.roomSize;
+
+            // Only draw if within the room bounds (with small tolerance)
+            if (predScreenX < roomCX2 - 3 || predScreenX > roomCX2 + layout.roomSize + 3 ||
+                predScreenY < roomCY - 3 || predScreenY > roomCY + layout.roomSize + 3) {
+                continue;
+            }
+
+            var dotSz = 2 + prob * 5;
+
+            // Glow
+            var glowR2 = 5 + prob * 8;
+            var grad4 = c.createRadialGradient(predScreenX, predScreenY, 0, predScreenX, predScreenY, glowR2);
+            grad4.addColorStop(0, 'rgba(245,166,35,0.12)');
+            grad4.addColorStop(1, 'rgba(245,166,35,0)');
+            c.beginPath();
+            c.arc(predScreenX, predScreenY, glowR2, 0, Math.PI * 2);
+            c.fillStyle = grad4;
+            c.fill();
+
+            // Diamond shape
+            c.save();
+            c.translate(predScreenX, predScreenY);
+            c.rotate(Math.PI / 4);
+            c.fillStyle = 'rgba(245,166,35,' + (0.3 + prob * 0.5).toFixed(2) + ')';
+            c.fillRect(-dotSz / 2, -dotSz / 2, dotSz, dotSz);
+            c.strokeStyle = '#f5a623';
+            c.lineWidth = 0.7;
+            c.strokeRect(-dotSz / 2, -dotSz / 2, dotSz, dotSz);
+            c.restore();
+
+            // Label (only on current layer with enough room)
+            if (isCurrentLayer && layout.roomSize > 40) {
+                c.font = '6px monospace';
+                c.lineWidth = 1;
+                c.strokeStyle = 'rgba(0,0,0,0.8)';
+                c.fillStyle = '#f5a623';
+                c.textAlign = 'left';
+                var plb2 = D.tokens[pidx] + ' ' + (prob * 100).toFixed(0) + '%';
+                c.strokeText(plb2, predScreenX + dotSz + 2, predScreenY - 2);
+                c.fillText(plb2, predScreenX + dotSz + 2, predScreenY - 2);
+            }
+        }
+    }
+}
+
+/**
+ * Draw all rooms for a single layer row.
+ * Extracted from the layer loop of drawFibreBundle.
+ *
+ * @returns {Object} layerDeltas - { edx, edy } for use by inter-layer connections
+ */
+function drawFibreLayerRow(c, li, fp, layout, fx, fy, rawDeltas, bounds, N, tc) {
+    var rowIdx = fp.nLayers - 1 - li;
+    var roomCY = layout.startY + rowIdx * (layout.roomSize + layout.gapY);
+    var isCurrentLayer = (li === fp.currentLayer);
+
+    // Layer label
+    c.font = (isCurrentLayer ? 'bold ' : '') + '9px monospace';
+    c.fillStyle = isCurrentLayer ? '#e94560' : '#666';
+    c.textAlign = 'right';
+    c.fillText('L' + li, layout.startX - 8, roomCY + layout.roomSize / 2 + 3);
+
+    // Compute cumulative deltas for this layer
+    var layerDeltas = computeCumulativeDeltas(
+        rawDeltas.edxAll, rawDeltas.edyAll, li, fp.nP, fp.nLayers, fp.mode, fp.isEmb
+    );
+
+    // Draw each token's room
+    for (var ti = 0; ti < fp.nTokens; ti++) {
+        var roomCX = layout.startX + ti * (layout.roomSize + layout.gapX);
+
+        drawFibreSingleRoom(c, {
+            roomCX: roomCX, roomCY: roomCY, roomSize: layout.roomSize, N: N,
+            vx0: bounds.vx0, vy0: bounds.vy0, vw: bounds.vw, vh: bounds.vh,
+            fx: fx, fy: fy,
+            edxCum: layerDeltas.edx, edyCum: layerDeltas.edy,
+            nP: fp.nP, sig: fp.sig, t: fp.t,
+            isEmb: fp.isEmb, itpMethod: fp.itpMethod,
+            isCurrentLayer: isCurrentLayer,
+            showGrid: fp.showGrid, showHeat: fp.showHeat, showSC: fp.showSC,
+            showVec: fp.showVec,
+            showAttnField: fibreState.showAttnField,
+            showMlpField: fibreState.showMlpField,
+            showTransportFrame: fibreState.showTransportFrame,
+            attnDeltas: fp.attnDeltas, mlpDeltas: fp.mlpDeltas,
+            layerIdx: li, dx: fp.dx, dy: fp.dy, amp: fp.amp,
+            tokenIdx: ti,
+            tokenColor: tc[ti % tc.length],
+            flowArrowScale: fibreState.flowArrowScale,
+        });
+
+        // Token label at bottom of column (only for layer 0)
+        if (li === 0) {
+            drawFibreTokenLabel(c, ti, D.tokens[ti], roomCX, roomCY, layout.roomSize);
+        }
+    }
+
+    // Predicted next-token points
+    if (!fp.isEmb) {
+        drawFibrePredictedTokensInLayer(
+            c, D, layerDeltas.edx, layerDeltas.edy,
+            fx, fy, fp.t, fp.nP, fp.nTokens,
+            layout, roomCY, bounds.vx0, bounds.vy0, bounds.vw, bounds.vh,
+            isCurrentLayer
+        );
+    }
+
+    return { layerDeltas: layerDeltas, roomCY: roomCY };
+}
+
+/**
+ * Draw all inter-layer connections between consecutive layer rows.
+ * Extracted from the layer loop of drawFibreBundle.
+ */
+function drawFibreAllInterLayerConnections(c, fp, layout, rawDeltas, bounds) {
+    if (!fibreState.showConnections || fp.isEmb) return;
+
+    for (var li = 0; li < fp.nLayers - 1; li++) {
+        var currDeltas = computeCumulativeDeltas(
+            rawDeltas.edxAll, rawDeltas.edyAll, li, fp.nP, fp.nLayers, fp.mode, fp.isEmb
+        );
+        var nextDeltas = computeCumulativeDeltas(
+            rawDeltas.edxAll, rawDeltas.edyAll, li + 1, fp.nP, fp.nLayers, fp.mode, fp.isEmb
+        );
+        drawFibreInterLayerConnections(
+            c, li, fp.nTokens, fp.nP, fp.nLayers,
+            layout, currDeltas.edx, nextDeltas.edx,
+            D, bounds.fx || null, bounds.fy || null, fp.t,
+            bounds.vx0, bounds.vy0, bounds.vw, bounds.vh
+        );
+    }
+}
+
+/**
+ * Top-level: the fully refactored drawFibreBundle.
+ * Orchestrates all passes using the helpers above.
+ */
 function drawFibreBundle() {
     var cv = document.getElementById('cv');
     var c = cv.getContext('2d');
@@ -3801,44 +4110,28 @@ function drawFibreBundle() {
     c.clearRect(0, 0, W, H);
 
     if (!D) {
-        c.font = '14px monospace'; c.fillStyle = '#555';
+        c.font = '14px monospace';
+        c.fillStyle = '#555';
         c.fillText('Run a prompt first', W / 2 - 80, H / 2);
         return;
     }
 
-    var nTokens = D.n_real;
-    var nLayers = D.n_layers;
-    var hiddenDim = D.hidden_dim;
-    var nP = D.n_points;
+    // ---- Gather parameters ----
+    var fp = getFibre2DParams();
 
-    var dx = Math.min(+document.getElementById('sl-dx').value, hiddenDim - 1);
-    var dy = Math.min(+document.getElementById('sl-dy').value, hiddenDim - 1);
-    var amp = +document.getElementById('sl-amp').value;
-    var t = +document.getElementById('sl-t').value;
-    var sig = +document.getElementById('sl-sig').value;
-    var currentLayer = +document.getElementById('sl-layer').value;
-    var showGrid = document.getElementById('cb-grid').checked;
-    var showHeat = document.getElementById('cb-heat').checked;
-    var showSC = document.getElementById('cb-sc').checked;
-    var showVec = document.getElementById('cb-vec').checked;
-    var mode = document.getElementById('sel-mode').value;
-    var itpMethod = document.getElementById('sel-itp').value;
-
-    var activeDeltas = getActiveDeltas();
-    if (!activeDeltas) activeDeltas = D.deltas;
-    var attnDeltas = D.attn_deltas || null;
-    var mlpDeltas = D.mlp_deltas || null;
-    var isEmb = (mode === 'embedding');
-
-    // --- Use extracted helpers ---
-    var layout = computeFibreRoomLayout(W, H, nTokens, nLayers, zoomLevel);
-    var pos = extractPositions2D(D, nP, dx, dy);
+    // ---- Reuse existing position / bounds / delta helpers ----
+    var pos = extractPositions2D(D, fp.nP, fp.dx, fp.dy);
     var fx = pos.fx, fy = pos.fy;
-    var bounds = computeViewBounds2D(fx, fy, nP, 0.15);
-    var vx0 = bounds.vx0, vy0 = bounds.vy0, vw = bounds.vw, vh = bounds.vh;
-    var rawDeltas = computePerLayerRawDeltas(activeDeltas, nLayers, nP, dx, dy, amp);
+    var bounds = computeViewBounds2D(fx, fy, fp.nP, 0.15);
+    var rawDeltas = computePerLayerRawDeltas(fp.activeDeltas, fp.nLayers, fp.nP, fp.dx, fp.dy, fp.amp);
 
-    var N = Math.max(4, Math.min(16, Math.floor(layout.roomSize / 4)));
+    // ---- Layout ----
+    var layout = computeFibreRoomLayout(W, H, fp.nTokens, fp.nLayers, zoomLevel);
+
+    // ---- Grid resolution ----
+    var N = computeFibreGridResolution(layout.roomSize, 4, 16, 4);
+
+    // ---- Token colors ----
     var tc = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71',
               '#e74c3c','#3498db','#9b59b6','#1abc9c','#e67e22'];
 
@@ -3847,114 +4140,34 @@ function drawFibreBundle() {
     c.scale(zoomLevel, zoomLevel);
 
     // ========== PASS 1: Flow streamlines between layers ==========
-    if (fibreState.showFlowLines && !isEmb) {
-        drawFibreBundleFlowLines(c, layout, rawDeltas, nLayers, nTokens, nP,
-            fx, fy, vx0, vy0, vw, vh, sig, t, currentLayer, N);
+    if (fibreState.showFlowLines && !fp.isEmb) {
+        drawFibreBundleFlowLines(
+            c, layout, rawDeltas, fp.nLayers, fp.nTokens, fp.nP,
+            fx, fy, bounds.vx0, bounds.vy0, bounds.vw, bounds.vh,
+            fp.sig, fp.t, fp.currentLayer, N
+        );
     }
 
-    // ========== PASS 2: Draw each layer room ==========
-    for (var li = 0; li < nLayers; li++) {
-        var rowIdx = nLayers - 1 - li;
-        var roomCY = layout.startY + rowIdx * (layout.roomSize + layout.gapY);
-        var isCurrentLayer = (li === currentLayer);
+    // ========== PASS 2: Draw each layer row (rooms + tokens + predictions) ==========
+    for (var li = 0; li < fp.nLayers; li++) {
+        drawFibreLayerRow(c, li, fp, layout, fx, fy, rawDeltas, bounds, N, tc);
+    }
 
-        // Layer label
-        c.font = (isCurrentLayer ? 'bold ' : '') + '9px monospace';
-        c.fillStyle = isCurrentLayer ? '#e94560' : '#666';
-        c.textAlign = 'right';
-        c.fillText('L' + li, layout.startX - 8, roomCY + layout.roomSize / 2 + 3);
+    // ========== PASS 3: Inter-layer connections ==========
+    drawFibreAllInterLayerConnections(c, fp, layout, rawDeltas, bounds);
 
-        var layerDeltas = computeCumulativeDeltas(
-            rawDeltas.edxAll, rawDeltas.edyAll, li, nP, nLayers, mode, isEmb);
-        var edxCum = layerDeltas.edx, edyCum = layerDeltas.edy;
+    // ========== PASS 4: Axis labels ==========
+    drawFibreBundleAxisLabels(c, layout, fp.nTokens, fp.nLayers);
 
-        for (var ti = 0; ti < nTokens; ti++) {
-            var roomCX = layout.startX + ti * (layout.roomSize + layout.gapX);
-
-            // Room background & border
-            drawFibreRoomBackground(c, roomCX, roomCY, layout.roomSize, isCurrentLayer);
-
-            // Build deformed grid
-            var grid = buildDeformedGrid2D(vx0, vy0, vw, vh, N, fx, fy,
-                edxCum, edyCum, nP, sig, t, isEmb, itpMethod);
-
-            // Strain heatmap
-            if (showHeat && !isEmb) {
-                drawStrainHeatmapInRoom(c, grid, N, roomCX, roomCY,
-                    layout.roomSize, vx0, vy0, vw, vh);
-            }
-
-            // Grid lines
-            if (showGrid && !isEmb) {
-                drawGridLinesInRoom(c, grid, N, roomCX, roomCY,
-                    layout.roomSize, vx0, vy0, vw, vh, showSC);
-            }
-
-            // Reference grid (embedding mode)
-            if (isEmb) {
-                drawReferenceGridInRoom(c, grid, N, roomCX, roomCY,
-                    layout.roomSize, vx0, vy0, vw, vh);
-            }
-
-            // Vector field overlays (attn/mlp)
-            if (fibreState.showAttnField && attnDeltas && !isEmb) {
-                drawComponentVectorField(c, grid, N, roomCX, roomCY, layout.roomSize,
-                    vx0, vy0, vw, vh, fx, fy, nP, sig, attnDeltas, li, dx, dy, amp, t,
-                    'rgba(0,200,255,0.55)', itpMethod);
-            }
-            if (fibreState.showMlpField && mlpDeltas && !isEmb) {
-                drawComponentVectorField(c, grid, N, roomCX, roomCY, layout.roomSize,
-                    vx0, vy0, vw, vh, fx, fy, nP, sig, mlpDeltas, li, dx, dy, amp, t,
-                    'rgba(255,165,0,0.55)', itpMethod);
-            }
-
-            // Transport frame
-            if (fibreState.showTransportFrame && !isEmb) {
-                var tokSX = roomCX + ((fx[ti] + t * edxCum[ti] - vx0) / vw) * layout.roomSize;
-                var tokSY = roomCY + ((fy[ti] + t * edyCum[ti] - vy0) / vh) * layout.roomSize;
-                drawTransportFrame(c, tokSX, tokSY, edxCum, edyCum,
-                    fx, fy, ti, nP, sig, layout.roomSize / 5);
-            }
-
-            // Token dot with strain ring
-            drawFibreTokenDot(c, fx[ti], fy[ti], edxCum[ti], edyCum[ti], t,
-                roomCX, roomCY, layout.roomSize, vx0, vy0, vw, vh,
-                tc[ti % tc.length], isEmb, N);
-
-            // Token label at bottom of column
-            if (li === 0) {
-                drawFibreTokenLabel(c, ti, D.tokens[ti], roomCX, roomCY,
-                    layout.roomSize);
-            }
-        } // end token loop
-
-        // Predicted next-token points
-        if (D.predicted_indices && D.predicted_indices.length > 0 && !isEmb) {
-            drawFibrePredictedTokens(c, D, edxCum, fx, fy, t, nP, nTokens,
-                layout, roomCY, vx0, vy0, vw, vh, isCurrentLayer);
-        }
-
-        // Inter-layer connections
-        if (fibreState.showConnections && li < nLayers - 1 && !isEmb) {
-            var nextDeltas = computeCumulativeDeltas(
-                rawDeltas.edxAll, rawDeltas.edyAll, li + 1, nP, nLayers, mode, isEmb);
-            drawFibreInterLayerConnections(c, li, nTokens, nP, nLayers,
-                layout, edxCum, nextDeltas.edx, D, fx, fy, t, vx0, vy0, vw, vh);
-        }
-    } // end layer loop
-
-    // ========== Axis labels ==========
-    drawFibreBundleAxisLabels(c, layout, nTokens, nLayers);
-
-    // ========== Legend ==========
-    if ((fibreState.showAttnField || fibreState.showMlpField) && !isEmb) {
-        drawFibreBundleLegend(c, layout, nTokens, attnDeltas, mlpDeltas, D);
+    // ========== PASS 5: Legend ==========
+    if ((fibreState.showAttnField || fibreState.showMlpField) && !fp.isEmb) {
+        drawFibreBundleLegend(c, layout, fp.nTokens, fp.attnDeltas, fp.mlpDeltas, D);
     }
 
     c.restore();
 
     // ========== HUD ==========
-    drawFibreBundleHUD(c, W, H, nTokens, nLayers, hiddenDim, currentLayer);
+    drawFibreBundleHUD(c, W, H, fp.nTokens, fp.nLayers, fp.hiddenDim, fp.currentLayer);
 }
 
 function drawFibreRoomBackground(c, roomCX, roomCY, roomSize, isCurrentLayer) {
