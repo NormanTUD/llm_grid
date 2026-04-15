@@ -1511,408 +1511,521 @@ function draw3D(){
 
     var nP=D.n_points,nR=D.n_real,dx=p.dx,dy=p.dy,dz=p.dz;
     var isEmb=p.mode==='embedding';
-
-    // Use the active deltas based on decomposition selector
     var activeDeltas = getActiveDeltas();
 
-    var fx=new Float64Array(nP),fy=new Float64Array(nP),fz=new Float64Array(nP);
-    for(var i=0;i<nP;i++){
-        fx[i]=D.fixed_pos[i][dx];
-        fy[i]=D.fixed_pos[i][dy];
-        fz[i]=D.fixed_pos[i][dz];
-    }
+    // --- Reuse extractPositions3D ---
+    var pos3 = extractPositions3D(D, nP, dx, dy, dz);
+    var fx = pos3.fx, fy = pos3.fy, fz = pos3.fz;
 
-    var edx3=new Float64Array(nP),edy3=new Float64Array(nP),edz3=new Float64Array(nP);
-    if(!isEmb){
-        var layer=p.layer,amp=p.amp;
-        for(var j=0;j<nP;j++){
-            var sx3=0,sy3=0,sz3=0;
-            if(p.mode==='single'){
-                sx3=activeDeltas[layer][j][dx];sy3=activeDeltas[layer][j][dy];sz3=activeDeltas[layer][j][dz];
-            } else if(p.mode==='cumfwd'){
-                for(var l=0;l<=layer;l++){sx3+=activeDeltas[l][j][dx];sy3+=activeDeltas[l][j][dy];sz3+=activeDeltas[l][j][dz]}
-            } else {
-                for(var l2=layer;l2<D.n_layers;l2++){sx3+=activeDeltas[l2][j][dx];sy3+=activeDeltas[l2][j][dy];sz3+=activeDeltas[l2][j][dz]}
-            }
-            edx3[j]=sx3*amp;edy3[j]=sy3*amp;edz3[j]=sz3*amp;
-        }
-    }
+    // --- Compute cumulative 3D deltas ---
+    var deltas3 = computeCumulativeDeltas3D(activeDeltas, p.layer, nP, dx, dy, dz, p.amp, p.mode, D.n_layers, isEmb);
+    var edx3 = deltas3.edx, edy3 = deltas3.edy, edz3 = deltas3.edz;
 
-    var mnx=Infinity,mxx=-Infinity,mny=Infinity,mxy=-Infinity,mnz=Infinity,mxz=-Infinity;
-    for(var i2=0;i2<nP;i2++){
-        if(fx[i2]<mnx)mnx=fx[i2];if(fx[i2]>mxx)mxx=fx[i2];
-        if(fy[i2]<mny)mny=fy[i2];if(fy[i2]>mxy)mxy=fy[i2];
-        if(fz[i2]<mnz)mnz=fz[i2];if(fz[i2]>mxz)mxz=fz[i2];
-    }
-    var mrx=mxx-mnx||1, mry=mxy-mny||1, mrz=mxz-mnz||1;
-    var mr3=Math.max(mrx,mry,mrz);
-    var cx3=(mnx+mxx)/2,cy3=(mny+mxy)/2,cz3=(mnz+mxz)/2;
-    var sc3=Math.min(W,H)*0.3/mr3;
+    // --- Reuse computeViewBounds3D ---
+    var bounds3 = computeViewBounds3D(fx, fy, fz, nP, 0.12);
+    var cx3 = bounds3.cx, cy3 = bounds3.cy, cz3 = bounds3.cz;
+    var mr3 = bounds3.mr;
+    var vx0 = bounds3.vx0, vx1 = bounds3.vx1;
+    var vy0 = bounds3.vy0, vy1 = bounds3.vy1;
+    var vz0 = bounds3.vz0, vz1 = bounds3.vz1;
 
-    var pd3=0.12;
-    var vx0=cx3-mr3*(.5+pd3), vx1=cx3+mr3*(.5+pd3);
-    var vy0=cy3-mr3*(.5+pd3), vy1=cy3+mr3*(.5+pd3);
-    var vz0=cz3-mr3*(.5+pd3), vz1=cz3+mr3*(.5+pd3);
-
+    var sc3 = Math.min(W,H)*0.3/mr3;
     var effSc3 = sc3 * zoomLevel;
     var cx2d = W/2 + panX;
     var cy2d = H/2 + panY;
 
-    function proj3D(x, y, z){
+    function proj3D_local(x, y, z){
         var r=rotatePoint3D(x, y, z);
         var scale=focalLength/(focalLength+r[2]);
         return [cx2d+r[0]*scale, cy2d+r[1]*scale, r[2], scale];
     }
 
-    var N3=Math.min(Math.max(6, Math.round(p.gr/4)), 20);
-    var nV3=(N3+1)*(N3+1)*(N3+1);
-
-    function gIdx(ix,iy,iz){return iz*(N3+1)*(N3+1)+iy*(N3+1)+ix}
-
-    var oX3=new Float64Array(nV3),oY3=new Float64Array(nV3),oZ3=new Float64Array(nV3);
-    for(var iz=0;iz<=N3;iz++)for(var iy=0;iy<=N3;iy++)for(var ix=0;ix<=N3;ix++){
-        var gi=gIdx(ix,iy,iz);
-        oX3[gi]=vx0+(ix/N3)*(vx1-vx0);
-        oY3[gi]=vy0+(iy/N3)*(vy1-vy0);
-        oZ3[gi]=vz0+(iz/N3)*(vz1-vz0);
-    }
-
-    var gX3=new Float64Array(nV3),gY3=new Float64Array(nV3),gZ3=new Float64Array(nV3);
-    var sig=p.sig, s2i3=1/(2*sig*sig), t=p.t;
-
+    // --- Build 3D deformed grid ---
+    var N3 = Math.min(Math.max(6, Math.round(p.gr/4)), 20);
     var itpMethod = document.getElementById('sel-itp').value;
 
-    if(isEmb){
-        for(var gi2=0;gi2<nV3;gi2++){gX3[gi2]=oX3[gi2];gY3[gi2]=oY3[gi2];gZ3[gi2]=oZ3[gi2]}
-    } else {
-        for(var gi3=0;gi3<nV3;gi3++){
-            var gpx=oX3[gi3],gpy=oY3[gi3],gpz=oZ3[gi3];
-            // For 3D, we extend the 2D methods to 3D distance
-            var vvx=0,vvy=0,vvz=0,ws=0;
-            if(itpMethod === 'nn'){
-                var bestDist3=Infinity, bestIdx3=0;
-                for(var k=0;k<nP;k++){
-                    var d3=(gpx-fx[k])*(gpx-fx[k])+(gpy-fy[k])*(gpy-fy[k])+(gpz-fz[k])*(gpz-fz[k]);
-                    if(d3<bestDist3){bestDist3=d3;bestIdx3=k;}
-                }
-                vvx=edx3[bestIdx3];vvy=edy3[bestIdx3];vvz=edz3[bestIdx3];
-            } else if(itpMethod === 'idw'){
-                var p3=2.0;
-                for(var k=0;k<nP;k++){
-                    var dist3=Math.sqrt((gpx-fx[k])*(gpx-fx[k])+(gpy-fy[k])*(gpy-fy[k])+(gpz-fz[k])*(gpz-fz[k]));
-                    var w=1.0/Math.pow(Math.max(dist3,1e-12),p3);
-                    vvx+=w*edx3[k];vvy+=w*edy3[k];vvz+=w*edz3[k];ws+=w;
-                }
-                if(ws>1e-15){vvx/=ws;vvy/=ws;vvz/=ws}
-            } else if(itpMethod === 'wendland'){
-                var R3=Math.max(3.0*sig,1e-6);
-                for(var k=0;k<nP;k++){
-                    var dist3=Math.sqrt((gpx-fx[k])*(gpx-fx[k])+(gpy-fy[k])*(gpy-fy[k])+(gpz-fz[k])*(gpz-fz[k]));
-                    var rn3=dist3/R3;
-                    if(rn3>=1.0) continue;
-                    var tt=1.0-rn3;
-                    var w=tt*tt*tt*tt*(4.0*rn3+1.0);
-                    vvx+=w*edx3[k];vvy+=w*edy3[k];vvz+=w*edz3[k];ws+=w;
-                }
-                if(ws<1e-30){
-                    // fallback to RBF
-                    for(var k=0;k<nP;k++){
-                        var eex=gpx-fx[k],eey=gpy-fy[k],eez=gpz-fz[k];
-                        var w=Math.exp(-(eex*eex+eey*eey+eez*eez)*s2i3);
-                        vvx+=w*edx3[k];vvy+=w*edy3[k];vvz+=w*edz3[k];ws+=w;
-                    }
-                }
-                if(ws>1e-15){vvx/=ws;vvy/=ws;vvz/=ws}
-            } else {
-                // RBF (default), MLS fallback to RBF in 3D, TPS fallback to RBF
-                for(var k=0;k<nP;k++){
-                    var eex=gpx-fx[k],eey=gpy-fy[k],eez=gpz-fz[k];
-                    var w=Math.exp(-(eex*eex+eey*eey+eez*eez)*s2i3);
-                    vvx+=w*edx3[k];vvy+=w*edy3[k];vvz+=w*edz3[k];ws+=w;
-                }
-                if(ws>1e-15){vvx/=ws;vvy/=ws;vvz/=ws}
-            }
-            gX3[gi3]=gpx+t*vvx;
-            gY3[gi3]=gpy+t*vvy;
-            gZ3[gi3]=gpz+t*vvz;
-        }
-    }
+    var grid3 = buildDeformedGrid3D(vx0, vy0, vz0, vx1, vy1, vz1, N3,
+        fx, fy, fz, edx3, edy3, edz3, nP, p.sig, p.t, isEmb, itpMethod);
 
-    function strain3(ax,ay,az,bx,by,bz,oax,oay,oaz,obx,oby,obz){
-        var od=Math.sqrt((obx-oax)*(obx-oax)+(oby-oay)*(oby-oay)+(obz-oaz)*(obz-oaz));
-        var dd=Math.sqrt((bx-ax)*(bx-ax)+(by-ay)*(by-ay)+(bz-az)*(bz-az));
-        return od>1e-12?dd/od:1;
-    }
+    // --- Project all vertices ---
+    var projV = projectVertices3D(grid3.gX, grid3.gY, grid3.gZ, grid3.nV,
+        cx3, cy3, cz3, effSc3, proj3D_local);
+    var projO = projectVertices3D(grid3.oX, grid3.oY, grid3.oZ, grid3.nV,
+        cx3, cy3, cz3, effSc3, proj3D_local);
 
-    var edges3d=[];
-    for(var iz=0;iz<=N3;iz++)for(var iy=0;iy<=N3;iy++)for(var ix=0;ix<N3;ix++){
-        var a=gIdx(ix,iy,iz), b=gIdx(ix+1,iy,iz);
-        var s=strain3(gX3[a],gY3[a],gZ3[a],gX3[b],gY3[b],gZ3[b],
-                       oX3[a],oY3[a],oZ3[a],oX3[b],oY3[b],oZ3[b]);
-        edges3d.push({a:a,b:b,strain:s,dir:'x'});
-    }
-    for(var iz=0;iz<=N3;iz++)for(var iy=0;iy<N3;iy++)for(var ix=0;ix<=N3;ix++){
-        var a=gIdx(ix,iy,iz), b=gIdx(ix,iy+1,iz);
-        var s=strain3(gX3[a],gY3[a],gZ3[a],gX3[b],gY3[b],gZ3[b],
-                       oX3[a],oY3[a],oZ3[a],oX3[b],oY3[b],oZ3[b]);
-        edges3d.push({a:a,b:b,strain:s,dir:'y'});
-    }
-    for(var iz=0;iz<N3;iz++)for(var iy=0;iy<=N3;iy++)for(var ix=0;ix<=N3;ix++){
-        var a=gIdx(ix,iy,iz), b=gIdx(ix,iy,iz+1);
-        var s=strain3(gX3[a],gY3[a],gZ3[a],gX3[b],gY3[b],gZ3[b],
-                       oX3[a],oY3[a],oZ3[a],oX3[b],oY3[b],oZ3[b]);
-        edges3d.push({a:a,b:b,strain:s,dir:'z'});
-    }
-
-    var projV=[];
-    for(var vi=0;vi<nV3;vi++){
-        var px=(gX3[vi]-cx3)*effSc3, py=(gY3[vi]-cy3)*effSc3, pz=(gZ3[vi]-cz3)*effSc3;
-        projV.push(proj3D(px,py,pz));
-    }
-    var projO=[];
-    for(var vi=0;vi<nV3;vi++){
-        var px=(oX3[vi]-cx3)*effSc3, py=(oY3[vi]-cy3)*effSc3, pz=(oZ3[vi]-cz3)*effSc3;
-        projO.push(proj3D(px,py,pz));
-    }
-
+    // --- Sort edges by depth ---
+    var edges3d = grid3.edges;
     for(var ei=0;ei<edges3d.length;ei++){
         var e=edges3d[ei];
         e.avgZ=(projV[e.a][2]+projV[e.b][2])/2;
     }
     edges3d.sort(function(a,b){return b.avgZ-a.avgZ});
 
+    // --- Reference grid ---
     if(p.ref){
-        c.strokeStyle=isEmb?'rgba(255,255,255,0.1)':'rgba(255,255,255,0.04)';
-        c.lineWidth=0.4;
-        for(var ei=0;ei<edges3d.length;ei++){
-            var e=edges3d[ei];
-            var pa=projO[e.a], pb=projO[e.b];
-            c.beginPath();c.moveTo(pa[0],pa[1]);c.lineTo(pb[0],pb[1]);c.stroke();
-        }
+        drawReferenceEdges3D(c, edges3d, projO, isEmb);
     }
 
-    if(p.grid&&!isEmb){
-        c.lineWidth=0.9;
-        for(var ei=0;ei<edges3d.length;ei++){
-            var e=edges3d[ei];
-            var pa=projV[e.a], pb=projV[e.b];
-            var depthAlpha=Math.max(0.1, Math.min(0.85, 0.6-e.avgZ*0.001));
-            if(p.sc){
-                var ec=s2c(e.strain);
-                c.strokeStyle='rgba('+ec[0]+','+ec[1]+','+ec[2]+','+depthAlpha.toFixed(2)+')';
-            } else {
-                c.strokeStyle='rgba(200,200,200,'+depthAlpha.toFixed(2)+')';
-            }
-            c.beginPath();c.moveTo(pa[0],pa[1]);c.lineTo(pb[0],pb[1]);c.stroke();
-        }
+    // --- Deformed grid lines ---
+    if(p.grid && !isEmb){
+        drawDeformedEdges3D(c, edges3d, projV, p.sc);
     }
 
-    if(p.heat&&!isEmb){
-        var faces=[];
-        function addFace(a,b,cc2,d,s1,s2s,s3s,s4){
-            var avgS=(s1+s2s+s3s+s4)/4;
-            var avgZ2=(projV[a][2]+projV[b][2]+projV[cc2][2]+projV[d][2])/4;
-            faces.push({verts:[a,b,cc2,d],strain:avgS,z:avgZ2});
-        }
-        for(var fiz=0;fiz<N3;fiz++)for(var fiy=0;fiy<N3;fiy++){
-            var a=gIdx(0,fiy,fiz),b=gIdx(0,fiy+1,fiz),cc2=gIdx(0,fiy+1,fiz+1),d=gIdx(0,fiy,fiz+1);
-            var s1=strain3(gX3[a],gY3[a],gZ3[a],gX3[b],gY3[b],gZ3[b],oX3[a],oY3[a],oZ3[a],oX3[b],oY3[b],oZ3[b]);
-            var s2s=strain3(gX3[b],gY3[b],gZ3[b],gX3[cc2],gY3[cc2],gZ3[cc2],oX3[b],oY3[b],oZ3[b],oX3[cc2],oY3[cc2],oZ3[cc2]);
-            var s3s=strain3(gX3[cc2],gY3[cc2],gZ3[cc2],gX3[d],gY3[d],gZ3[d],oX3[cc2],oY3[cc2],oZ3[cc2],oX3[d],oY3[d],oZ3[d]);
-            var s4=strain3(gX3[d],gY3[d],gZ3[d],gX3[a],gY3[a],gZ3[a],oX3[d],oY3[d],oZ3[d],oX3[a],oY3[a],oZ3[a]);
-            addFace(a,b,cc2,d,s1,s2s,s3s,s4);
-            a=gIdx(N3,fiy,fiz);b=gIdx(N3,fiy+1,fiz);cc2=gIdx(N3,fiy+1,fiz+1);d=gIdx(N3,fiy,fiz+1);
-            s1=strain3(gX3[a],gY3[a],gZ3[a],gX3[b],gY3[b],gZ3[b],oX3[a],oY3[a],oZ3[a],oX3[b],oY3[b],oZ3[b]);
-            s2s=strain3(gX3[b],gY3[b],gZ3[b],gX3[cc2],gY3[cc2],gZ3[cc2],oX3[b],oY3[b],oZ3[b],oX3[cc2],oY3[cc2],oZ3[cc2]);
-            s3s=strain3(gX3[cc2],gY3[cc2],gZ3[cc2],gX3[d],gY3[d],gZ3[d],oX3[cc2],oY3[cc2],oZ3[cc2],oX3[d],oY3[d],oZ3[d]);
-            s4=strain3(gX3[d],gY3[d],gZ3[d],gX3[a],gY3[a],gZ3[a],oX3[d],oY3[d],oZ3[d],oX3[a],oY3[a],oZ3[a]);
-            addFace(a,b,cc2,d,s1,s2s,s3s,s4);
-        }
-        for(var fiz=0;fiz<N3;fiz++)for(var fix=0;fix<N3;fix++){
-            var a=gIdx(fix,0,fiz),b=gIdx(fix+1,0,fiz),cc2=gIdx(fix+1,0,fiz+1),d=gIdx(fix,0,fiz+1);
-            var s1=strain3(gX3[a],gY3[a],gZ3[a],gX3[b],gY3[b],gZ3[b],oX3[a],oY3[a],oZ3[a],oX3[b],oY3[b],oZ3[b]);
-            var s2s=strain3(gX3[b],gY3[b],gZ3[b],gX3[cc2],gY3[cc2],gZ3[cc2],oX3[b],oY3[b],oZ3[b],oX3[cc2],oY3[cc2],oZ3[cc2]);
-            var s3s=strain3(gX3[cc2],gY3[cc2],gZ3[cc2],gX3[d],gY3[d],gZ3[d],oX3[cc2],oY3[cc2],oZ3[cc2],oX3[d],oY3[d],oZ3[d]);
-            var s4=strain3(gX3[d],gY3[d],gZ3[d],gX3[a],gY3[a],gZ3[a],oX3[d],oY3[d],oZ3[d],oX3[a],oY3[a],oZ3[a]);
-            addFace(a,b,cc2,d,s1,s2s,s3s,s4);
-            a=gIdx(fix,N3,fiz);b=gIdx(fix+1,N3,fiz);cc2=gIdx(fix+1,N3,fiz+1);d=gIdx(fix,N3,fiz+1);
-            s1=strain3(gX3[a],gY3[a],gZ3[a],gX3[b],gY3[b],gZ3[b],oX3[a],oY3[a],oZ3[a],oX3[b],oY3[b],oZ3[b]);
-            s2s=strain3(gX3[b],gY3[b],gZ3[b],gX3[cc2],gY3[cc2],gZ3[cc2],oX3[b],oY3[b],oZ3[b],oX3[cc2],oY3[cc2],oZ3[cc2]);
-            s3s=strain3(gX3[cc2],gY3[cc2],gZ3[cc2],gX3[d],gY3[d],gZ3[d],oX3[cc2],oY3[cc2],oZ3[cc2],oX3[d],oY3[d],oZ3[d]);
-            s4=strain3(gX3[d],gY3[d],gZ3[d],gX3[a],gY3[a],gZ3[a],oX3[d],oY3[d],oZ3[d],oX3[a],oY3[a],oZ3[a]);
-            addFace(a,b,cc2,d,s1,s2s,s3s,s4);
-        }
-        for(var fiy=0;fiy<N3;fiy++)for(var fix=0;fix<N3;fix++){
-            var a=gIdx(fix,fiy,0),b=gIdx(fix+1,fiy,0),cc2=gIdx(fix+1,fiy+1,0),d=gIdx(fix,fiy+1,0);
-            var s1=strain3(gX3[a],gY3[a],gZ3[a],gX3[b],gY3[b],gZ3[b],oX3[a],oY3[a],oZ3[a],oX3[b],oY3[b],oZ3[b]);
-            var s2s=strain3(gX3[b],gY3[b],gZ3[b],gX3[cc2],gY3[cc2],gZ3[cc2],oX3[b],oY3[b],oZ3[b],oX3[cc2],oY3[cc2],oZ3[cc2]);
-            var s3s=strain3(gX3[cc2],gY3[cc2],gZ3[cc2],gX3[d],gY3[d],gZ3[d],oX3[cc2],oY3[cc2],oZ3[cc2],oX3[d],oY3[d],oZ3[d]);
-            var s4=strain3(gX3[d],gY3[d],gZ3[d],gX3[a],gY3[a],gZ3[a],oX3[d],oY3[d],oZ3[d],oX3[a],oY3[a],oZ3[a]);
-            addFace(a,b,cc2,d,s1,s2s,s3s,s4);
-            a=gIdx(fix,fiy,N3);b=gIdx(fix+1,fiy,N3);cc2=gIdx(fix+1,fiy+1,N3);d=gIdx(fix,fiy+1,N3);
-            s1=strain3(gX3[a],gY3[a],gZ3[a],gX3[b],gY3[b],gZ3[b],oX3[a],oY3[a],oZ3[a],oX3[b],oY3[b],oZ3[b]);
-            s2s=strain3(gX3[b],gY3[b],gZ3[b],gX3[cc2],gY3[cc2],gZ3[cc2],oX3[b],oY3[b],oZ3[b],oX3[cc2],oY3[cc2],oZ3[cc2]);
-            s3s=strain3(gX3[cc2],gY3[cc2],gZ3[cc2],gX3[d],gY3[d],gZ3[d],oX3[cc2],oY3[cc2],oZ3[cc2],oX3[d],oY3[d],oZ3[d]);
-            s4=strain3(gX3[d],gY3[d],gZ3[d],gX3[a],gY3[a],gZ3[a],oX3[d],oY3[d],oZ3[d],oX3[a],oY3[a],oZ3[a]);
-            addFace(a,b,cc2,d,s1,s2s,s3s,s4);
-        }
-        faces.sort(function(a,b){return b.z-a.z});
-        for(var fi=0;fi<faces.length;fi++){
-            var f=faces[fi];
-            var co=s2c(f.strain);
-            var va=projV[f.verts[0]],vb=projV[f.verts[1]],vc=projV[f.verts[2]],vd=projV[f.verts[3]];
-            c.beginPath();
-            c.moveTo(va[0],va[1]);c.lineTo(vb[0],vb[1]);
-            c.lineTo(vc[0],vc[1]);c.lineTo(vd[0],vd[1]);
-            c.closePath();
-            c.fillStyle='rgba('+co[0]+','+co[1]+','+co[2]+',0.15)';c.fill();
-        }
+    // --- Strain heatmap faces ---
+    if(p.heat && !isEmb){
+        var faces = buildSurfaceFaces3D(grid3, N3, projV);
+        drawStrainFaces3D(c, faces, projV);
     }
 
-    if(p.vec&&!isEmb){
-        var step3=Math.max(1,Math.floor(N3/4));
-        c.lineWidth=1.2;
-        for(var viz=0;viz<=N3;viz+=step3)for(var viy=0;viy<=N3;viy+=step3)for(var vix=0;vix<=N3;vix+=step3){
-            var vi=gIdx(vix,viy,viz);
-            var pa=projO[vi], pb=projV[vi];
-            var al=Math.hypot(pb[0]-pa[0],pb[1]-pa[1]);
-            if(al<3)continue;
-            c.strokeStyle='rgba(255,255,100,0.5)';c.fillStyle='rgba(255,255,100,0.5)';
-            c.beginPath();c.moveTo(pa[0],pa[1]);c.lineTo(pb[0],pb[1]);c.stroke();
-            var aa=Math.atan2(pb[1]-pa[1],pb[0]-pa[0]),hl=Math.min(6,al*.3);
-            c.beginPath();c.moveTo(pb[0],pb[1]);
-            c.lineTo(pb[0]-hl*Math.cos(aa-.4),pb[1]-hl*Math.sin(aa-.4));
-            c.lineTo(pb[0]-hl*Math.cos(aa+.4),pb[1]-hl*Math.sin(aa+.4));
-            c.closePath();c.fill();
-        }
+    // --- Vector arrows ---
+    if(p.vec && !isEmb){
+        drawVectorArrows3D(c, grid3, N3, projO, projV);
     }
 
-    // 3D axes
-    var axLen=mr3*0.5*effSc3;
-    var axes=[
-        {v:[1,0,0],label:'Dim '+dx,color:'#e94560'},
-        {v:[0,1,0],label:'Dim '+dy,color:'#53a8b6'},
-        {v:[0,0,1],label:'Dim '+dz,color:'#f5a623'}
-    ];
-    c.lineWidth=1.5;
-    for(var ai=0;ai<3;ai++){
-        var ax=axes[ai];
-        var o3=proj3D(0,0,0);
-        var e3=proj3D(ax.v[0]*axLen,ax.v[1]*axLen,ax.v[2]*axLen);
-        c.strokeStyle=ax.color;c.globalAlpha=0.5;
-        c.beginPath();c.moveTo(o3[0],o3[1]);c.lineTo(e3[0],e3[1]);c.stroke();
-        c.globalAlpha=1;
-        c.font='10px monospace';c.fillStyle=ax.color;
-        c.fillText(ax.label,e3[0]+4,e3[1]-4);
-    }
+    // --- 3D axes ---
+    draw3DAxes(c, mr3, effSc3, proj3D_local, dx, dy, dz);
 
-    // Points
-    var points3d=[];
-    for(var pi=0;pi<nP;pi++){
-        var px3=(fx[pi]-cx3)*effSc3, py3=(fy[pi]-cy3)*effSc3, pz3=(fz[pi]-cz3)*effSc3;
-        var proj=proj3D(px3,py3,pz3);
-        points3d.push({idx:pi,sx:proj[0],sy:proj[1],z:proj[2],scale:proj[3],
-            wx:px3,wy:py3,wz:pz3});
-    }
+    // --- Points (tokens + probes) ---
+    var points3d = buildTokenPoints3D(fx, fy, fz, nP, nR, cx3, cy3, cz3, effSc3, proj3D_local);
     points3d.sort(function(a,b){return b.z-a.z});
 
+    // --- Synthetic probes ---
     if(p.syn){
-        for(var si=0;si<points3d.length;si++){
-            var sp=points3d[si];
-            if(sp.idx<nR)continue;
-            var sr=Math.max(1,2.5*sp.scale);
-            c.beginPath();c.arc(sp.sx,sp.sy,sr,0,Math.PI*2);
-            c.fillStyle='rgba(100,200,255,0.15)';c.fill();
-        }
+        drawSyntheticProbes3D(c, points3d, nR);
     }
 
+    // --- Neighbor connections ---
     if(p.nb && D.neighbors && selectedTokens.size>0){
-        var kn=p.kn;
-        selectedTokens.forEach(function(ti){
-            if(ti>=D.neighbors.length)return;
-            var nbs=D.neighbors[ti].slice(0,kn);
-            var tpx=(fx[ti]-cx3)*effSc3,tpy=(fy[ti]-cy3)*effSc3,tpz=(fz[ti]-cz3)*effSc3;
-            var tp=proj3D(tpx,tpy,tpz);
-            for(var ni=0;ni<nbs.length;ni++){
-                var nb=nbs[ni];
-                var nidx=nb.idx;
-                if(nidx>=nP)continue;
-                var npx=(fx[nidx]-cx3)*effSc3,npy=(fy[nidx]-cy3)*effSc3,npz=(fz[nidx]-cz3)*effSc3;
-                var np2=proj3D(npx,npy,npz);
-                var alpha=Math.max(0.15,1.0-ni*0.08);
-                c.strokeStyle='rgba(0,255,200,'+alpha.toFixed(2)+')';
-                c.lineWidth=Math.max(0.5,2.5-ni*0.2);
-                c.setLineDash([3,3]);
-                c.beginPath();c.moveTo(tp[0],tp[1]);c.lineTo(np2[0],np2[1]);c.stroke();
-                c.setLineDash([]);
-                var nr=Math.max(2,5*np2[3]);
-                c.beginPath();c.arc(np2[0],np2[1],nr,0,Math.PI*2);
-                c.fillStyle=nb.is_real?'rgba(0,255,200,0.8)':'rgba(0,255,200,0.35)';
-                c.fill();
-                if(p.nblabel){
-                    c.font='9px monospace';c.fillStyle='rgba(0,255,200,0.9)';
-                    c.fillText(nb.label+' (d='+nb.dist.toFixed(1)+')',np2[0]+8,np2[1]-4);
-                }
-            }
-        });
+        drawNeighborConnections3D(c, D, fx, fy, fz, nP, p.kn, p.nblabel,
+            cx3, cy3, cz3, effSc3, proj3D_local);
     }
 
+    // --- Real token dots ---
     if(p.tok){
-        var tc=['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71',
-            '#e74c3c','#3498db','#9b59b6','#1abc9c','#e67e22',
-            '#f39c12','#d35400','#c0392b','#16a085','#27ae60',
-            '#2980b9','#8e44ad','#2c3e50','#ecf0f1','#fd79a8'];
-        for(var ri=0;ri<points3d.length;ri++){
-            var rp=points3d[ri];
-            if(rp.idx>=nR)continue;
-            var ti3=rp.idx;
-            var col=tc[ti3%tc.length];
-            var isSel=selectedTokens.has(ti3);
-            var dotR=Math.max(3,(isSel?9:7)*rp.scale);
-
-            if(isSel){
-                var grad2=c.createRadialGradient(rp.sx,rp.sy,0,rp.sx,rp.sy,30*rp.scale);
-                grad2.addColorStop(0,'rgba(0,255,0,0.25)');grad2.addColorStop(1,'rgba(0,255,0,0)');
-                c.beginPath();c.arc(rp.sx,rp.sy,30*rp.scale,0,Math.PI*2);c.fillStyle=grad2;c.fill();
-            }
-
-            c.beginPath();c.arc(rp.sx,rp.sy,dotR,0,Math.PI*2);
-            c.fillStyle=col;c.fill();
-            c.strokeStyle=isSel?'#0f0':'#fff';c.lineWidth=isSel?3:2;c.stroke();
-
-            var fontSize=Math.max(8,11*rp.scale);
-            c.font='bold '+Math.round(fontSize)+'px monospace';
-            c.lineWidth=3;c.strokeStyle='rgba(0,0,0,0.9)';
-            var lb='['+ti3+'] '+D.tokens[ti3];
-            c.strokeText(lb,rp.sx+12,rp.sy-10);
-            c.fillStyle=isSel?'#0f0':'#fff';c.fillText(lb,rp.sx+12,rp.sy-10);
-        }
-
-        if(isEmb&&nR>1){
-            c.strokeStyle='rgba(233,69,96,0.3)';c.lineWidth=1.5;c.setLineDash([4,4]);
-            c.beginPath();
-            var fp0=(fx[0]-cx3)*effSc3,fp0y=(fy[0]-cy3)*effSc3,fp0z=(fz[0]-cz3)*effSc3;
-            var pp0=proj3D(fp0,fp0y,fp0z);
-            c.moveTo(pp0[0],pp0[1]);
-            for(var ti4=1;ti4<nR;ti4++){
-                var fpx=(fx[ti4]-cx3)*effSc3,fpy=(fy[ti4]-cy3)*effSc3,fpz=(fz[ti4]-cz3)*effSc3;
-                var pp=proj3D(fpx,fpy,fpz);
-                c.lineTo(pp[0],pp[1]);
-            }
-            c.stroke();c.setLineDash([]);
-        }
+        drawRealTokenDots3D(c, D, points3d, nR, isEmb,
+            fx, fy, fz, cx3, cy3, cz3, effSc3, proj3D_local);
     }
 
-    // HUD text
-    var decompLabel = getDecompLabel();
-    c.font='11px monospace';c.fillStyle='rgba(255,255,255,0.45)';
-    if(isEmb){
-        c.fillText('EMBEDDING SPACE [3D]  Dims:'+dx+','+dy+','+dz+'  Drag to rotate',42,18);
+    // --- HUD ---
+    draw3DHUD(c, W, H, p, dx, dy, dz, isEmb);
+}
+
+function extractPositions3D(dataObj, nP, dx, dy, dz) {
+    var fx = new Float64Array(nP), fy = new Float64Array(nP), fz = new Float64Array(nP);
+    for (var i = 0; i < nP; i++) {
+        fx[i] = dataObj.fixed_pos[i][dx];
+        fy[i] = dataObj.fixed_pos[i][dy];
+        fz[i] = dataObj.fixed_pos[i][dz];
+    }
+    return { fx: fx, fy: fy, fz: fz };
+}
+
+function computeCumulativeDeltas3D(activeDeltas, layer, nP, dx, dy, dz, amp, mode, nLayers, isEmb) {
+    var edx = new Float64Array(nP), edy = new Float64Array(nP), edz = new Float64Array(nP);
+    if (isEmb) return { edx: edx, edy: edy, edz: edz };
+
+    for (var j = 0; j < nP; j++) {
+        var sx = 0, sy = 0, sz = 0;
+        if (mode === 'single') {
+            sx = activeDeltas[layer][j][dx];
+            sy = activeDeltas[layer][j][dy];
+            sz = activeDeltas[layer][j][dz];
+        } else if (mode === 'cumfwd') {
+            for (var l = 0; l <= layer; l++) {
+                sx += activeDeltas[l][j][dx];
+                sy += activeDeltas[l][j][dy];
+                sz += activeDeltas[l][j][dz];
+            }
+        } else { // cumbwd
+            for (var l = layer; l < nLayers; l++) {
+                sx += activeDeltas[l][j][dx];
+                sy += activeDeltas[l][j][dy];
+                sz += activeDeltas[l][j][dz];
+            }
+        }
+        edx[j] = sx * amp;
+        edy[j] = sy * amp;
+        edz[j] = sz * amp;
+    }
+    return { edx: edx, edy: edy, edz: edz };
+}
+
+function computeViewBounds3D(fx, fy, fz, nP, padding) {
+    var mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity, mnz = Infinity, mxz = -Infinity;
+    for (var i = 0; i < nP; i++) {
+        if (fx[i] < mnx) mnx = fx[i]; if (fx[i] > mxx) mxx = fx[i];
+        if (fy[i] < mny) mny = fy[i]; if (fy[i] > mxy) mxy = fy[i];
+        if (fz[i] < mnz) mnz = fz[i]; if (fz[i] > mxz) mxz = fz[i];
+    }
+    var mrx = mxx - mnx || 1, mry = mxy - mny || 1, mrz = mxz - mnz || 1;
+    var mr = Math.max(mrx, mry, mrz);
+    var cx = (mnx + mxx) / 2, cy = (mny + mxy) / 2, cz = (mnz + mxz) / 2;
+    var pd = padding || 0.12;
+    return {
+        cx: cx, cy: cy, cz: cz, mr: mr,
+        vx0: cx - mr * (0.5 + pd), vx1: cx + mr * (0.5 + pd),
+        vy0: cy - mr * (0.5 + pd), vy1: cy + mr * (0.5 + pd),
+        vz0: cz - mr * (0.5 + pd), vz1: cz + mr * (0.5 + pd)
+    };
+}
+
+function buildDeformedGrid3D(vx0, vy0, vz0, vx1, vy1, vz1, N,
+    fx, fy, fz, edx, edy, edz, nP, sig, t, isEmb, itpMethod) {
+
+    function gIdx(ix, iy, iz) { return iz * (N + 1) * (N + 1) + iy * (N + 1) + ix; }
+    var nV = (N + 1) * (N + 1) * (N + 1);
+    var oX = new Float64Array(nV), oY = new Float64Array(nV), oZ = new Float64Array(nV);
+    var gX = new Float64Array(nV), gY = new Float64Array(nV), gZ = new Float64Array(nV);
+
+    for (var iz = 0; iz <= N; iz++) for (var iy = 0; iy <= N; iy++) for (var ix = 0; ix <= N; ix++) {
+        var gi = gIdx(ix, iy, iz);
+        oX[gi] = vx0 + (ix / N) * (vx1 - vx0);
+        oY[gi] = vy0 + (iy / N) * (vy1 - vy0);
+        oZ[gi] = vz0 + (iz / N) * (vz1 - vz0);
+    }
+
+    var s2i = 1 / (2 * sig * sig);
+
+    if (isEmb) {
+        for (var gi = 0; gi < nV; gi++) { gX[gi] = oX[gi]; gY[gi] = oY[gi]; gZ[gi] = oZ[gi]; }
     } else {
-        c.fillText('Layer '+p.layer+'/'+(D.n_layers-1)+'  t='+p.t.toFixed(2)+'  amp='+p.amp.toFixed(1)+'  Dims:'+dx+','+dy+','+dz+'  Decomp:'+decompLabel+'  [3D]  Drag to rotate',42,18);
+        for (var gi = 0; gi < nV; gi++) {
+            var gpx = oX[gi], gpy = oY[gi], gpz = oZ[gi];
+            var res = interpolateGridPoint3D(gpx, gpy, gpz, fx, fy, fz,
+                edx, edy, edz, nP, sig, s2i, itpMethod);
+            gX[gi] = gpx + t * res[0];
+            gY[gi] = gpy + t * res[1];
+            gZ[gi] = gpz + t * res[2];
+        }
     }
-    c.font='10px monospace';c.fillStyle='rgba(255,255,255,0.35)';
-    c.fillText('Zoom: '+zoomLevel.toFixed(2)+'x  (Scroll=zoom, Shift+drag=pan, 0=reset)',42,H-10);
+
+    // Collect edges with strain
+    var edges = [];
+    function strain3(a, b) {
+        var od = Math.hypot(oX[b] - oX[a], oY[b] - oY[a], oZ[b] - oZ[a]);
+        var dd = Math.hypot(gX[b] - gX[a], gY[b] - gY[a], gZ[b] - gZ[a]);
+        return od > 1e-12 ? dd / od : 1;
+    }
+
+    for (var iz = 0; iz <= N; iz++) for (var iy = 0; iy <= N; iy++) for (var ix = 0; ix < N; ix++) {
+        var a = gIdx(ix, iy, iz), b = gIdx(ix + 1, iy, iz);
+        edges.push({ a: a, b: b, strain: strain3(a, b) });
+    }
+    for (var iz = 0; iz <= N; iz++) for (var iy = 0; iy < N; iy++) for (var ix = 0; ix <= N; ix++) {
+        var a = gIdx(ix, iy, iz), b = gIdx(ix, iy + 1, iz);
+        edges.push({ a: a, b: b, strain: strain3(a, b) });
+    }
+    for (var iz = 0; iz < N; iz++) for (var iy = 0; iy <= N; iy++) for (var ix = 0; ix <= N; ix++) {
+        var a = gIdx(ix, iy, iz), b = gIdx(ix, iy, iz + 1);
+        edges.push({ a: a, b: b, strain: strain3(a, b) });
+    }
+
+    return { oX: oX, oY: oY, oZ: oZ, gX: gX, gY: gY, gZ: gZ,
+             edges: edges, nV: nV, gIdx: gIdx, N: N };
+}
+
+function interpolateGridPoint3D(gpx, gpy, gpz, fx, fy, fz, edx, edy, edz, nP, sig, s2i, itpMethod) {
+    var vvx = 0, vvy = 0, vvz = 0, ws = 0;
+
+    if (itpMethod === 'nn') {
+        var bestDist = Infinity, bestIdx = 0;
+        for (var k = 0; k < nP; k++) {
+            var d = (gpx-fx[k])*(gpx-fx[k])+(gpy-fy[k])*(gpy-fy[k])+(gpz-fz[k])*(gpz-fz[k]);
+            if (d < bestDist) { bestDist = d; bestIdx = k; }
+        }
+        return [edx[bestIdx], edy[bestIdx], edz[bestIdx]];
+    }
+
+    if (itpMethod === 'idw') {
+        for (var k = 0; k < nP; k++) {
+            var dist = Math.sqrt((gpx-fx[k])*(gpx-fx[k])+(gpy-fy[k])*(gpy-fy[k])+(gpz-fz[k])*(gpz-fz[k]));
+            var w = 1.0 / Math.pow(Math.max(dist, 1e-12), 2.0);
+            vvx += w * edx[k]; vvy += w * edy[k]; vvz += w * edz[k]; ws += w;
+        }
+        if (ws > 1e-15) { vvx /= ws; vvy /= ws; vvz /= ws; }
+        return [vvx, vvy, vvz];
+    }
+
+    if (itpMethod === 'wendland') {
+        var R = Math.max(3.0 * sig, 1e-6);
+        for (var k = 0; k < nP; k++) {
+            var dist = Math.sqrt((gpx-fx[k])*(gpx-fx[k])+(gpy-fy[k])*(gpy-fy[k])+(gpz-fz[k])*(gpz-fz[k]));
+            var rn = dist / R;
+            if (rn >= 1.0) continue;
+            var tt = 1.0 - rn;
+            var w = tt * tt * tt * tt * (4.0 * rn + 1.0);
+            vvx += w * edx[k]; vvy += w * edy[k]; vvz += w * edz[k]; ws += w;
+        }
+        if (ws < 1e-30) {
+            // Fallback to RBF
+            for (var k = 0; k < nP; k++) {
+                var ex = gpx-fx[k], ey = gpy-fy[k], ez = gpz-fz[k];
+                var w = Math.exp(-(ex*ex+ey*ey+ez*ez)*s2i);
+                vvx += w * edx[k]; vvy += w * edy[k]; vvz += w * edz[k]; ws += w;
+            }
+        }
+        if (ws > 1e-15) { vvx /= ws; vvy /= ws; vvz /= ws; }
+        return [vvx, vvy, vvz];
+    }
+
+    // Default: RBF (also fallback for MLS, TPS in 3D)
+    for (var k = 0; k < nP; k++) {
+        var ex = gpx-fx[k], ey = gpy-fy[k], ez = gpz-fz[k];
+        var w = Math.exp(-(ex*ex+ey*ey+ez*ez)*s2i);
+        vvx += w * edx[k]; vvy += w * edy[k]; vvz += w * edz[k]; ws += w;
+    }
+    if (ws > 1e-15) { vvx /= ws; vvy /= ws; vvz /= ws; }
+    return [vvx, vvy, vvz];
+}
+
+function projectVertices3D(gX, gY, gZ, nV, cx, cy, cz, scale, projFn) {
+    var projected = [];
+    for (var vi = 0; vi < nV; vi++) {
+        var px = (gX[vi] - cx) * scale;
+        var py = (gY[vi] - cy) * scale;
+        var pz = (gZ[vi] - cz) * scale;
+        projected.push(projFn(px, py, pz));
+    }
+    return projected;
+}
+
+function drawReferenceEdges3D(c, edges, projO, isEmb) {
+    c.strokeStyle = isEmb ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.04)';
+    c.lineWidth = 0.4;
+    for (var ei = 0; ei < edges.length; ei++) {
+        var e = edges[ei];
+        var pa = projO[e.a], pb = projO[e.b];
+        c.beginPath(); c.moveTo(pa[0], pa[1]); c.lineTo(pb[0], pb[1]); c.stroke();
+    }
+}
+
+function drawDeformedEdges3D(c, edges, projV, showSC) {
+    c.lineWidth = 0.9;
+    for (var ei = 0; ei < edges.length; ei++) {
+        var e = edges[ei];
+        var pa = projV[e.a], pb = projV[e.b];
+        var depthAlpha = Math.max(0.1, Math.min(0.85, 0.6 - e.avgZ * 0.001));
+        if (showSC) {
+            var ec = s2c(e.strain);
+            c.strokeStyle = 'rgba(' + ec[0] + ',' + ec[1] + ',' + ec[2] + ',' + depthAlpha.toFixed(2) + ')';
+        } else {
+            c.strokeStyle = 'rgba(200,200,200,' + depthAlpha.toFixed(2) + ')';
+        }
+        c.beginPath(); c.moveTo(pa[0], pa[1]); c.lineTo(pb[0], pb[1]); c.stroke();
+    }
+}
+
+function buildSurfaceFaces3D(grid, N, projV) {
+    var gIdx = grid.gIdx;
+    var faces = [];
+
+    function strainEdge(a, b) {
+        var od = Math.hypot(grid.oX[b]-grid.oX[a], grid.oY[b]-grid.oY[a], grid.oZ[b]-grid.oZ[a]);
+        var dd = Math.hypot(grid.gX[b]-grid.gX[a], grid.gY[b]-grid.gY[a], grid.gZ[b]-grid.gZ[a]);
+        return od > 1e-12 ? dd / od : 1;
+    }
+
+    function addFace(a, b, cc, d) {
+        var s1 = strainEdge(a, b), s2 = strainEdge(b, cc);
+        var avgS = (s1 + s2) / 2;
+        var avgZ = (projV[a][2] + projV[b][2] + projV[cc][2] + projV[d][2]) / 4;
+        faces.push({ verts: [a, b, cc, d], strain: avgS, z: avgZ });
+    }
+
+    // X=0 and X=N faces
+    for (var iz = 0; iz < N; iz++) for (var iy = 0; iy < N; iy++) {
+        addFace(gIdx(0,iy,iz), gIdx(0,iy+1,iz), gIdx(0,iy+1,iz+1), gIdx(0,iy,iz+1));
+        addFace(gIdx(N,iy,iz), gIdx(N,iy+1,iz), gIdx(N,iy+1,iz+1), gIdx(N,iy,iz+1));
+    }
+    // Y=0 and Y=N faces
+    for (var iz = 0; iz < N; iz++) for (var ix = 0; ix < N; ix++) {
+        addFace(gIdx(ix,0,iz), gIdx(ix+1,0,iz), gIdx(ix+1,0,iz+1), gIdx(ix,0,iz+1));
+        addFace(gIdx(ix,N,iz), gIdx(ix+1,N,iz), gIdx(ix+1,N,iz+1), gIdx(ix,N,iz+1));
+    }
+    // Z=0 and Z=N faces
+    for (var iy = 0; iy < N; iy++) for (var ix = 0; ix < N; ix++) {
+        addFace(gIdx(ix,iy,0), gIdx(ix+1,iy,0), gIdx(ix+1,iy+1,0), gIdx(ix,iy+1,0));
+        addFace(gIdx(ix,iy,N), gIdx(ix+1,iy,N), gIdx(ix+1,iy+1,N), gIdx(ix,iy+1,N));
+    }
+
+    faces.sort(function(a, b) { return b.z - a.z; });
+    return faces;
+}
+
+function drawStrainFaces3D(c, faces, projV) {
+    for (var fi = 0; fi < faces.length; fi++) {
+        var f = faces[fi];
+        var co = s2c(f.strain);
+        c.beginPath();
+        c.moveTo(projV[f.verts[0]][0], projV[f.verts[0]][1]);
+        c.lineTo(projV[f.verts[1]][0], projV[f.verts[1]][1]);
+        c.lineTo(projV[f.verts[2]][0], projV[f.verts[2]][1]);
+        c.lineTo(projV[f.verts[3]][0], projV[f.verts[3]][1]);
+        c.closePath();
+        c.fillStyle = 'rgba(' + co[0] + ',' + co[1] + ',' + co[2] + ',0.15)';
+        c.fill();
+    }
+}
+
+function drawVectorArrows3D(c, grid, N, projO, projV) {
+    var step = Math.max(1, Math.floor(N / 4));
+    var gIdx = grid.gIdx;
+    c.lineWidth = 1.2;
+    for (var viz = 0; viz <= N; viz += step)
+        for (var viy = 0; viy <= N; viy += step)
+            for (var vix = 0; vix <= N; vix += step) {
+                var vi = gIdx(vix, viy, viz);
+                var pa = projO[vi], pb = projV[vi];
+                var al = Math.hypot(pb[0]-pa[0], pb[1]-pa[1]);
+                if (al < 3) continue;
+                c.strokeStyle = 'rgba(255,255,100,0.5)';
+                c.fillStyle = 'rgba(255,255,100,0.5)';
+                c.beginPath(); c.moveTo(pa[0], pa[1]); c.lineTo(pb[0], pb[1]); c.stroke();
+                var aa = Math.atan2(pb[1]-pa[1], pb[0]-pa[0]), hl = Math.min(6, al*0.3);
+                c.beginPath(); c.moveTo(pb[0], pb[1]);
+                c.lineTo(pb[0]-hl*Math.cos(aa-0.4), pb[1]-hl*Math.sin(aa-0.4));
+                c.lineTo(pb[0]-hl*Math.cos(aa+0.4), pb[1]-hl*Math.sin(aa+0.4));
+                c.closePath(); c.fill();
+            }
+}
+
+function draw3DAxes(c, mr, effSc, projFn, dx, dy, dz) {
+    var axLen = mr * 0.5 * effSc;
+    var axes = [
+        { v: [1,0,0], label: 'Dim ' + dx, color: '#e94560' },
+        { v: [0,1,0], label: 'Dim ' + dy, color: '#53a8b6' },
+        { v: [0,0,1], label: 'Dim ' + dz, color: '#f5a623' }
+    ];
+    c.lineWidth = 1.5;
+    var o3 = projFn(0, 0, 0);
+    for (var ai = 0; ai < 3; ai++) {
+        var ax = axes[ai];
+        var e3 = projFn(ax.v[0]*axLen, ax.v[1]*axLen, ax.v[2]*axLen);
+        c.strokeStyle = ax.color; c.globalAlpha = 0.5;
+        c.beginPath(); c.moveTo(o3[0], o3[1]); c.lineTo(e3[0], e3[1]); c.stroke();
+        c.globalAlpha = 1;
+        c.font = '10px monospace'; c.fillStyle = ax.color;
+        c.fillText(ax.label, e3[0]+4, e3[1]-4);
+    }
+}
+
+function buildTokenPoints3D(fx, fy, fz, nP, nR, cx, cy, cz, scale, projFn) {
+    var points = [];
+    for (var pi = 0; pi < nP; pi++) {
+        var px = (fx[pi]-cx)*scale, py = (fy[pi]-cy)*scale, pz = (fz[pi]-cz)*scale;
+        var proj = projFn(px, py, pz);
+        points.push({ idx: pi, sx: proj[0], sy: proj[1], z: proj[2], scale: proj[3] });
+    }
+    return points;
+}
+
+function drawSyntheticProbes3D(c, points, nR) {
+    for (var si = 0; si < points.length; si++) {
+        var sp = points[si];
+        if (sp.idx < nR) continue;
+        var sr = Math.max(1, 2.5 * sp.scale);
+        c.beginPath(); c.arc(sp.sx, sp.sy, sr, 0, Math.PI*2);
+        c.fillStyle = 'rgba(100,200,255,0.15)';
+        c.fill();
+    }
+}
+
+function drawNeighborConnections3D(c, D, fx, fy, fz, nP, kn, showLabels,
+    cx, cy, cz, scale, projFn) {
+
+    selectedTokens.forEach(function(ti) {
+        if (ti >= D.neighbors.length) return;
+        var nbs = D.neighbors[ti].slice(0, kn);
+        var tpx = (fx[ti] - cx) * scale, tpy = (fy[ti] - cy) * scale, tpz = (fz[ti] - cz) * scale;
+        var tp = projFn(tpx, tpy, tpz);
+
+        for (var ni = 0; ni < nbs.length; ni++) {
+            var nb = nbs[ni];
+            var nidx = nb.idx;
+            if (nidx >= nP) continue;
+            var npx = (fx[nidx] - cx) * scale, npy = (fy[nidx] - cy) * scale, npz = (fz[nidx] - cz) * scale;
+            var np2 = projFn(npx, npy, npz);
+            var alpha = Math.max(0.15, 1.0 - ni * 0.08);
+            c.strokeStyle = 'rgba(0,255,200,' + alpha.toFixed(2) + ')';
+            c.lineWidth = Math.max(0.5, 2.5 - ni * 0.2);
+            c.setLineDash([3, 3]);
+            c.beginPath(); c.moveTo(tp[0], tp[1]); c.lineTo(np2[0], np2[1]); c.stroke();
+            c.setLineDash([]);
+            var nr = Math.max(2, 5 * np2[3]);
+            c.beginPath(); c.arc(np2[0], np2[1], nr, 0, Math.PI * 2);
+            c.fillStyle = nb.is_real ? 'rgba(0,255,200,0.8)' : 'rgba(0,255,200,0.35)';
+            c.fill();
+            if (showLabels) {
+                c.font = '9px monospace'; c.fillStyle = 'rgba(0,255,200,0.9)';
+                c.fillText(nb.label + ' (d=' + nb.dist.toFixed(1) + ')', np2[0] + 8, np2[1] - 4);
+            }
+        }
+    });
+}
+
+function drawRealTokenDots3D(c, D, points, nR, isEmb,
+    fx, fy, fz, cx, cy, cz, scale, projFn) {
+
+    var tc = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71',
+        '#e74c3c','#3498db','#9b59b6','#1abc9c','#e67e22',
+        '#f39c12','#d35400','#c0392b','#16a085','#27ae60',
+        '#2980b9','#8e44ad','#2c3e50','#ecf0f1','#fd79a8'];
+
+    for (var ri = 0; ri < points.length; ri++) {
+        var rp = points[ri];
+        if (rp.idx >= nR) continue;
+        var ti3 = rp.idx;
+        var col = tc[ti3 % tc.length];
+        var isSel = selectedTokens.has(ti3);
+        var dotR = Math.max(3, (isSel ? 9 : 7) * rp.scale);
+
+        if (isSel) {
+            var grad2 = c.createRadialGradient(rp.sx, rp.sy, 0, rp.sx, rp.sy, 30 * rp.scale);
+            grad2.addColorStop(0, 'rgba(0,255,0,0.25)');
+            grad2.addColorStop(1, 'rgba(0,255,0,0)');
+            c.beginPath(); c.arc(rp.sx, rp.sy, 30 * rp.scale, 0, Math.PI * 2);
+            c.fillStyle = grad2; c.fill();
+        }
+
+        c.beginPath(); c.arc(rp.sx, rp.sy, dotR, 0, Math.PI * 2);
+        c.fillStyle = col; c.fill();
+        c.strokeStyle = isSel ? '#0f0' : '#fff';
+        c.lineWidth = isSel ? 3 : 2; c.stroke();
+
+        var fontSize = Math.max(8, 11 * rp.scale);
+        c.font = 'bold ' + Math.round(fontSize) + 'px monospace';
+        c.lineWidth = 3; c.strokeStyle = 'rgba(0,0,0,0.9)';
+        var lb = '[' + ti3 + '] ' + D.tokens[ti3];
+        c.strokeText(lb, rp.sx + 12, rp.sy - 10);
+        c.fillStyle = isSel ? '#0f0' : '#fff';
+        c.fillText(lb, rp.sx + 12, rp.sy - 10);
+    }
+
+    if (isEmb && nR > 1) {
+        c.strokeStyle = 'rgba(233,69,96,0.3)'; c.lineWidth = 1.5; c.setLineDash([4, 4]);
+        c.beginPath();
+        var fp0 = projFn((fx[0] - cx) * scale, (fy[0] - cy) * scale, (fz[0] - cz) * scale);
+        c.moveTo(fp0[0], fp0[1]);
+        for (var ti4 = 1; ti4 < nR; ti4++) {
+            var pp = projFn((fx[ti4] - cx) * scale, (fy[ti4] - cy) * scale, (fz[ti4] - cz) * scale);
+            c.lineTo(pp[0], pp[1]);
+        }
+        c.stroke(); c.setLineDash([]);
+    }
+}
+
+function draw3DHUD(c, W, H, p, dx, dy, dz, isEmb) {
+    var decompLabel = getDecompLabel();
+    c.font = '11px monospace'; c.fillStyle = 'rgba(255,255,255,0.45)';
+    if (isEmb) {
+        c.fillText('EMBEDDING SPACE [3D]  Dims:' + dx + ',' + dy + ',' + dz + '  Drag to rotate', 42, 18);
+    } else {
+        c.fillText('Layer ' + p.layer + '/' + (D.n_layers - 1) + '  t=' + p.t.toFixed(2) +
+            '  amp=' + p.amp.toFixed(1) + '  Dims:' + dx + ',' + dy + ',' + dz +
+            '  Decomp:' + decompLabel + '  [3D]  Drag to rotate', 42, 18);
+    }
+    c.font = '10px monospace'; c.fillStyle = 'rgba(255,255,255,0.35)';
+    c.fillText('Zoom: ' + zoomLevel.toFixed(2) + 'x  (Scroll=zoom, Shift+drag=pan, 0=reset)', 42, H - 10);
 }
 
 // Scroll-wheel zoom
