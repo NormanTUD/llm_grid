@@ -12449,428 +12449,433 @@ function renderJacobianField(){
 // ============================================================
 
 function renderJacobianFieldRawDims() {
-    if (!D) return;
+	if (!D) {
+		console.error("D is not definde in renderJacobianFieldRawDims");
+		return;
+	}
 
-    // ---- ALWAYS read fresh values from the DOM (FIX #4) ----
-    var dimX = +document.getElementById('sl-dx').value;
-    var dimY = +document.getElementById('sl-dy').value;
-    var layer = +document.getElementById('sl-layer').value;
-    var amp = +document.getElementById('sl-amp').value;
-    var sig = +document.getElementById('sl-sig').value;
-    var t = +document.getElementById('sl-t').value;
-    var mode = document.getElementById('sel-mode').value;
-    var decomp = document.getElementById('sel-decomp').value;
-    var itpMethod = document.getElementById('sel-itp').value;
-    var renderMode = document.getElementById('jf-render').value;
-    var gridRes = +document.getElementById('jf-res').value;
-    var showEigvecs = document.getElementById('jf-eigvecs').checked;
-    var showEllipses = document.getElementById('jf-stretch-ellipses').checked;
-    var showGhostTokens = document.getElementById('jf-ghost-tokens').checked;
-    var animate = document.getElementById('jf-animate').checked;
+	// ---- ALWAYS read fresh values from the DOM (FIX #4) ----
+	var dimX = +document.getElementById('sl-dx').value;
+	var dimY = +document.getElementById('sl-dy').value;
+	var layer = +document.getElementById('sl-layer').value;
+	var amp = +document.getElementById('sl-amp').value;
+	var sig = +document.getElementById('sl-sig').value;
+	var t = +document.getElementById('sl-t').value;
+	var mode = document.getElementById('sel-mode').value;
+	var decomp = document.getElementById('sel-decomp').value;
+	var itpMethod = document.getElementById('sel-itp').value;
+	var renderMode = document.getElementById('jf-render').value;
+	var gridRes = +document.getElementById('jf-res').value;
+	var showEigvecs = document.getElementById('jf-eigvecs').checked;
+	var showEllipses = document.getElementById('jf-stretch-ellipses').checked;
+	var showGhostTokens = document.getElementById('jf-ghost-tokens').checked;
+	var animate = document.getElementById('jf-animate').checked;
 
-    var nP = D.n_points;
-    var nR = D.n_real;
-    var nLayers = D.n_layers;
-    var isEmb = (mode === 'embedding');
+	console.log('Rendering JF raw dims, layer=' + layer + ', dimX=' + dimX + ', dimY=' + dimY);
 
-    // ---- Select active deltas based on decomposition ----
-    var activeDeltas = D.deltas;
-    if (decomp === 'attn' && D.attn_deltas) activeDeltas = D.attn_deltas;
-    if (decomp === 'mlp' && D.mlp_deltas) activeDeltas = D.mlp_deltas;
+	var nP = D.n_points;
+	var nR = D.n_real;
+	var nLayers = D.n_layers;
+	var isEmb = (mode === 'embedding');
 
-    // ---- Extract 2D positions ----
-    var fx = new Float64Array(nP);
-    var fy = new Float64Array(nP);
-    for (var i = 0; i < nP; i++) {
-        fx[i] = D.fixed_pos[i][dimX];
-        fy[i] = D.fixed_pos[i][dimY];
-    }
+	// ---- Select active deltas based on decomposition ----
+	var activeDeltas = D.deltas;
+	if (decomp === 'attn' && D.attn_deltas) activeDeltas = D.attn_deltas;
+	if (decomp === 'mlp' && D.mlp_deltas) activeDeltas = D.mlp_deltas;
 
-    // ---- Compute cumulative deltas for the selected layer/mode ----
-    var edx = new Float64Array(nP);
-    var edy = new Float64Array(nP);
-    if (!isEmb) {
-        for (var j = 0; j < nP; j++) {
-            var sx = 0, sy = 0;
-            if (mode === 'single') {
-                sx = activeDeltas[layer][j][dimX];
-                sy = activeDeltas[layer][j][dimY];
-            } else if (mode === 'cumfwd') {
-                for (var l = 0; l <= layer; l++) {
-                    sx += activeDeltas[l][j][dimX];
-                    sy += activeDeltas[l][j][dimY];
-                }
-            } else if (mode === 'cumbwd') {
-                for (var l = layer; l < nLayers; l++) {
-                    sx += activeDeltas[l][j][dimX];
-                    sy += activeDeltas[l][j][dimY];
-                }
-            }
-            edx[j] = sx * amp;
-            edy[j] = sy * amp;
-        }
-    }
+	// ---- Extract 2D positions ----
+	var fx = new Float64Array(nP);
+	var fy = new Float64Array(nP);
+	for (var i = 0; i < nP; i++) {
+		fx[i] = D.fixed_pos[i][dimX];
+		fy[i] = D.fixed_pos[i][dimY];
+	}
 
-    // ---- Compute view bounds ----
-    var mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
-    for (var i = 0; i < nP; i++) {
-        if (fx[i] < mnx) mnx = fx[i]; if (fx[i] > mxx) mxx = fx[i];
-        if (fy[i] < mny) mny = fy[i]; if (fy[i] > mxy) mxy = fy[i];
-    }
-    var mr = Math.max(mxx - mnx, mxy - mny) || 1;
-    var cxv = (mnx + mxx) / 2, cyv = (mny + mxy) / 2;
-    var pad = 0.2;
-    var vx0 = cxv - mr * (0.5 + pad);
-    var vy0 = cyv - mr * (0.5 + pad);
-    var vw = mr * (1 + 2 * pad);
-    var vh = vw;
+	// ---- Compute cumulative deltas for the selected layer/mode ----
+	var edx = new Float64Array(nP);
+	var edy = new Float64Array(nP);
+	if (!isEmb) {
+		for (var j = 0; j < nP; j++) {
+			var sx = 0, sy = 0;
+			if (mode === 'single') {
+				sx = activeDeltas[layer][j][dimX];
+				sy = activeDeltas[layer][j][dimY];
+			} else if (mode === 'cumfwd') {
+				for (var l = 0; l <= layer; l++) {
+					sx += activeDeltas[l][j][dimX];
+					sy += activeDeltas[l][j][dimY];
+				}
+			} else if (mode === 'cumbwd') {
+				for (var l = layer; l < nLayers; l++) {
+					sx += activeDeltas[l][j][dimX];
+					sy += activeDeltas[l][j][dimY];
+				}
+			}
+			edx[j] = sx * amp;
+			edy[j] = sy * amp;
+		}
+	}
 
-    // ---- Build grid and compute Jacobian at each point ----
-    var s2i = 1.0 / (2.0 * sig * sig);
-    var gridData = [];
+	// ---- Compute view bounds ----
+	var mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
+	for (var i = 0; i < nP; i++) {
+		if (fx[i] < mnx) mnx = fx[i]; if (fx[i] > mxx) mxx = fx[i];
+		if (fy[i] < mny) mny = fy[i]; if (fy[i] > mxy) mxy = fy[i];
+	}
+	var mr = Math.max(mxx - mnx, mxy - mny) || 1;
+	var cxv = (mnx + mxx) / 2, cyv = (mny + mxy) / 2;
+	var pad = 0.2;
+	var vx0 = cxv - mr * (0.5 + pad);
+	var vy0 = cyv - mr * (0.5 + pad);
+	var vw = mr * (1 + 2 * pad);
+	var vh = vw;
 
-    for (var gy = 0; gy < gridRes; gy++) {
-        for (var gx = 0; gx < gridRes; gx++) {
-            var qx = vx0 + (gx + 0.5) / gridRes * vw;
-            var qy = vy0 + (gy + 0.5) / gridRes * vh;
+	// ---- Build grid and compute Jacobian at each point ----
+	var s2i = 1.0 / (2.0 * sig * sig);
+	var gridData = [];
 
-            // ---- Interpolate the deformation field at this point ----
-            var field = interpolateGridPoint(qx, qy, fx, fy, edx, edy, nP, sig, itpMethod);
-            var flow_x = field[0];
-            var flow_y = field[1];
+	for (var gy = 0; gy < gridRes; gy++) {
+		for (var gx = 0; gx < gridRes; gx++) {
+			var qx = vx0 + (gx + 0.5) / gridRes * vw;
+			var qy = vy0 + (gy + 0.5) / gridRes * vh;
 
-            // ---- Estimate 2x2 Jacobian via finite differences ----
-            var eps = sig * 0.05;
-            var fieldR = interpolateGridPoint(qx + eps, qy, fx, fy, edx, edy, nP, sig, itpMethod);
-            var fieldU = interpolateGridPoint(qx, qy + eps, fx, fy, edx, edy, nP, sig, itpMethod);
+			// ---- Interpolate the deformation field at this point ----
+			var field = interpolateGridPoint(qx, qy, fx, fy, edx, edy, nP, sig, itpMethod);
+			var flow_x = field[0];
+			var flow_y = field[1];
 
-            // J = [[dFx/dx, dFx/dy], [dFy/dx, dFy/dy]]
-            var J00 = (fieldR[0] - flow_x) / eps;
-            var J01 = (fieldU[0] - flow_y) / eps; // dFx/dy — note: using flow_x not flow_y for correct partial
-            var J10 = (fieldR[1] - flow_y) / eps; // dFy/dx — note: same correction
-            var J11 = (fieldU[1] - flow_y) / eps;
+			// ---- Estimate 2x2 Jacobian via finite differences ----
+			var eps = sig * 0.05;
+			var fieldR = interpolateGridPoint(qx + eps, qy, fx, fy, edx, edy, nP, sig, itpMethod);
+			var fieldU = interpolateGridPoint(qx, qy + eps, fx, fy, edx, edy, nP, sig, itpMethod);
 
-            // Correct the Jacobian computation:
-            // dFx/dx = (fieldR[0] - flow_x) / eps
-            // dFx/dy = (fieldU[0] - flow_x) / eps
-            // dFy/dx = (fieldR[1] - flow_y) / eps
-            // dFy/dy = (fieldU[1] - flow_y) / eps
-            J01 = (fieldU[0] - flow_x) / eps;
-            J10 = (fieldR[1] - flow_y) / eps;
+			// J = [[dFx/dx, dFx/dy], [dFy/dx, dFy/dy]]
+			var J00 = (fieldR[0] - flow_x) / eps;
+			var J01 = (fieldU[0] - flow_y) / eps; // dFx/dy — note: using flow_x not flow_y for correct partial
+			var J10 = (fieldR[1] - flow_y) / eps; // dFy/dx — note: same correction
+			var J11 = (fieldU[1] - flow_y) / eps;
 
-            // ---- Decompose the Jacobian ----
-            var divergence = J00 + J11;
-            var curl = J10 - J01;
-            var J_sym_00 = (J00 + J00) / 2; // = J00
-            var J_sym_01 = (J01 + J10) / 2;
-            var J_sym_11 = (J11 + J11) / 2; // = J11
-            var trace = J_sym_00 + J_sym_11;
-            var J_tl_00 = J_sym_00 - trace / 2;
-            var J_tl_01 = J_sym_01;
-            var J_tl_11 = J_sym_11 - trace / 2;
-            var shear = Math.sqrt(J_tl_00 * J_tl_00 + 2 * J_tl_01 * J_tl_01 + J_tl_11 * J_tl_11);
+			// Correct the Jacobian computation:
+			// dFx/dx = (fieldR[0] - flow_x) / eps
+			// dFx/dy = (fieldU[0] - flow_x) / eps
+			// dFy/dx = (fieldR[1] - flow_y) / eps
+			// dFy/dy = (fieldU[1] - flow_y) / eps
+			J01 = (fieldU[0] - flow_x) / eps;
+			J10 = (fieldR[1] - flow_y) / eps;
 
-            var det = J00 * J11 - J01 * J10;
+			// ---- Decompose the Jacobian ----
+			var divergence = J00 + J11;
+			var curl = J10 - J01;
+			var J_sym_00 = (J00 + J00) / 2; // = J00
+			var J_sym_01 = (J01 + J10) / 2;
+			var J_sym_11 = (J11 + J11) / 2; // = J11
+			var trace = J_sym_00 + J_sym_11;
+			var J_tl_00 = J_sym_00 - trace / 2;
+			var J_tl_01 = J_sym_01;
+			var J_tl_11 = J_sym_11 - trace / 2;
+			var shear = Math.sqrt(J_tl_00 * J_tl_00 + 2 * J_tl_01 * J_tl_01 + J_tl_11 * J_tl_11);
 
-            // Rotation angle from polar decomposition via SVD
-            // SVD of 2x2: compute singular values
-            var a = J00, b = J01, cc = J10, d = J11;
-            var s1_sq = ((a * a + b * b + cc * cc + d * d) +
-                Math.sqrt(Math.pow(a * a + b * b - cc * cc - d * d, 2) + 4 * Math.pow(a * cc + b * d, 2))) / 2;
-            var s2_sq = Math.max(0, ((a * a + b * b + cc * cc + d * d) -
-                Math.sqrt(Math.pow(a * a + b * b - cc * cc - d * d, 2) + 4 * Math.pow(a * cc + b * d, 2))) / 2);
-            var sv1 = Math.sqrt(Math.max(0, s1_sq));
-            var sv2 = Math.sqrt(Math.max(0, s2_sq));
+			var det = J00 * J11 - J01 * J10;
 
-            var condition = sv1 / Math.max(sv2, 1e-12);
+			// Rotation angle from polar decomposition via SVD
+			// SVD of 2x2: compute singular values
+			var a = J00, b = J01, cc = J10, d = J11;
+			var s1_sq = ((a * a + b * b + cc * cc + d * d) +
+				Math.sqrt(Math.pow(a * a + b * b - cc * cc - d * d, 2) + 4 * Math.pow(a * cc + b * d, 2))) / 2;
+			var s2_sq = Math.max(0, ((a * a + b * b + cc * cc + d * d) -
+				Math.sqrt(Math.pow(a * a + b * b - cc * cc - d * d, 2) + 4 * Math.pow(a * cc + b * d, 2))) / 2);
+			var sv1 = Math.sqrt(Math.max(0, s1_sq));
+			var sv2 = Math.sqrt(Math.max(0, s2_sq));
 
-            // Rotation angle from antisymmetric part
-            var rotation_angle = Math.atan2(J10 - J01, J00 + J11);
+			var condition = sv1 / Math.max(sv2, 1e-12);
 
-            // Eigenvalues of J (complex in general)
-            var tr = J00 + J11;
-            var disc = tr * tr - 4 * det;
-            var eig_mag_0, eig_mag_1, eig_phase_0, eig_phase_1;
-            if (disc >= 0) {
-                var sqrtDisc = Math.sqrt(disc);
-                var lam1 = (tr + sqrtDisc) / 2;
-                var lam2 = (tr - sqrtDisc) / 2;
-                eig_mag_0 = Math.abs(lam1);
-                eig_mag_1 = Math.abs(lam2);
-                eig_phase_0 = lam1 >= 0 ? 0 : Math.PI;
-                eig_phase_1 = lam2 >= 0 ? 0 : Math.PI;
-            } else {
-                var realPart = tr / 2;
-                var imagPart = Math.sqrt(-disc) / 2;
-                eig_mag_0 = Math.sqrt(realPart * realPart + imagPart * imagPart);
-                eig_mag_1 = eig_mag_0;
-                eig_phase_0 = Math.atan2(imagPart, realPart);
-                eig_phase_1 = Math.atan2(-imagPart, realPart);
-            }
+			// Rotation angle from antisymmetric part
+			var rotation_angle = Math.atan2(J10 - J01, J00 + J11);
 
-            // Eigenvectors (real case only, for visualization)
-            var evec1_x = 1, evec1_y = 0, evec2_x = 0, evec2_y = 1;
-            if (disc >= 0) {
-                var sqrtDisc = Math.sqrt(disc);
-                var lam1 = (tr + sqrtDisc) / 2;
-                // (J - lam1*I) v = 0 => v proportional to [J01, lam1 - J00] or [lam1 - J11, J10]
-                if (Math.abs(J01) > 1e-12) {
-                    evec1_x = J01;
-                    evec1_y = lam1 - J00;
-                } else if (Math.abs(J10) > 1e-12) {
-                    evec1_x = lam1 - J11;
-                    evec1_y = J10;
-                }
-                var len1 = Math.sqrt(evec1_x * evec1_x + evec1_y * evec1_y);
-                if (len1 > 1e-12) { evec1_x /= len1; evec1_y /= len1; }
+			// Eigenvalues of J (complex in general)
+			var tr = J00 + J11;
+			var disc = tr * tr - 4 * det;
+			var eig_mag_0, eig_mag_1, eig_phase_0, eig_phase_1;
+			if (disc >= 0) {
+				var sqrtDisc = Math.sqrt(disc);
+				var lam1 = (tr + sqrtDisc) / 2;
+				var lam2 = (tr - sqrtDisc) / 2;
+				eig_mag_0 = Math.abs(lam1);
+				eig_mag_1 = Math.abs(lam2);
+				eig_phase_0 = lam1 >= 0 ? 0 : Math.PI;
+				eig_phase_1 = lam2 >= 0 ? 0 : Math.PI;
+			} else {
+				var realPart = tr / 2;
+				var imagPart = Math.sqrt(-disc) / 2;
+				eig_mag_0 = Math.sqrt(realPart * realPart + imagPart * imagPart);
+				eig_mag_1 = eig_mag_0;
+				eig_phase_0 = Math.atan2(imagPart, realPart);
+				eig_phase_1 = Math.atan2(-imagPart, realPart);
+			}
 
-                var lam2 = (tr - sqrtDisc) / 2;
-                if (Math.abs(J01) > 1e-12) {
-                    evec2_x = J01;
-                    evec2_y = lam2 - J00;
-                } else if (Math.abs(J10) > 1e-12) {
-                    evec2_x = lam2 - J11;
-                    evec2_y = J10;
-                }
-                var len2 = Math.sqrt(evec2_x * evec2_x + evec2_y * evec2_y);
-                if (len2 > 1e-12) { evec2_x /= len2; evec2_y /= len2; }
-            }
+			// Eigenvectors (real case only, for visualization)
+			var evec1_x = 1, evec1_y = 0, evec2_x = 0, evec2_y = 1;
+			if (disc >= 0) {
+				var sqrtDisc = Math.sqrt(disc);
+				var lam1 = (tr + sqrtDisc) / 2;
+				// (J - lam1*I) v = 0 => v proportional to [J01, lam1 - J00] or [lam1 - J11, J10]
+				if (Math.abs(J01) > 1e-12) {
+					evec1_x = J01;
+					evec1_y = lam1 - J00;
+				} else if (Math.abs(J10) > 1e-12) {
+					evec1_x = lam1 - J11;
+					evec1_y = J10;
+				}
+				var len1 = Math.sqrt(evec1_x * evec1_x + evec1_y * evec1_y);
+				if (len1 > 1e-12) { evec1_x /= len1; evec1_y /= len1; }
 
-            gridData.push({
-                gx: qx, gy: qy,
-                flow_x: flow_x * t, flow_y: flow_y * t,
-                divergence: divergence,
-                curl: curl,
-                shear: shear,
-                det: det,
-                rotation_angle: rotation_angle,
-                condition: condition,
-                eig_mag: [eig_mag_0, eig_mag_1],
-                eig_phase: [eig_phase_0, eig_phase_1],
-                evec1: [evec1_x, evec1_y],
-                evec2: [evec2_x, evec2_y],
-                stretch_dir1: [evec1_x, evec1_y],
-                stretch_dir2: [evec2_x, evec2_y],
-                stretch_mag1: sv1,
-                stretch_mag2: sv2,
-                sv: [sv1, sv2]
-            });
-        }
-    }
+				var lam2 = (tr - sqrtDisc) / 2;
+				if (Math.abs(J01) > 1e-12) {
+					evec2_x = J01;
+					evec2_y = lam2 - J00;
+				} else if (Math.abs(J10) > 1e-12) {
+					evec2_x = lam2 - J11;
+					evec2_y = J10;
+				}
+				var len2 = Math.sqrt(evec2_x * evec2_x + evec2_y * evec2_y);
+				if (len2 > 1e-12) { evec2_x /= len2; evec2_y /= len2; }
+			}
 
-    // ---- Now render using the same rendering logic as the PCA version ----
-    // Store as a synthetic jfData-like structure so renderJacobianField can use it
-    var syntheticLayerField = {
-        layer: layer,
-        grid_res: gridRes,
-        grid_x_range: [vx0, vx0 + vw],
-        grid_y_range: [vy0, vy0 + vh],
-        grid_data: gridData,
-        token_positions_2d: []
-    };
+			gridData.push({
+				gx: qx, gy: qy,
+				flow_x: flow_x * t, flow_y: flow_y * t,
+				divergence: divergence,
+				curl: curl,
+				shear: shear,
+				det: det,
+				rotation_angle: rotation_angle,
+				condition: condition,
+				eig_mag: [eig_mag_0, eig_mag_1],
+				eig_phase: [eig_phase_0, eig_phase_1],
+				evec1: [evec1_x, evec1_y],
+				evec2: [evec2_x, evec2_y],
+				stretch_dir1: [evec1_x, evec1_y],
+				stretch_dir2: [evec2_x, evec2_y],
+				stretch_mag1: sv1,
+				stretch_mag2: sv2,
+				sv: [sv1, sv2]
+			});
+		}
+	}
 
-    // Compute token 2D positions in this raw dim space
-    for (var ti = 0; ti < nR; ti++) {
-        syntheticLayerField.token_positions_2d.push([fx[ti], fy[ti]]);
-    }
+	// ---- Now render using the same rendering logic as the PCA version ----
+	// Store as a synthetic jfData-like structure so renderJacobianField can use it
+	var syntheticLayerField = {
+		layer: layer,
+		grid_res: gridRes,
+		grid_x_range: [vx0, vx0 + vw],
+		grid_y_range: [vy0, vy0 + vh],
+		grid_data: gridData,
+		token_positions_2d: []
+	};
 
-    // ---- Render to the JF canvas ----
-    var wrap = document.getElementById('jf-canvas-wrap');
-    wrap.style.display = 'block';
-    var cv = document.getElementById('jf-canvas');
-    var ctx = cv.getContext('2d');
-    var W = cv.width, H = cv.height;
-    ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = '#050510';
-    ctx.fillRect(0, 0, W, H);
+	// Compute token 2D positions in this raw dim space
+	for (var ti = 0; ti < nR; ti++) {
+		syntheticLayerField.token_positions_2d.push([fx[ti], fy[ti]]);
+	}
 
-    var margin = 10;
-    var plotW = W - 2 * margin;
-    var plotH = H - 2 * margin;
+	// ---- Render to the JF canvas ----
+	var wrap = document.getElementById('jf-canvas-wrap');
+	wrap.style.display = 'block';
+	var cv = document.getElementById('jf-canvas');
+	var ctx = cv.getContext('2d');
+	var W = cv.width, H = cv.height;
+	ctx.clearRect(0, 0, W, H);
+	ctx.fillStyle = '#050510';
+	ctx.fillRect(0, 0, W, H);
 
-    function SX(wx) { return margin + ((wx - vx0) / vw) * plotW; }
-    function SY(wy) { return margin + ((wy - vy0) / vh) * plotH; }
+	var margin = 10;
+	var plotW = W - 2 * margin;
+	var plotH = H - 2 * margin;
 
-    var cellW = plotW / gridRes;
-    var cellH = plotH / gridRes;
+	function SX(wx) { return margin + ((wx - vx0) / vw) * plotW; }
+	function SY(wy) { return margin + ((wy - vy0) / vh) * plotH; }
 
-    // ---- Compute value range for the selected render mode ----
-    var values = [];
-    for (var i = 0; i < gridData.length; i++) {
-        var gd = gridData[i];
-        var val = 0;
-        if (renderMode === 'divergence') val = gd.divergence;
-        else if (renderMode === 'curl') val = gd.curl;
-        else if (renderMode === 'shear') val = gd.shear;
-        else if (renderMode === 'det') val = gd.det;
-        else if (renderMode === 'rotation') val = gd.rotation_angle;
-        else if (renderMode === 'condition') val = gd.condition;
-        else if (renderMode === 'eigphase') val = gd.eig_phase[0];
-        else if (renderMode === 'flow') val = Math.sqrt(gd.flow_x * gd.flow_x + gd.flow_y * gd.flow_y);
-        else val = gd.divergence;
-        values.push(val);
-    }
+	var cellW = plotW / gridRes;
+	var cellH = plotH / gridRes;
 
-    var vMin = Infinity, vMax = -Infinity;
-    for (var i = 0; i < values.length; i++) {
-        if (isFinite(values[i])) {
-            if (values[i] < vMin) vMin = values[i];
-            if (values[i] > vMax) vMax = values[i];
-        }
-    }
-    if (!isFinite(vMin)) vMin = -1;
-    if (!isFinite(vMax)) vMax = 1;
-    var vRange = vMax - vMin;
-    if (vRange < 1e-12) vRange = 1;
+	// ---- Compute value range for the selected render mode ----
+	var values = [];
+	for (var i = 0; i < gridData.length; i++) {
+		var gd = gridData[i];
+		var val = 0;
+		if (renderMode === 'divergence') val = gd.divergence;
+		else if (renderMode === 'curl') val = gd.curl;
+		else if (renderMode === 'shear') val = gd.shear;
+		else if (renderMode === 'det') val = gd.det;
+		else if (renderMode === 'rotation') val = gd.rotation_angle;
+		else if (renderMode === 'condition') val = gd.condition;
+		else if (renderMode === 'eigphase') val = gd.eig_phase[0];
+		else if (renderMode === 'flow') val = Math.sqrt(gd.flow_x * gd.flow_x + gd.flow_y * gd.flow_y);
+		else val = gd.divergence;
+		values.push(val);
+	}
 
-    // Is this a diverging quantity (centered at 0)?
-    var isDiverging = (renderMode === 'divergence' || renderMode === 'curl' ||
-                       renderMode === 'det' || renderMode === 'rotation' || renderMode === 'eigphase');
+	var vMin = Infinity, vMax = -Infinity;
+	for (var i = 0; i < values.length; i++) {
+		if (isFinite(values[i])) {
+			if (values[i] < vMin) vMin = values[i];
+			if (values[i] > vMax) vMax = values[i];
+		}
+	}
+	if (!isFinite(vMin)) vMin = -1;
+	if (!isFinite(vMax)) vMax = 1;
+	var vRange = vMax - vMin;
+	if (vRange < 1e-12) vRange = 1;
 
-    if (isDiverging) {
-        var absMax = Math.max(Math.abs(vMin), Math.abs(vMax), 1e-12);
-        vMin = -absMax;
-        vMax = absMax;
-        vRange = 2 * absMax;
-    }
+	// Is this a diverging quantity (centered at 0)?
+	var isDiverging = (renderMode === 'divergence' || renderMode === 'curl' ||
+		renderMode === 'det' || renderMode === 'rotation' || renderMode === 'eigphase');
 
-    // ---- Render cells ----
-    for (var i = 0; i < gridData.length; i++) {
-        var gd = gridData[i];
-        var gx_idx = i % gridRes;
-        var gy_idx = Math.floor(i / gridRes);
+	if (isDiverging) {
+		var absMax = Math.max(Math.abs(vMin), Math.abs(vMax), 1e-12);
+		vMin = -absMax;
+		vMax = absMax;
+		vRange = 2 * absMax;
+	}
 
-        var val = values[i];
-        var norm = (val - vMin) / vRange; // 0..1
-        norm = Math.max(0, Math.min(1, norm));
+	// ---- Render cells ----
+	for (var i = 0; i < gridData.length; i++) {
+		var gd = gridData[i];
+		var gx_idx = i % gridRes;
+		var gy_idx = Math.floor(i / gridRes);
 
-        var rgb;
-        if (isDiverging) {
-            // Blue -> Black -> Red
-            if (norm < 0.5) {
-                var intensity = (0.5 - norm) * 2;
-                rgb = [Math.floor(intensity * 40), Math.floor(intensity * 100), Math.floor(intensity * 230)];
-            } else {
-                var intensity = (norm - 0.5) * 2;
-                rgb = [Math.floor(intensity * 240), Math.floor(intensity * 60), Math.floor(intensity * 40)];
-            }
-        } else {
-            // Viridis-like for non-diverging
-            rgb = curvatureViridis(norm);
-        }
+		var val = values[i];
+		var norm = (val - vMin) / vRange; // 0..1
+		norm = Math.max(0, Math.min(1, norm));
 
-        var cx = margin + (gx_idx + 0.5) * cellW;
-        var cy = margin + (gy_idx + 0.5) * cellH;
+		var rgb;
+		if (isDiverging) {
+			// Blue -> Black -> Red
+			if (norm < 0.5) {
+				var intensity = (0.5 - norm) * 2;
+				rgb = [Math.floor(intensity * 40), Math.floor(intensity * 100), Math.floor(intensity * 230)];
+			} else {
+				var intensity = (norm - 0.5) * 2;
+				rgb = [Math.floor(intensity * 240), Math.floor(intensity * 60), Math.floor(intensity * 40)];
+			}
+		} else {
+			// Viridis-like for non-diverging
+			rgb = curvatureViridis(norm);
+		}
 
-        ctx.fillStyle = 'rgb(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ')';
-        ctx.fillRect(margin + gx_idx * cellW, margin + gy_idx * cellH, cellW + 0.5, cellH + 0.5);
+		var cx = margin + (gx_idx + 0.5) * cellW;
+		var cy = margin + (gy_idx + 0.5) * cellH;
 
-        // ---- Eigenvector directions ----
-        if (showEigvecs && cellW > 6) {
-            var evLen = Math.min(cellW, cellH) * 0.35;
-            ctx.strokeStyle = 'rgba(255,255,100,0.4)';
-            ctx.lineWidth = 0.8;
-            ctx.beginPath();
-            ctx.moveTo(cx - gd.evec1[0] * evLen, cy - gd.evec1[1] * evLen);
-            ctx.lineTo(cx + gd.evec1[0] * evLen, cy + gd.evec1[1] * evLen);
-            ctx.stroke();
+		ctx.fillStyle = 'rgb(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ')';
+		ctx.fillRect(margin + gx_idx * cellW, margin + gy_idx * cellH, cellW + 0.5, cellH + 0.5);
 
-            ctx.strokeStyle = 'rgba(255,100,255,0.4)';
-            ctx.beginPath();
-            ctx.moveTo(cx - gd.evec2[0] * evLen, cy - gd.evec2[1] * evLen);
-            ctx.lineTo(cx + gd.evec2[0] * evLen, cy + gd.evec2[1] * evLen);
-            ctx.stroke();
-        }
+		// ---- Eigenvector directions ----
+		if (showEigvecs && cellW > 6) {
+			var evLen = Math.min(cellW, cellH) * 0.35;
+			ctx.strokeStyle = 'rgba(255,255,100,0.4)';
+			ctx.lineWidth = 0.8;
+			ctx.beginPath();
+			ctx.moveTo(cx - gd.evec1[0] * evLen, cy - gd.evec1[1] * evLen);
+			ctx.lineTo(cx + gd.evec1[0] * evLen, cy + gd.evec1[1] * evLen);
+			ctx.stroke();
 
-        // ---- Stretch ellipses ----
-        if (showEllipses && cellW > 8) {
-            var maxSV = Math.max(gd.stretch_mag1, gd.stretch_mag2, 1e-12);
-            var eRx = (gd.stretch_mag1 / maxSV) * cellW * 0.3;
-            var eRy = (gd.stretch_mag2 / maxSV) * cellH * 0.3;
-            var angle = Math.atan2(gd.stretch_dir1[1], gd.stretch_dir1[0]);
+			ctx.strokeStyle = 'rgba(255,100,255,0.4)';
+			ctx.beginPath();
+			ctx.moveTo(cx - gd.evec2[0] * evLen, cy - gd.evec2[1] * evLen);
+			ctx.lineTo(cx + gd.evec2[0] * evLen, cy + gd.evec2[1] * evLen);
+			ctx.stroke();
+		}
 
-            ctx.save();
-            ctx.translate(cx, cy);
-            ctx.rotate(angle);
-            ctx.strokeStyle = 'rgba(255,255,255,0.2)';
-            ctx.lineWidth = 0.6;
-            ctx.beginPath();
-            ctx.ellipse(0, 0, Math.max(1, eRx), Math.max(1, eRy), 0, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.restore();
-        }
+		// ---- Stretch ellipses ----
+		if (showEllipses && cellW > 8) {
+			var maxSV = Math.max(gd.stretch_mag1, gd.stretch_mag2, 1e-12);
+			var eRx = (gd.stretch_mag1 / maxSV) * cellW * 0.3;
+			var eRy = (gd.stretch_mag2 / maxSV) * cellH * 0.3;
+			var angle = Math.atan2(gd.stretch_dir1[1], gd.stretch_dir1[0]);
 
-        // ---- Flow arrows ----
-        if (renderMode === 'flow' || renderMode === 'composite') {
-            var arrowLen = Math.sqrt(gd.flow_x * gd.flow_x + gd.flow_y * gd.flow_y);
-            if (arrowLen > 0.01) {
-                var maxArrow = Math.min(cellW, cellH) * 0.8;
-                var scale = Math.min(1, maxArrow / arrowLen);
-                var ax = gd.flow_x * scale * (plotW / vw);
-                var ay = gd.flow_y * scale * (plotH / vh);
-                var aLen = Math.sqrt(ax * ax + ay * ay);
-                if (aLen > 1.5) {
-                    ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-                    ctx.fillStyle = 'rgba(255,255,255,0.5)';
-                    ctx.lineWidth = 0.8;
-                    ctx.beginPath();
-                    ctx.moveTo(cx, cy);
-                    ctx.lineTo(cx + ax, cy + ay);
-                    ctx.stroke();
-                    // Arrowhead
-                    var aa = Math.atan2(ay, ax);
-                    var hl = Math.min(4, aLen * 0.3);
-                    ctx.beginPath();
-                    ctx.moveTo(cx + ax, cy + ay);
-                    ctx.lineTo(cx + ax - hl * Math.cos(aa - 0.4), cy + ay - hl * Math.sin(aa - 0.4));
-                    ctx.lineTo(cx + ax - hl * Math.cos(aa + 0.4), cy + ay - hl * Math.sin(aa + 0.4));
-                    ctx.closePath();
-                    ctx.fill();
-                }
-            }
-        }
-    }
+			ctx.save();
+			ctx.translate(cx, cy);
+			ctx.rotate(angle);
+			ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+			ctx.lineWidth = 0.6;
+			ctx.beginPath();
+			ctx.ellipse(0, 0, Math.max(1, eRx), Math.max(1, eRy), 0, 0, Math.PI * 2);
+			ctx.stroke();
+			ctx.restore();
+		}
 
-    // ---- Ghost token positions ----
-    if (showGhostTokens) {
-        var tc = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71',
-                  '#e74c3c','#3498db','#9b59b6','#1abc9c','#e67e22'];
-        for (var ti = 0; ti < nR; ti++) {
-            var tsx = SX(fx[ti]);
-            var tsy = SY(fy[ti]);
-            ctx.beginPath();
-            ctx.arc(tsx, tsy, 3, 0, Math.PI * 2);
-            ctx.fillStyle = tc[ti % tc.length];
-            ctx.globalAlpha = 0.4;
-            ctx.fill();
-            ctx.globalAlpha = 1.0;
+		// ---- Flow arrows ----
+		if (renderMode === 'flow' || renderMode === 'composite') {
+			var arrowLen = Math.sqrt(gd.flow_x * gd.flow_x + gd.flow_y * gd.flow_y);
+			if (arrowLen > 0.01) {
+				var maxArrow = Math.min(cellW, cellH) * 0.8;
+				var scale = Math.min(1, maxArrow / arrowLen);
+				var ax = gd.flow_x * scale * (plotW / vw);
+				var ay = gd.flow_y * scale * (plotH / vh);
+				var aLen = Math.sqrt(ax * ax + ay * ay);
+				if (aLen > 1.5) {
+					ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+					ctx.fillStyle = 'rgba(255,255,255,0.5)';
+					ctx.lineWidth = 0.8;
+					ctx.beginPath();
+					ctx.moveTo(cx, cy);
+					ctx.lineTo(cx + ax, cy + ay);
+					ctx.stroke();
+					// Arrowhead
+					var aa = Math.atan2(ay, ax);
+					var hl = Math.min(4, aLen * 0.3);
+					ctx.beginPath();
+					ctx.moveTo(cx + ax, cy + ay);
+					ctx.lineTo(cx + ax - hl * Math.cos(aa - 0.4), cy + ay - hl * Math.sin(aa - 0.4));
+					ctx.lineTo(cx + ax - hl * Math.cos(aa + 0.4), cy + ay - hl * Math.sin(aa + 0.4));
+					ctx.closePath();
+					ctx.fill();
+				}
+			}
+		}
+	}
 
-            if (gridRes <= 30) {
-                ctx.font = '8px monospace';
-                ctx.fillStyle = 'rgba(255,255,255,0.3)';
-                ctx.textAlign = 'left';
-                ctx.fillText(D.tokens[ti], tsx + 5, tsy - 3);
-            }
-        }
-    }
+	// ---- Ghost token positions ----
+	if (showGhostTokens) {
+		var tc = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71',
+			'#e74c3c','#3498db','#9b59b6','#1abc9c','#e67e22'];
+		for (var ti = 0; ti < nR; ti++) {
+			var tsx = SX(fx[ti]);
+			var tsy = SY(fy[ti]);
+			ctx.beginPath();
+			ctx.arc(tsx, tsy, 3, 0, Math.PI * 2);
+			ctx.fillStyle = tc[ti % tc.length];
+			ctx.globalAlpha = 0.4;
+			ctx.fill();
+			ctx.globalAlpha = 1.0;
 
-    // ---- Legend ----
-    var titles = {
-        'divergence': 'Divergence', 'curl': 'Curl', 'shear': 'Shear',
-        'det': 'Determinant', 'rotation': 'Rotation', 'condition': 'Condition #',
-        'eigphase': 'Eigenvalue Phase', 'stretch': 'Principal Stretch',
-        'flow': 'Flow Field', 'composite': 'Composite'
-    };
-    document.getElementById('jf-legend-title').textContent =
-        (titles[renderMode] || renderMode) + ' | Dims ' + dimX + ',' + dimY + ' | L' + layer;
-    document.getElementById('jf-legend-min').textContent = vMin.toFixed(3);
-    document.getElementById('jf-legend-max').textContent = vMax.toFixed(3);
+			if (gridRes <= 30) {
+				ctx.font = '8px monospace';
+				ctx.fillStyle = 'rgba(255,255,255,0.3)';
+				ctx.textAlign = 'left';
+				ctx.fillText(D.tokens[ti], tsx + 5, tsy - 3);
+			}
+		}
+	}
 
-    // ---- Status ----
-    document.getElementById('jf-status').textContent =
-        'Raw dims ' + dimX + '×' + dimY + ' | Layer ' + layer +
-        ' | ' + gridRes + '² grid | Mode: ' + renderMode +
-        ' | Decomp: ' + decomp + ' | ITP: ' + itpMethod;
+	// ---- Legend ----
+	var titles = {
+		'divergence': 'Divergence', 'curl': 'Curl', 'shear': 'Shear',
+		'det': 'Determinant', 'rotation': 'Rotation', 'condition': 'Condition #',
+		'eigphase': 'Eigenvalue Phase', 'stretch': 'Principal Stretch',
+		'flow': 'Flow Field', 'composite': 'Composite'
+	};
+	document.getElementById('jf-legend-title').textContent =
+		(titles[renderMode] || renderMode) + ' | Dims ' + dimX + ',' + dimY + ' | L' + layer;
+	document.getElementById('jf-legend-min').textContent = vMin.toFixed(3);
+	document.getElementById('jf-legend-max').textContent = vMax.toFixed(3);
+
+	// ---- Status ----
+	document.getElementById('jf-status').textContent =
+		'Raw dims ' + dimX + '×' + dimY + ' | Layer ' + layer +
+		' | ' + gridRes + '² grid | Mode: ' + renderMode +
+		' | Decomp: ' + decomp + ' | ITP: ' + itpMethod;
 }
 
 document.addEventListener('DOMContentLoaded', function() {
@@ -12908,3 +12913,16 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 })();
+
+// Add explicit listeners for the dimension selectors
+['sl-dx', 'sl-dy'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) {
+        el.addEventListener('change', function() {
+            var rawCb = document.getElementById('jf-raw-dims');
+            if (rawCb && rawCb.checked && D) {
+                renderJacobianFieldRawDims();
+            }
+        });
+    }
+});
