@@ -33,8 +33,7 @@ import matplotlib.colors as mcolors
 _SAE_RELEASE_ID = None
 _SAE_N_LAYERS = 0
 _SAE_LOAD_ATTEMPTED = set()  # track layers we already tried to load
-
-
+default_k = 1
 
 def visualize_curvature_landscape(curvature_data, tokens, save_path=None):
     """
@@ -1272,7 +1271,7 @@ def find_k_neighbors(self_idx, query_vec, all_embeddings, all_labels, all_is_rea
 # 7c. PREDICTED TOKEN EMBEDDING & DELTA EXTRACTION
 # ============================================================
 
-def embed_predicted_tokens(tokenizer, model, lm_model, input_ids, model_config, k=20):
+def embed_predicted_tokens(tokenizer, model, lm_model, input_ids, model_config, k=default_k):
     """
     Predict the top-k next tokens, then for each one:
       1. Append it to the input sequence
@@ -2136,7 +2135,7 @@ def process_text(text, model_name=None, itp_method='rbf'):
     print("[Model] Embedding predicted next tokens...")
     pred_layer0, pred_deltas, pred_labels, pred_probs, pred_token_ids = \
         embed_predicted_tokens(
-            TOKENIZER, MODEL, LM_MODEL, real_ids, MODEL_CONFIG, k=20
+            TOKENIZER, MODEL, LM_MODEL, real_ids, MODEL_CONFIG, k=default_k
         )
 
     n_predicted = len(pred_layer0)
