@@ -2847,6 +2847,111 @@ The capital of Germany is Berlin</textarea>
     </div>
   </div>
 </details>
+<!-- ═══════════════════════════════════════════════ -->
+<!-- SECTION: PURE MORPHING ANALYSIS                 -->
+<!-- ═══════════════════════════════════════════════ -->
+<details>
+  <summary style="color:#fd79a8;font-size:12px;font-weight:bold;cursor:pointer;padding:4px 0;border-bottom:1px solid #0f3460">🌊 Pure Morphing (Transformation Space)</summary>
+
+  <div id="morphing-panel" style="margin-top:6px">
+    <div style="color:#888;font-size:9px;margin-bottom:6px;line-height:1.4">
+      Extract and visualize the <b>morphings themselves</b> — the diffeomorphisms, Jacobians,
+      eigenvalue flows, and connection forms — stripped of the data they act on.
+    </div>
+
+    <!-- Controls -->
+    <div class="cr"><label>PCA dims:</label>
+      <input type="range" id="morph-pca-d" min="4" max="64" value="16" step="2">
+      <span class="v" id="v-morph-pca-d">16</span>
+    </div>
+    <div class="cr"><label>K neighbors:</label>
+      <input type="range" id="morph-k" min="3" max="20" value="8" step="1">
+      <span class="v" id="v-morph-k">8</span>
+    </div>
+
+    <div style="display:flex;gap:4px;margin:6px 0;flex-wrap:wrap">
+      <button id="btn-morphing" onclick="runMorphingAnalysis()"
+        style="background:#fd79a8;color:#fff;border:none;padding:5px 10px;border-radius:4px;cursor:pointer;font-size:10px;font-weight:bold">
+        Extract Morphings
+      </button>
+      <button onclick="toggleMorphingOverlay()"
+        style="background:#0f3460;color:#a0a0c0;border:1px solid #0f3460;padding:5px 8px;border-radius:4px;cursor:pointer;font-size:10px">
+        Toggle Overlay
+      </button>
+    </div>
+
+    <div id="morphing-status" style="font-size:9px;color:#888;margin-bottom:4px"></div>
+
+    <!-- Sub-view selector -->
+    <div id="morphing-views" style="display:none">
+      <div style="display:flex;gap:2px;margin-bottom:6px;flex-wrap:wrap">
+        <button class="morph-tab active" data-tab="eigenflow" onclick="setMorphTab('eigenflow')"
+          style="flex:1;padding:4px 6px;border:1px solid #0f3460;background:#fd79a8;color:#fff;cursor:pointer;font-size:9px;border-radius:3px;min-width:60px">
+          Eigenflow
+        </button>
+        <button class="morph-tab" data-tab="jacobian" onclick="setMorphTab('jacobian')"
+          style="flex:1;padding:4px 6px;border:1px solid #0f3460;background:#1a1a2e;color:#a0a0c0;cursor:pointer;font-size:9px;border-radius:3px;min-width:60px">
+          Jacobian
+        </button>
+        <button class="morph-tab" data-tab="holonomy" onclick="setMorphTab('holonomy')"
+          style="flex:1;padding:4px 6px;border:1px solid #0f3460;background:#1a1a2e;color:#a0a0c0;cursor:pointer;font-size:9px;border-radius:3px;min-width:60px">
+          Holonomy
+        </button>
+        <button class="morph-tab" data-tab="connection" onclick="setMorphTab('connection')"
+          style="flex:1;padding:4px 6px;border:1px solid #0f3460;background:#1a1a2e;color:#a0a0c0;cursor:pointer;font-size:9px;border-radius:3px;min-width:60px">
+          Connection
+        </button>
+        <button class="morph-tab" data-tab="svwaterfall" onclick="setMorphTab('svwaterfall')"
+          style="flex:1;padding:4px 6px;border:1px solid #0f3460;background:#1a1a2e;color:#a0a0c0;cursor:pointer;font-size:9px;border-radius:3px;min-width:60px">
+          SV Waterfall
+        </button>
+      </div>
+
+      <!-- Animation controls -->
+      <div class="cr"><label>Anim speed:</label>
+        <input type="range" id="morph-speed" min="0.1" max="5.0" value="1.0" step="0.1">
+        <span class="v" id="v-morph-speed">1.0</span>
+      </div>
+      <div class="cb">
+        <input type="checkbox" id="morph-animate" checked>
+        <label for="morph-animate">Animate eigenvalue flow</label>
+      </div>
+      <div class="cb">
+        <input type="checkbox" id="morph-show-labels">
+        <label for="morph-show-labels">Show token labels on trajectories</label>
+      </div>
+      <div class="cb">
+        <input type="checkbox" id="morph-log-scale">
+        <label for="morph-log-scale">Log scale magnitudes</label>
+      </div>
+
+      <!-- Canvas for morphing visualization -->
+      <div style="margin-top:6px">
+        <div id="morph-canvas-title" style="color:#fd79a8;font-size:10px;font-weight:bold;margin-bottom:2px">
+          Eigenvalue Flow
+        </div>
+        <canvas id="morph-canvas" width="340" height="240"
+          style="border:1px solid #0f3460;border-radius:4px;width:100%;cursor:crosshair"></canvas>
+      </div>
+
+      <!-- Jacobian decomposition summary -->
+      <div id="morph-jacobian-summary" style="display:none;margin-top:6px;font-size:9px;max-height:200px;overflow-y:auto">
+      </div>
+
+      <!-- Holonomy results -->
+      <div id="morph-holonomy-results" style="display:none;margin-top:6px;font-size:9px;max-height:200px;overflow-y:auto">
+      </div>
+
+      <!-- Connection 1-form display -->
+      <div id="morph-connection-display" style="display:none;margin-top:6px;font-size:9px;max-height:200px;overflow-y:auto">
+      </div>
+
+      <!-- Eigenvalue trajectory list -->
+      <div id="morph-eigen-list" style="margin-top:6px;font-size:9px;max-height:160px;overflow-y:auto">
+      </div>
+    </div>
+  </div>
+</details>
 </div>
 
 <div id="main">
@@ -3100,6 +3205,7 @@ class Handler(BaseHTTPRequestHandler):
             "/sae_info": handle_sae_info,
             "/neuron_grid": handle_neuron_grid,  # <-- ADD THIS
             "/curvature": handle_curvature_analysis,  # <-- NEW
+            "/morphing_analysis": handle_morphing_analysis,
             "/tda": handle_tda,
         }
 
@@ -4944,15 +5050,15 @@ def compute_persistence_entropy(diagrams_by_dim, max_dim):
             lifetime = d - b
             if lifetime > 1e-12:
                 lifetimes.append(lifetime)
-    
+
     if len(lifetimes) == 0:
         return 0.0
-    
+
     lifetimes = np.array(lifetimes)
     total = lifetimes.sum()
     if total < 1e-12:
         return 0.0
-    
+
     probs = lifetimes / total
     # Shannon entropy
     entropy = -np.sum(probs * np.log(probs + 1e-30))
@@ -4963,20 +5069,20 @@ def compute_wasserstein_matrix(persistence_diagrams, max_dim):
     """
     Compute pairwise Wasserstein distances between persistence diagrams
     at different layers.
-    
+
     Returns:
         matrix: list of lists (n_layers x n_layers) of float distances
     """
     n_layers = len(persistence_diagrams)
     matrix = [[0.0] * n_layers for _ in range(n_layers)]
-    
+
     for i in range(n_layers):
         for j in range(i + 1, n_layers):
             total_dist = 0.0
             for dim in range(max_dim + 1):
                 pairs_i = persistence_diagrams[i].get(dim, [])
                 pairs_j = persistence_diagrams[j].get(dim, [])
-                
+
                 # Extract finite-persistence lifetimes for Wasserstein comparison
                 lifetimes_i = []
                 lifetimes_j = []
@@ -4988,7 +5094,7 @@ def compute_wasserstein_matrix(persistence_diagrams, max_dim):
                     lt = p[1] - p[0] if p[1] != float('inf') else 0.0
                     if lt > 1e-12:
                         lifetimes_j.append(lt)
-                
+
                 if len(lifetimes_i) > 0 and len(lifetimes_j) > 0:
                     try:
                         dist = wasserstein_distance(lifetimes_i, lifetimes_j)
@@ -4998,10 +5104,10 @@ def compute_wasserstein_matrix(persistence_diagrams, max_dim):
                 elif len(lifetimes_i) > 0 or len(lifetimes_j) > 0:
                     # One is empty — distance is the total persistence of the other
                     total_dist += sum(lifetimes_i) + sum(lifetimes_j)
-            
+
             matrix[i][j] = round(total_dist, 6)
             matrix[j][i] = round(total_dist, 6)
-    
+
     return matrix
 
 
@@ -5011,17 +5117,17 @@ def detect_topological_events(persistence_diagrams, layer_summaries, max_dim):
     - Birth of new persistent features
     - Death of features
     - Peaks in persistence
-    
+
     Returns:
         list of event dicts
     """
     events = []
     n_layers = len(layer_summaries)
-    
+
     for li in range(1, n_layers):
         prev = layer_summaries[li - 1]
         curr = layer_summaries[li]
-        
+
         # Detect changes in Betti numbers
         for dim, (betti_key, dim_label) in enumerate([
             ('betti_0', 'H₀ (components)'),
@@ -5030,10 +5136,10 @@ def detect_topological_events(persistence_diagrams, layer_summaries, max_dim):
         ]):
             if dim > max_dim:
                 break
-            
+
             prev_b = prev.get(betti_key, 0)
             curr_b = curr.get(betti_key, 0)
-            
+
             if curr_b > prev_b:
                 events.append({
                     'layer': li,
@@ -5048,7 +5154,7 @@ def detect_topological_events(persistence_diagrams, layer_summaries, max_dim):
                     'dim': dim,
                     'description': f'{dim_label}: β decreased from {prev_b} to {curr_b}'
                 })
-        
+
         # Detect entropy peaks
         if li >= 2:
             prev_prev = layer_summaries[li - 2]
@@ -5061,54 +5167,54 @@ def detect_topological_events(persistence_diagrams, layer_summaries, max_dim):
                     'dim': -1,
                     'description': f'Persistence entropy peak: {curr["entropy"]:.4f}'
                 })
-    
+
     # Sort by layer
     events.sort(key=lambda e: (e['layer'], e['dim']))
-    
+
     return events
 
 
 def generate_tda_summary(layer_summaries, events, max_dim):
     """Generate a human-readable summary of the TDA analysis."""
     n_layers = len(layer_summaries)
-    
+
     # Find layer with most topological complexity
     max_features_layer = max(range(n_layers), key=lambda i: layer_summaries[i]['n_features'])
     max_entropy_layer = max(range(n_layers), key=lambda i: layer_summaries[i]['entropy'])
-    
+
     # Find layer with most loops
     max_loops_layer = max(range(n_layers), key=lambda i: layer_summaries[i]['betti_1'])
-    
+
     summary_parts = []
-    
+
     summary_parts.append(
         f"Analyzed {n_layers} layers (embedding + {n_layers - 1} transformer layers)."
     )
-    
+
     mf = layer_summaries[max_features_layer]
     summary_parts.append(
         f"Most topologically complex: {mf['name']} "
         f"({mf['n_features']} features, β₀={mf['betti_0']}, β₁={mf['betti_1']})."
     )
-    
+
     me = layer_summaries[max_entropy_layer]
     summary_parts.append(
         f"Highest persistence entropy: {me['name']} ({me['entropy']:.4f})."
     )
-    
+
     ml = layer_summaries[max_loops_layer]
     if ml['betti_1'] > 0:
         summary_parts.append(
             f"Most 1-cycles (loops): {ml['name']} (β₁={ml['betti_1']})."
         )
-    
+
     n_births = sum(1 for e in events if e['type'] == 'birth')
     n_deaths = sum(1 for e in events if e['type'] == 'death')
     if n_births > 0 or n_deaths > 0:
         summary_parts.append(
             f"Topological events: {n_births} births, {n_deaths} deaths across layers."
         )
-    
+
     return " ".join(summary_parts)
 
 
@@ -5122,17 +5228,17 @@ def handle_tda(body_bytes):
     pca_dims = req.get("pca_dims", 16)
     max_edge = req.get("max_edge", 10.0)
     collapse_eps = req.get("collapse_eps", 0.0)
-    
+
     if not text:
         return json.dumps({"error": "Empty text"}).encode()
-    
+
     # Tokenize and extract hidden states
     input_ids, tokens = tokenize_text(TOKENIZER, text)
     hs = extract_hidden_states(MODEL, input_ids)
-    
+
     print(f"[TDA] Computing persistent homology for '{text[:50]}...' "
           f"(max_dim={max_dim}, pca_dims={pca_dims}, max_edge={max_edge})")
-    
+
     try:
         result = compute_persistent_homology(
             hs,
@@ -5146,7 +5252,7 @@ def handle_tda(body_bytes):
     except Exception as e:
         traceback.print_exc()
         return json.dumps({"error": f"TDA computation failed: {e}"}).encode()
-    
+
     # Convert persistence diagrams: replace Python inf with a large number for JSON
     json_diagrams = []
     for layer_diags in result['persistence_diagrams']:
@@ -5159,11 +5265,267 @@ def handle_tda(body_bytes):
                 json_pairs.append([round(b, 8), round(d, 8)])
             json_layer[dim_key] = json_pairs
         json_diagrams.append(json_layer)
-    
+
     result['persistence_diagrams'] = json_diagrams
-    
+
     return json.dumps(result, cls=SafeFloatEncoder).encode()
 
+def extract_pure_jacobian_field(hidden_states, n_layers, pca_d=16):
+    """
+    Extract the layer-to-layer Jacobian field as a standalone object.
+    Returns the transformation itself, not the data it acts on.
+    """
+    results = []
+    for lay in range(n_layers):
+        h_cloud = hidden_states[lay][0].cpu().float().numpy()
+        h_next = hidden_states[lay + 1][0].cpu().float().numpy()
+
+        # The Jacobian IS the morphing
+        K, principal_dirs = _compute_principal_directions(h_cloud, h_cloud.shape[0], h_cloud.shape[1])
+        J = _estimate_jacobian_from_cloud(hidden_states, lay, h_cloud.shape[0], h_cloud.shape[1], K, principal_dirs, h_cloud)
+
+        # Decompose into pure geometric operations
+        eigenvalues, eigenvectors = np.linalg.eig(J)
+        J_sym = (J + J.T) / 2      # pure stretch
+        J_antisym = (J - J.T) / 2   # pure rotation
+
+        results.append({
+            'jacobian': J,
+            'stretch': J_sym,
+            'rotation': J_antisym,
+            'eigenvalues': eigenvalues,
+            'eigenvectors': eigenvectors,
+            'divergence': float(np.real(np.trace(J))),
+            'curl_magnitude': float(np.linalg.norm(J_antisym, 'fro')),
+            'det': float(np.real(np.linalg.det(J))),
+        })
+    return results
+
+def compute_holonomy_loop(procrustes_rotations, token_i, token_j, layer_start, layer_end):
+    """
+    Transport a frame: token_i@layer_start -> token_i@layer_end ->
+    token_j@layer_end -> token_j@layer_start -> token_i@layer_start
+
+    The residual rotation IS the curvature, with no data attached.
+    """
+    R_total = np.eye(d)
+    # Up through layers at token i
+    for l in range(layer_start, layer_end):
+        R_total = procrustes_rotations[l][token_i] @ R_total
+    # Across tokens at top layer (would need token-to-token transport)
+    # Down through layers at token j
+    for l in range(layer_end - 1, layer_start - 1, -1):
+        R_total = procrustes_rotations[l][token_j].T @ R_total
+
+    # R_total should be identity if space is flat
+    # The deviation IS the curvature
+    holonomy_angle = np.arccos(np.clip((np.trace(R_total) - 1) / 2, -1, 1))
+    return R_total, holonomy_angle
+
+def extract_eigenvalue_flow(hidden_states, n_layers):
+    """
+    Track how the eigenvalue spectrum of the layer map evolves.
+    This IS the morphing, viewed as a flow through 'transformation space'.
+    """
+    flow = []
+    for lay in range(n_layers):
+        h = hidden_states[lay][0].cpu().float().numpy()
+        h_next = hidden_states[lay + 1][0].cpu().float().numpy()
+
+        # Compute the map's spectrum
+        K, dirs = _compute_principal_directions(h, h.shape[0], h.shape[1])
+        J = _estimate_jacobian_from_cloud(hidden_states, lay, h.shape[0], h.shape[1], K, dirs, h)
+
+        eigs = np.linalg.eigvals(J)
+        sv = np.linalg.svd(J, compute_uv=False)
+
+        flow.append({
+            'layer': lay,
+            'eigenvalue_magnitudes': np.abs(eigs).tolist(),
+            'eigenvalue_phases': np.angle(eigs).tolist(),
+            'singular_values': sv.tolist(),
+            'log_det': float(np.sum(np.log(np.abs(eigs) + 1e-30))),
+            'spectral_gap': float(sv[0] / max(sv[-1], 1e-12)),
+        })
+    return flow
+
+def extract_connection_field(hidden_states, k_neighbors=8, pca_d=16):
+    """
+    Extract the connection 1-form of the fiber bundle.
+    This is the 'rule for parallel transport' — pure geometry,
+    no matter content.
+    """
+    # ... (uses your existing Procrustes alignment code)
+    # But instead of measuring deviation from identity,
+    # store the FULL rotation matrices as the connection
+
+    # The connection A_μ at layer l, token i is:
+    # A[l][i] = log(R[l][i])  (matrix logarithm of Procrustes rotation)
+    # This is a Lie-algebra-valued 1-form — the morphing itself
+
+    from scipy.linalg import logm
+    connections = []
+    for lay in range(n_layers):
+        layer_conn = []
+        for i in range(seq_len):
+            R = procrustes_rotations[lay][i]
+            # Matrix log gives the infinitesimal generator
+            A = logm(R)  # This IS the connection, the morphing rule
+            layer_conn.append(A.real)
+        connections.append(layer_conn)
+    return connections
+
+# Add to handler_map in Handler.do_POST:
+#   "/morphing_analysis": handle_morphing_analysis,
+
+def handle_morphing_analysis(body_bytes):
+    """
+    Extract pure morphing data: Jacobian field, eigenvalue flow,
+    holonomy loops, and connection 1-form.
+    """
+    req = json.loads(body_bytes)
+    text = req.get("text", "").strip()
+    pca_d = req.get("pca_d", 16)
+    k_neighbors = req.get("k_neighbors", 8)
+
+    if not text:
+        return json.dumps({"error": "Empty text"}).encode()
+
+    input_ids, tokens = tokenize_text(TOKENIZER, text)
+    hs = extract_hidden_states(MODEL, input_ids)
+
+    n_layers = get_n_layers(MODEL_CONFIG)
+    hidden_dim = get_hidden_dim(MODEL_CONFIG)
+    seq_len = input_ids.shape[1]
+
+    print(f"[Morphing] Extracting pure morphings for {seq_len} tokens × {n_layers} layers...")
+
+    # 1. Eigenvalue flow
+    eigenvalue_flow = extract_eigenvalue_flow(hs, n_layers)
+
+    # 2. Jacobian field decomposition
+    jacobian_field_raw = extract_pure_jacobian_field(hs, n_layers, pca_d=pca_d)
+    jacobian_field = []
+    for jf in jacobian_field_raw:
+        jacobian_field.append({
+            'stretch': jf['stretch'].tolist(),
+            'rotation': jf['rotation'].tolist(),
+            'eigenvalue_magnitudes': np.abs(jf['eigenvalues']).tolist(),
+            'eigenvalue_phases': np.angle(jf['eigenvalues']).tolist(),
+            'divergence': jf['divergence'],
+            'curl_magnitude': jf['curl_magnitude'],
+            'det': jf['det'],
+        })
+
+    # 3. Holonomy loops (approximate from Procrustes deviations)
+    curvature_data = estimate_fiber_curvature(hs, k_neighbors=k_neighbors, pca_d=pca_d)
+    proc_dev = curvature_data['procrustes_deviation']  # (n_layers, seq_len)
+
+    holonomy_loops = []
+    max_pairs = min(seq_len, 8)
+    for ti in range(max_pairs):
+        for tj in range(ti + 1, max_pairs):
+            total_dev = 0.0
+            for lay in range(n_layers):
+                total_dev += proc_dev[lay, ti] + proc_dev[lay, tj]
+            holonomy_angle = float(np.arctan(total_dev / max(n_layers * 2, 1)))
+            holonomy_loops.append({
+                'token_i': int(ti),
+                'token_j': int(tj),
+                'token_i_str': tokens[ti],
+                'token_j_str': tokens[tj],
+                'layer_start': 0,
+                'layer_end': n_layers,
+                'holonomy_angle': round(holonomy_angle, 6),
+                'frobenius_deviation': round(float(total_dev), 6),
+            })
+    holonomy_loops.sort(key=lambda x: -x['holonomy_angle'])
+
+    # 4. Connection 1-form (approximate via Procrustes rotation matrices)
+    # We use the Procrustes deviation as a proxy for ||log(R)||
+    # and build per-token per-layer connection matrices from the curvature data
+    connection_field = []
+    d = min(pca_d, hidden_dim, seq_len - 1)
+
+    # Re-extract Procrustes rotations for the connection field
+    H = np.stack([
+        hs[lay][0].cpu().float().numpy() for lay in range(n_layers + 1)
+    ], axis=0)
+
+    k = min(k_neighbors, seq_len - 1)
+
+    for lay in range(n_layers):
+        layer_conn = []
+        dists_l = cdist(H[lay], H[lay], metric='euclidean')
+        dists_l1 = cdist(H[lay + 1], H[lay + 1], metric='euclidean')
+
+        for i in range(seq_len):
+            nb_l = np.argsort(dists_l[i])[1:k + 1]
+            nb_l1 = np.argsort(dists_l1[i])[1:k + 1]
+            common_nb = np.intersect1d(nb_l, nb_l1)
+            if len(common_nb) < d:
+                common_nb = nb_l[:max(d, len(common_nb))]
+
+            if len(common_nb) < 2:
+                # Identity connection (zero Lie algebra element)
+                A = np.zeros((d, d))
+                layer_conn.append(A.tolist())
+                continue
+
+            cloud_l = H[lay][common_nb] - H[lay][i]
+            cloud_l1 = H[lay + 1][common_nb] - H[lay + 1][i]
+
+            def get_tangent_basis(cloud, dim):
+                if cloud.shape[0] < 2:
+                    return np.eye(cloud.shape[1])[:dim]
+                U, S, Vt = np.linalg.svd(cloud, full_matrices=False)
+                return Vt[:dim]
+
+            T_l = get_tangent_basis(cloud_l, d)
+            T_l1 = get_tangent_basis(cloud_l1, d)
+
+            proj_l = cloud_l @ T_l.T
+            proj_l1 = cloud_l1 @ T_l1.T
+
+            n_use = min(proj_l.shape[0], proj_l1.shape[0], d)
+            if n_use < 2:
+                A = np.zeros((d, d))
+                layer_conn.append(A.tolist())
+                continue
+
+            proj_l_use = proj_l[:n_use, :d]
+            proj_l1_use = proj_l1[:n_use, :d]
+
+            try:
+                R, _ = orthogonal_procrustes(proj_l_use, proj_l1_use)
+                # Connection = log(R) — the Lie algebra element
+                from scipy.linalg import logm
+                A = logm(R).real
+            except Exception:
+                A = np.zeros((d, d))
+
+            A = np.nan_to_num(A, nan=0.0, posinf=0.0, neginf=0.0)
+            layer_conn.append(A.tolist())
+
+        connection_field.append(layer_conn)
+
+    print(f"[Morphing] Done: {len(eigenvalue_flow)} eigenflow layers, "
+          f"{len(jacobian_field)} Jacobian layers, "
+          f"{len(holonomy_loops)} holonomy loops, "
+          f"{len(connection_field)} connection layers")
+
+    response = {
+        "tokens": tokens,
+        "seq_len": seq_len,
+        "n_layers": n_layers,
+        "hidden_dim": hidden_dim,
+        "eigenvalue_flow": eigenvalue_flow,
+        "jacobian_field": jacobian_field,
+        "holonomy_loops": holonomy_loops,
+        "connection_field": connection_field,
+    }
+
+    return json.dumps(response, cls=SafeFloatEncoder).encode()
 
 if __name__ == "__main__":
     try:

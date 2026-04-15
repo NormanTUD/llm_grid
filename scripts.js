@@ -10727,3 +10727,1140 @@ function renderTDAEntropy(){
         }
     }
 }
+
+// ============================================================
+// PURE MORPHING ANALYSIS — GUI
+// ============================================================
+
+var morphingData = null;
+var morphingTab = 'eigenflow';
+var morphingOverlay = false;
+var morphAnimTime = 0;
+var morphAnimId = null;
+
+// Slider value displays
+document.getElementById('morph-pca-d').addEventListener('input', function(){
+    document.getElementById('v-morph-pca-d').textContent = this.value;
+});
+document.getElementById('morph-k').addEventListener('input', function(){
+    document.getElementById('v-morph-k').textContent = this.value;
+});
+document.getElementById('morph-speed').addEventListener('input', function(){
+    document.getElementById('v-morph-speed').textContent = parseFloat(this.value).toFixed(1);
+});
+
+function runMorphingAnalysis(){
+    if(!D){
+        document.getElementById('morphing-status').innerHTML =
+            '<span style="color:#e94560">Run a prompt first!</span>';
+        return;
+    }
+
+    var btn = document.getElementById('btn-morphing');
+    btn.disabled = true;
+    btn.textContent = 'Extracting...';
+    document.getElementById('morphing-status').innerHTML =
+        '<span style="color:#fd79a8">Extracting pure morphings...</span>';
+
+    var pcaD = +document.getElementById('morph-pca-d').value;
+    var kNeighbors = +document.getElementById('morph-k').value;
+
+    fetch('/morphing_analysis', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            text: D.text,
+            pca_d: pcaD,
+            k_neighbors: kNeighbors
+        })
+    })
+    .then(function(r){
+        if(!r.ok) throw new Error('Server error ' + r.status);
+        return r.json();
+    })
+    .then(function(data){
+        if(data.error){
+            document.getElementById('morphing-status').innerHTML =
+                '<span style="color:#e94560">' + data.error + '</span>';
+            btn.disabled = false;
+            btn.textContent = 'Extract Morphings';
+            return;
+        }
+        morphingData = data;
+        btn.disabled = false;
+        btn.textContent = 'Extract Morphings';
+
+        document.getElementById('morphing-status').innerHTML =
+            '<span style="color:#2ecc71">✓ Morphings extracted</span> — ' +
+            data.n_layers + ' layers, ' + data.seq_len + ' tokens';
+
+        document.getElementById('morphing-views').style.display = 'block';
+        renderMorphTab();
+        startMorphAnimation();
+    })
+    .catch(function(e){
+        document.getElementById('morphing-status').innerHTML =
+            '<span style="color:#e94560">Error: ' + e + '</span>';
+        btn.disabled = false;
+        btn.textContent = 'Extract Morphings';
+    });
+}
+
+function toggleMorphingOverlay(){
+    morphingOverlay = !morphingOverlay;
+    draw();
+}
+
+function setMorphTab(tab){
+    morphingTab = tab;
+    var btns = document.querySelectorAll('.morph-tab');
+    for(var i = 0; i < btns.length; i++){
+        var isActive = btns[i].getAttribute('data-tab') === tab;
+        btns[i].style.background = isActive ? '#fd79a8' : '#1a1a2e';
+        btns[i].style.color = isActive ? '#fff' : '#a0a0c0';
+    }
+    renderMorphTab();
+}
+
+function renderMorphTab(){
+    if(!morphingData) return;
+
+    // Hide all sub-panels
+    document.getElementById('morph-jacobian-summary').style.display = 'none';
+    document.getElementById('morph-holonomy-results').style.display = 'none';
+    document.getElementById('morph-connection-display').style.display = 'none';
+
+    var titles = {
+        'eigenflow': 'Eigenvalue Flow (Complex Plane)',
+        'jacobian': 'Jacobian Decomposition (Stretch + Rotation)',
+        'holonomy': 'Holonomy Loops (Parallel Transport Deficit)',
+        'connection': 'Connection 1-Form (Lie Algebra)',
+        'svwaterfall': 'Singular Value Waterfall'
+    };
+    document.getElementById('morph-canvas-title').textContent = titles[morphingTab] || morphingTab;
+
+    if(morphingTab === 'eigenflow') renderEigenflow();
+    else if(morphingTab === 'jacobian') renderJacobianDecomp();
+    else if(morphingTab === 'holonomy') renderHolonomy();
+    else if(morphingTab === 'connection') renderConnection();
+    else if(morphingTab === 'svwaterfall') renderSVWaterfall();
+}
+
+// ============================================================
+// TAB 1: EIGENVALUE FLOW — animated trajectories on complex plane
+// ============================================================
+
+function renderEigenflow(){
+    var cv = document.getElementById('morph-canvas');
+    var ctx = cv.getContext('2d');
+    var W = cv.width, H = cv.height;
+    ctx.fillStyle = '#0a0a1a';
+    ctx.fillRect(0, 0, W, H);
+
+    if(!morphingData || !morphingData.eigenvalue_flow) return;
+
+    var flow = morphingData.eigenvalue_flow;
+    var nLayers = flow.length;
+    var currentLayer = +document.getElementById('sl-layer').value;
+    var showLabels = document.getElementById('morph-show-labels').checked;
+    var useLog = document.getElementById('morph-log-scale').checked;
+
+    var margin = {left: 40, right: 20, top: 20, bottom: 30};
+    var plotW = W - margin.left - margin.right;
+    var plotH = H - margin.top - margin.bottom;
+    var cx = margin.left + plotW / 2;
+    var cy = margin.top + plotH / 2;
+
+    // Find global magnitude and phase range
+    var maxMag = 0;
+    for(var li = 0; li < nLayers; li++){
+        var mags = flow[li].eigenvalue_magnitudes;
+        for(var ei = 0; ei < mags.length; ei++){
+            var m = useLog ? Math.log(Math.max(mags[ei], 1e-12)) : mags[ei];
+            if(Math.abs(m) > maxMag) maxMag = Math.abs(m);
+        }
+    }
+    if(maxMag < 1e-8) maxMag = 1;
+    var scale = Math.min(plotW, plotH) * 0.4 / maxMag;
+
+    // Draw unit circle
+    ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+    ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    var unitR = (useLog ? 0 : 1) * scale;
+    if(!useLog){
+        ctx.arc(cx, cy, unitR, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+
+    // Draw axes
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    ctx.moveTo(margin.left, cy);
+    ctx.lineTo(margin.left + plotW, cy);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx, margin.top);
+    ctx.lineTo(cx, margin.top + plotH);
+    ctx.stroke();
+
+    // Axis labels
+    ctx.font = '8px monospace';
+    ctx.fillStyle = '#555';
+    ctx.textAlign = 'center';
+    ctx.fillText('Re(λ)', cx, margin.top + plotH + 14);
+    ctx.save();
+    ctx.translate(10, cy);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText('Im(λ)', 0, 0);
+    ctx.restore();
+
+    // For each eigenvalue index, draw trajectory across layers
+    var nEigs = flow[0].eigenvalue_magnitudes.length;
+    var eigColors = [];
+    for(var ei = 0; ei < nEigs; ei++){
+        var hue = (ei / nEigs) * 300;
+        eigColors.push('hsl(' + hue + ',70%,60%)');
+    }
+
+    // Animate: show trail up to current animation frame
+    var animFrac = document.getElementById('morph-animate').checked ?
+        (morphAnimTime % (nLayers * 0.5)) / (nLayers * 0.5) : 1.0;
+    var showUpToLayer = Math.floor(animFrac * nLayers);
+
+    for(var ei = 0; ei < nEigs; ei++){
+        ctx.strokeStyle = eigColors[ei];
+        ctx.lineWidth = 1.5;
+        ctx.globalAlpha = 0.7;
+        ctx.beginPath();
+
+        var started = false;
+        for(var li = 0; li <= Math.min(showUpToLayer, nLayers - 1); li++){
+            var mag = flow[li].eigenvalue_magnitudes[ei];
+            var phase = flow[li].eigenvalue_phases[ei];
+            if(useLog) mag = Math.log(Math.max(mag, 1e-12));
+
+            var px = cx + mag * Math.cos(phase) * scale;
+            var py = cy - mag * Math.sin(phase) * scale;
+
+            if(!started){ ctx.moveTo(px, py); started = true; }
+            else ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+
+        // Draw current position as a dot
+        if(currentLayer < nLayers){
+            var cmag = flow[currentLayer].eigenvalue_magnitudes[ei];
+            var cphase = flow[currentLayer].eigenvalue_phases[ei];
+            if(useLog) cmag = Math.log(Math.max(cmag, 1e-12));
+            var cpx = cx + cmag * Math.cos(cphase) * scale;
+            var cpy = cy - cmag * Math.sin(cphase) * scale;
+
+            ctx.beginPath();
+            ctx.arc(cpx, cpy, 3, 0, Math.PI * 2);
+            ctx.fillStyle = eigColors[ei];
+            ctx.globalAlpha = 1.0;
+            ctx.fill();
+
+            // Layer label
+            if(showLabels && ei < 3){
+                ctx.font = '7px monospace';
+                ctx.fillStyle = eigColors[ei];
+                ctx.textAlign = 'left';
+                ctx.fillText('λ' + ei + ' L' + currentLayer, cpx + 5, cpy - 3);
+            }
+        }
+        ctx.globalAlpha = 1.0;
+    }
+
+    // Legend
+    ctx.font = '8px monospace';
+    ctx.textAlign = 'left';
+    for(var ei = 0; ei < Math.min(nEigs, 6); ei++){
+        ctx.fillStyle = eigColors[ei];
+        ctx.fillRect(W - 55, margin.top + ei * 12, 8, 8);
+        ctx.fillStyle = '#888';
+        ctx.fillText('λ' + ei, W - 44, margin.top + ei * 12 + 7);
+    }
+
+    // Update eigenvalue list panel
+    renderEigenList(flow, currentLayer, eigColors);
+}
+
+function renderEigenList(flow, currentLayer, eigColors){
+    var panel = document.getElementById('morph-eigen-list');
+    if(currentLayer >= flow.length){ panel.innerHTML = ''; return; }
+
+    var f = flow[currentLayer];
+    var html = '<div style="color:#fd79a8;font-weight:bold;font-size:9px;margin-bottom:3px">' +
+               'Layer ' + currentLayer + ' Spectrum</div>';
+
+    html += '<div style="display:flex;gap:8px;margin-bottom:4px;font-size:9px">';
+    html += '<span style="color:#e94560">div=' + f.divergence.toFixed(4) + '</span>';
+    html += '<span style="color:#f5a623">logdet=' + f.log_det.toFixed(4) + '</span>';
+    html += '<span style="color:#53a8b6">gap=' + f.spectral_gap.toFixed(2) + '</span>';
+    html += '</div>';
+
+    html += '<table style="width:100%;border-collapse:collapse;font-size:8px">';
+    html += '<tr><th style="color:#fd79a8;padding:1px 3px">#</th>' +
+            '<th style="color:#fd79a8;padding:1px 3px">|λ|</th>' +
+            '<th style="color:#fd79a8;padding:1px 3px">∠λ</th>' +
+            '<th style="color:#fd79a8;padding:1px 3px">σ</th></tr>';
+
+    var nEigs = f.eigenvalue_magnitudes.length;
+    for(var ei = 0; ei < nEigs; ei++){
+        var mag = f.eigenvalue_magnitudes[ei];
+        var phase = f.eigenvalue_phases[ei];
+        var sv = f.singular_values[ei];
+        var color = eigColors && ei < eigColors.length ? eigColors[ei] : '#888';
+
+        html += '<tr>';
+        html += '<td style="padding:1px 3px;color:' + color + '">λ' + ei + '</td>';
+        html += '<td style="padding:1px 3px">' + mag.toFixed(4) + '</td>';
+        html += '<td style="padding:1px 3px">' + (phase * 180 / Math.PI).toFixed(1) + '°</td>';
+        html += '<td style="padding:1px 3px;color:#53a8b6">' + sv.toFixed(4) + '</td>';
+        html += '</tr>';
+    }
+    html += '</table>';
+
+    panel.innerHTML = html;
+}
+
+// ============================================================
+// TAB 2: JACOBIAN DECOMPOSITION — stretch vs rotation per layer
+// ============================================================
+
+function renderJacobianDecomp(){
+    var cv = document.getElementById('morph-canvas');
+    var ctx = cv.getContext('2d');
+    var W = cv.width, H = cv.height;
+    ctx.fillStyle = '#0a0a1a';
+    ctx.fillRect(0, 0, W, H);
+
+    if(!morphingData || !morphingData.jacobian_field) return;
+
+    var jf = morphingData.jacobian_field;
+    var nLayers = jf.length;
+    var margin = {left: 50, right: 20, top: 25, bottom: 30};
+    var plotW = W - margin.left - margin.right;
+    var plotH = H - margin.top - margin.bottom;
+
+    // Extract stretch magnitude, rotation magnitude, and det per layer
+    var stretchMags = [], rotMags = [], dets = [], divs = [], curls = [];
+    var maxVal = 0;
+    for(var li = 0; li < nLayers; li++){
+        var j = jf[li];
+        // Frobenius norms of symmetric (stretch) and antisymmetric (rotation) parts
+        var stretchNorm = 0, rotNorm = 0;
+        var d = j.stretch.length; // dimension of the Jacobian
+        for(var r = 0; r < d; r++){
+            for(var c = 0; c < d; c++){
+                stretchNorm += j.stretch[r][c] * j.stretch[r][c];
+                rotNorm += j.rotation[r][c] * j.rotation[r][c];
+            }
+        }
+        stretchNorm = Math.sqrt(stretchNorm);
+        rotNorm = Math.sqrt(rotNorm);
+        stretchMags.push(stretchNorm);
+        rotMags.push(rotNorm);
+        dets.push(Math.abs(j.det));
+        divs.push(j.divergence);
+        curls.push(j.curl_magnitude);
+        maxVal = Math.max(maxVal, stretchNorm, rotNorm);
+    }
+    if(maxVal < 1e-8) maxVal = 1;
+
+    var barW = Math.max(4, Math.floor(plotW / nLayers / 2) - 1);
+    var currentLayer = +document.getElementById('sl-layer').value;
+
+    // Title
+    ctx.font = 'bold 10px monospace';
+    ctx.fillStyle = '#fd79a8';
+    ctx.textAlign = 'center';
+    ctx.fillText('Jacobian = Stretch ⊕ Rotation', W / 2, 14);
+
+    // Draw paired bars: stretch (yellow) and rotation (magenta)
+    for(var li = 0; li < nLayers; li++){
+        var x = margin.left + (li / nLayers) * plotW;
+        var isCurrent = (li === currentLayer);
+
+        // Stretch bar
+        var sh = (stretchMags[li] / maxVal) * plotH;
+        ctx.fillStyle = isCurrent ? 'rgba(255,255,100,0.9)' : 'rgba(255,255,100,0.5)';
+        ctx.fillRect(x, margin.top + plotH - sh, barW, sh);
+
+        // Rotation bar
+        var rh = (rotMags[li] / maxVal) * plotH;
+        ctx.fillStyle = isCurrent ? 'rgba(255,100,255,0.9)' : 'rgba(255,100,255,0.5)';
+        ctx.fillRect(x + barW + 1, margin.top + plotH - rh, barW, rh);
+
+        // Layer label
+        if(nLayers <= 25 || li % 2 === 0){
+            ctx.font = '7px monospace';
+            ctx.fillStyle = isCurrent ? '#fd79a8' : '#555';
+            ctx.textAlign = 'center';
+            ctx.fillText('L' + li, x + barW, H - 5);
+        }
+
+        // Current layer highlight
+        if(isCurrent){
+            ctx.strokeStyle = '#fd79a8';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(x - 1, margin.top, barW * 2 + 3, plotH);
+        }
+    }
+
+    // Legend
+    ctx.font = '8px monospace';
+    ctx.fillStyle = 'rgba(255,255,100,0.8)';
+    ctx.fillRect(margin.left, margin.top - 12, 10, 6);
+    ctx.fillStyle = '#888';
+    ctx.textAlign = 'left';
+    ctx.fillText('||Stretch|| (J_sym)', margin.left + 14, margin.top - 6);
+
+    ctx.fillStyle = 'rgba(255,100,255,0.8)';
+    ctx.fillRect(margin.left + 120, margin.top - 12, 10, 6);
+    ctx.fillStyle = '#888';
+    ctx.fillText('||Rotation|| (J_antisym)', margin.left + 134, margin.top - 6);
+
+    // Show summary panel
+    var summary = document.getElementById('morph-jacobian-summary');
+    summary.style.display = 'block';
+    if(currentLayer < nLayers){
+        var j = jf[currentLayer];
+        var html = '<div style="color:#fd79a8;font-weight:bold;margin-bottom:3px">Layer ' + currentLayer + ' Jacobian</div>';
+        html += '<div style="display:flex;gap:6px;flex-wrap:wrap">';
+        html += '<span style="color:rgba(255,255,100,0.9)">Stretch=' + stretchMags[currentLayer].toFixed(4) + '</span>';
+        html += '<span style="color:rgba(255,100,255,0.9)">Rotation=' + rotMags[currentLayer].toFixed(4) + '</span>';
+        html += '<span style="color:#e94560">div=' + j.divergence.toFixed(4) + '</span>';
+        html += '<span style="color:#f5a623">curl=' + j.curl_magnitude.toFixed(4) + '</span>';
+        html += '<span style="color:#53a8b6">det=' + j.det.toFixed(4) + '</span>';
+        html += '</div>';
+
+        // Eigenvalue mini-display
+        html += '<div style="margin-top:4px;color:#888">Eigenvalues: ';
+        for(var ei = 0; ei < j.eigenvalue_magnitudes.length; ei++){
+            var m = j.eigenvalue_magnitudes[ei];
+            var p = j.eigenvalue_phases[ei];
+            var color = m > 1.05 ? '#e94560' : m < 0.95 ? '#0077b6' : '#888';
+            html += '<span style="color:' + color + '">' + m.toFixed(3) +
+                    '∠' + (p * 180 / Math.PI).toFixed(0) + '°</span> ';
+        }
+        html += '</div>';
+        summary.innerHTML = html;
+    }
+}
+
+// ============================================================
+// TAB 3: HOLONOMY LOOPS
+// ============================================================
+
+function renderHolonomy(){
+    var cv = document.getElementById('morph-canvas');
+    var ctx = cv.getContext('2d');
+    var W = cv.width, H = cv.height;
+    ctx.fillStyle = '#0a0a1a';
+    ctx.fillRect(0, 0, W, H);
+
+    if(!morphingData || !morphingData.holonomy_loops) return;
+
+    var loops = morphingData.holonomy_loops;
+    var tokens = morphingData.tokens;
+    var nLayers = morphingData.n_layers;
+
+    var margin = {left: 50, right: 20, top: 25, bottom: 35};
+    var plotW = W - margin.left - margin.right;
+    var plotH = H - margin.top - margin.bottom;
+
+    // Draw holonomy angles as a heatmap: token-pair × layer-range
+    // Each loop is defined by (token_i, token_j, layer_start, layer_end)
+    // For simplicity, show token-pair holonomy angles at the full layer range
+
+    var nTokens = tokens.length;
+    if(nTokens < 2){
+        ctx.font = '12px monospace';
+        ctx.fillStyle = '#555';
+        ctx.textAlign = 'center';
+        ctx.fillText('Need ≥2 tokens for holonomy', W / 2, H / 2);
+        return;
+    }
+
+    var nPairs = loops.length;
+    if(nPairs === 0){
+        ctx.font = '12px monospace';
+        ctx.fillStyle = '#555';
+        ctx.textAlign = 'center';
+        ctx.fillText('No holonomy data', W / 2, H / 2);
+        return;
+    }
+
+    // Find max angle for color scaling
+    var maxAngle = 0;
+    for(var i = 0; i < nPairs; i++){
+        if(loops[i].holonomy_angle > maxAngle) maxAngle = loops[i].holonomy_angle;
+    }
+    if(maxAngle < 1e-8) maxAngle = Math.PI;
+
+    // Layout: one bar per token pair
+    var barH = Math.max(6, Math.floor(plotH / nPairs) - 2);
+
+    ctx.font = 'bold 10px monospace';
+    ctx.fillStyle = '#fd79a8';
+    ctx.textAlign = 'center';
+    ctx.fillText('Holonomy Angle per Token Pair', W / 2, 14);
+
+    for(var pi = 0; pi < nPairs; pi++){
+        var loop = loops[pi];
+        var angle = loop.holonomy_angle;
+        var frac = angle / maxAngle;
+        var y = margin.top + (pi / nPairs) * plotH;
+
+        // Color by holonomy angle
+        var r = Math.floor(frac * 233);
+        var g = Math.floor((1 - frac) * 100);
+        var b = Math.floor((1 - frac) * 182);
+
+        // Bar
+        var barW = frac * (plotW - 120);
+        ctx.fillStyle = 'rgba(' + r + ',' + g + ',' + b + ',0.7)';
+        ctx.fillRect(margin.left + 100, y, barW, barH);
+
+        // Border
+        ctx.strokeStyle = 'rgba(' + r + ',' + g + ',' + b + ',0.9)';
+        ctx.lineWidth = 0.5;
+        ctx.strokeRect(margin.left + 100, y, barW, barH);
+
+        // Label
+        ctx.font = '8px monospace';
+        ctx.fillStyle = '#a0a0c0';
+        ctx.textAlign = 'right';
+        var pairLabel = loop.token_i_str + ' ↔ ' + loop.token_j_str;
+        ctx.fillText(pairLabel, margin.left + 95, y + barH / 2 + 3);
+
+        // Angle value
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#888';
+        ctx.fillText((angle * 180 / Math.PI).toFixed(1) + '°', margin.left + 105 + barW, y + barH / 2 + 3);
+    }
+
+    // Update holonomy results panel
+    var panel = document.getElementById('morph-holonomy-results');
+    panel.style.display = 'block';
+    var html = '<div style="color:#fd79a8;font-weight:bold;margin-bottom:3px">Holonomy Loops</div>';
+    html += '<div style="color:#888;font-size:8px;margin-bottom:4px">' +
+            'Holonomy angle = parallel transport deficit around a closed loop in token×layer space. ' +
+            'Non-zero angle = curved connection (non-trivial geometry).</div>';
+
+    html += '<table style="width:100%;border-collapse:collapse;font-size:8px">';
+    html += '<tr><th style="color:#fd79a8;padding:1px 3px">Pair</th>' +
+            '<th style="color:#fd79a8;padding:1px 3px">Angle</th>' +
+            '<th style="color:#fd79a8;padding:1px 3px">Layers</th>' +
+            '<th style="color:#fd79a8;padding:1px 3px">||R-I||</th></tr>';
+
+    for(var i = 0; i < loops.length; i++){
+        var loop = loops[i];
+        var angleDeg = (loop.holonomy_angle * 180 / Math.PI).toFixed(2);
+        var color = loop.holonomy_angle > (maxAngle * 0.7) ? '#e94560' :
+                    loop.holonomy_angle > (maxAngle * 0.3) ? '#f5a623' : '#888';
+
+        html += '<tr>';
+        html += '<td style="padding:1px 3px;color:#a0a0c0">' +
+                loop.token_i_str + ' ↔ ' + loop.token_j_str + '</td>';
+        html += '<td style="padding:1px 3px;color:' + color + ';font-weight:bold">' +
+                angleDeg + '°</td>';
+        html += '<td style="padding:1px 3px">' + loop.layer_start + '→' + loop.layer_end + '</td>';
+        html += '<td style="padding:1px 3px">' + (loop.frobenius_deviation || 0).toFixed(4) + '</td>';
+        html += '</tr>';
+    }
+    html += '</table>';
+    panel.innerHTML = html;
+}
+
+// ============================================================
+// TAB 4: CONNECTION 1-FORM
+// ============================================================
+
+function renderConnection(){
+    var cv = document.getElementById('morph-canvas');
+    var ctx = cv.getContext('2d');
+    var W = cv.width, H = cv.height;
+    ctx.fillStyle = '#0a0a1a';
+    ctx.fillRect(0, 0, W, H);
+
+    if(!morphingData || !morphingData.connection_field) return;
+
+    var conn = morphingData.connection_field;
+    var nLayers = conn.length;
+    var tokens = morphingData.tokens;
+    var seqLen = tokens.length;
+    var currentLayer = +document.getElementById('sl-layer').value;
+
+    var margin = {left: 50, right: 20, top: 25, bottom: 30};
+    var plotW = W - margin.left - margin.right;
+    var plotH = H - margin.top - margin.bottom;
+
+    // Title
+    ctx.font = 'bold 10px monospace';
+    ctx.fillStyle = '#fd79a8';
+    ctx.textAlign = 'center';
+    ctx.fillText('Connection 1-Form A = log(R) — Lie Algebra Values', W / 2, 14);
+
+    // For each layer, show the Frobenius norm of the connection matrix per token
+    // as a heatmap: x = token, y = layer
+    var cellW = Math.max(4, Math.floor(plotW / seqLen));
+    var cellH = Math.max(3, Math.floor(plotH / nLayers));
+
+    // Compute norms
+    var maxNorm = 0;
+    var norms = [];
+    for(var li = 0; li < nLayers; li++){
+        var layerNorms = [];
+        for(var ti = 0; ti < seqLen; ti++){
+            var A = conn[li][ti]; // matrix (array of arrays)
+            var norm = 0;
+            if(A && A.length){
+                for(var r = 0; r < A.length; r++){
+                    for(var c = 0; c < A[r].length; c++){
+                        norm += A[r][c] * A[r][c];
+                    }
+                }
+                norm = Math.sqrt(norm);
+            }
+            layerNorms.push(norm);
+            if(norm > maxNorm) maxNorm = norm;
+        }
+        norms.push(layerNorms);
+    }
+    if(maxNorm < 1e-8) maxNorm = 1;
+
+    // Draw heatmap
+    for(var li = 0; li < nLayers; li++){
+        for(var ti = 0; ti < seqLen; ti++){
+            var frac = norms[li][ti] / maxNorm;
+            var x = margin.left + ti * cellW;
+            var y = margin.top + li * cellH;
+
+            // Magma-like colormap
+            var r, g, b;
+            if(frac < 0.25){
+                var t = frac / 0.25;
+                r = Math.floor(t * 80); g = 0; b = Math.floor(20 + t * 80);
+            } else if(frac < 0.5){
+                var t = (frac - 0.25) / 0.25;
+                r = Math.floor(80 + t * 120); g = Math.floor(t * 30); b = Math.floor(100 - t * 20);
+            } else if(frac < 0.75){
+                var t = (frac - 0.5) / 0.25;
+                r = Math.floor(200 + t * 55); g = Math.floor(30 + t * 100); b = Math.floor(80 - t * 60);
+            } else {
+                var t = (frac - 0.75) / 0.25;
+                r = 255; g = Math.floor(130 + t * 125); b = Math.floor(20 + t * 100);
+            }
+
+            ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
+            ctx.fillRect(x, y, cellW - 1, cellH - 1);
+        }
+    }
+
+    // Current layer highlight
+    if(currentLayer < nLayers){
+        ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(margin.left, margin.top + currentLayer * cellH, seqLen * cellW, cellH);
+    }
+
+    // Token labels
+    ctx.font = '7px monospace';
+    ctx.textAlign = 'center';
+    for(var ti = 0; ti < seqLen; ti++){
+        ctx.fillStyle = '#555';
+        ctx.save();
+        ctx.translate(margin.left + ti * cellW + cellW / 2, margin.top + plotH + 4);
+        ctx.rotate(Math.PI / 4);
+        ctx.fillText(tokens[ti], 0, 0);
+        ctx.restore();
+    }
+
+    // Layer labels
+    ctx.textAlign = 'right';
+    for(var li = 0; li < nLayers; li++){
+        var isCurrent = (li === currentLayer);
+        ctx.fillStyle = isCurrent ? '#fd79a8' : '#555';
+        ctx.font = (isCurrent ? 'bold ' : '') + '7px monospace';
+        ctx.fillText('L' + li, margin.left - 4, margin.top + li * cellH + cellH / 2 + 3);
+    }
+
+    // Connection display panel
+    var display = document.getElementById('morph-connection-display');
+    display.style.display = 'block';
+    if(currentLayer < nLayers){
+        var html = '<div style="color:#fd79a8;font-weight:bold;margin-bottom:3px">' +
+                   'Connection at Layer ' + currentLayer + '</div>';
+        html += '<div style="color:#888;font-size:8px;margin-bottom:4px">' +
+                'A = log(R) is the Lie-algebra-valued connection 1-form. ' +
+                '||A|| measures how much the tangent frame rotates between layers.</div>';
+
+        html += '<table style="width:100%;border-collapse:collapse;font-size:8px">';
+        html += '<tr><th style="color:#fd79a8;padding:1px 3px">Token</th>' +
+                '<th style="color:#fd79a8;padding:1px 3px">||A||</th>' +
+                '<th style="color:#fd79a8;padding:1px 3px">Bar</th></tr>';
+
+        for(var ti = 0; ti < seqLen; ti++){
+            var norm = norms[currentLayer][ti];
+            var barW = Math.max(1, (norm / maxNorm) * 100);
+            var color = norm > maxNorm * 0.7 ? '#e94560' :
+                        norm > maxNorm * 0.3 ? '#f5a623' : '#53a8b6';
+
+            html += '<tr>';
+            html += '<td style="padding:1px 3px;color:#a0a0c0">[' + ti + '] ' + tokens[ti] + '</td>';
+            html += '<td style="padding:1px 3px;color:' + color + '">' + norm.toFixed(4) + '</td>';
+            html += '<td style="padding:1px 3px"><div style="background:' + color +
+                    ';height:6px;width:' + barW + 'px;border-radius:2px"></div></td>';
+            html += '</tr>';
+        }
+        html += '</table>';
+        display.innerHTML = html;
+    }
+}
+
+// ============================================================
+// TAB 5: SINGULAR VALUE WATERFALL
+// ============================================================
+
+function renderSVWaterfall(){
+    var cv = document.getElementById('morph-canvas');
+    var ctx = cv.getContext('2d');
+    var W = cv.width, H = cv.height;
+    ctx.fillStyle = '#0a0a1a';
+    ctx.fillRect(0, 0, W, H);
+
+    if(!morphingData || !morphingData.eigenvalue_flow) return;
+
+    var flow = morphingData.eigenvalue_flow;
+    var nLayers = flow.length;
+    if(nLayers === 0) return;
+
+    var nSV = flow[0].singular_values.length;
+    var useLog = document.getElementById('morph-log-scale').checked;
+
+    var margin = {left: 50, right: 30, top: 25, bottom: 30};
+    var plotW = W - margin.left - margin.right;
+    var plotH = H - margin.top - margin.bottom;
+
+    // Title
+    ctx.font = 'bold 10px monospace';
+    ctx.fillStyle = '#fd79a8';
+    ctx.textAlign = 'center';
+    ctx.fillText('Singular Value Waterfall', W / 2, 14);
+
+    // Build heatmap: x = singular value index, y = layer, color = magnitude
+    var cellW = Math.max(2, Math.floor(plotW / nSV));
+    var cellH = Math.max(3, Math.floor(plotH / nLayers));
+
+    // Find global max SV
+    var maxSV = 0;
+    for(var li = 0; li < nLayers; li++){
+        for(var si = 0; si < nSV; si++){
+            var v = useLog ? Math.log(Math.max(flow[li].singular_values[si], 1e-12)) :
+                    flow[li].singular_values[si];
+            if(Math.abs(v) > maxSV) maxSV = Math.abs(v);
+        }
+    }
+    if(maxSV < 1e-8) maxSV = 1;
+
+    // Draw heatmap
+    for(var li = 0; li < nLayers; li++){
+        for(var si = 0; si < nSV; si++){
+            var sv = flow[li].singular_values[si];
+            var v = useLog ? Math.log(Math.max(sv, 1e-12)) : sv;
+            var frac = Math.abs(v) / maxSV;
+            frac = Math.min(1, frac);
+
+            var x = margin.left + si * cellW;
+            var y = margin.top + li * cellH;
+
+            // Inferno-like colormap
+            var r, g, b;
+            if(frac < 0.25){
+                var t = frac / 0.25;
+                r = Math.floor(t * 100); g = 0; b = Math.floor(20 + t * 60);
+            } else if(frac < 0.5){
+                var t = (frac - 0.25) / 0.25;
+                r = Math.floor(100 + t * 100); g = Math.floor(t * 40); b = Math.floor(80 - t * 30);
+            } else if(frac < 0.75){
+                var t = (frac - 0.5) / 0.25;
+                r = Math.floor(200 + t * 55); g = Math.floor(40 + t * 100); b = Math.floor(50 - t * 50);
+            } else {
+                var t = (frac - 0.75) / 0.25;
+                r = 255; g = Math.floor(140 + t * 115); b = Math.floor(t * 80);
+            }
+
+            ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
+            ctx.fillRect(x, y, cellW, cellH);
+        }
+    }
+
+    // Current layer highlight
+    var currentLayer = +document.getElementById('sl-layer').value;
+    if(currentLayer < nLayers){
+        ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(margin.left, margin.top + currentLayer * cellH, nSV * cellW, cellH);
+    }
+
+    // Axis labels
+    ctx.font = '8px monospace';
+    ctx.fillStyle = '#555';
+    ctx.textAlign = 'center';
+    ctx.fillText('Singular Value Index →', margin.left + plotW / 2, H - 5);
+
+    ctx.save();
+    ctx.translate(10, margin.top + plotH / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText('Layer →', 0, 0);
+    ctx.restore();
+
+    // Layer labels on left
+    ctx.textAlign = 'right';
+    for(var li = 0; li < nLayers; li++){
+        if(nLayers <= 20 || li % 2 === 0){
+            var isCurrent = (li === currentLayer);
+            ctx.fillStyle = isCurrent ? '#fd79a8' : '#444';
+            ctx.font = (isCurrent ? 'bold ' : '') + '7px monospace';
+            ctx.fillText('L' + li, margin.left - 4, margin.top + li * cellH + cellH / 2 + 3);
+        }
+    }
+
+    // SV index labels on top
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#444';
+    ctx.font = '7px monospace';
+    for(var si = 0; si < nSV; si++){
+        if(nSV <= 20 || si % 2 === 0){
+            ctx.fillText('σ' + si, margin.left + si * cellW + cellW / 2, margin.top - 4);
+        }
+    }
+
+    // Spectral gap line chart overlay
+    ctx.strokeStyle = 'rgba(253,121,168,0.6)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    var maxGap = 0;
+    for(var li = 0; li < nLayers; li++){
+        if(flow[li].spectral_gap > maxGap) maxGap = flow[li].spectral_gap;
+    }
+    if(maxGap < 1e-8) maxGap = 1;
+
+    for(var li = 0; li < nLayers; li++){
+        var gapFrac = flow[li].spectral_gap / maxGap;
+        var gx = margin.left + plotW + 5;
+        var gy = margin.top + li * cellH + cellH / 2;
+        var gw = 15 * gapFrac;
+        if(li === 0) ctx.moveTo(gx + gw, gy);
+        else ctx.lineTo(gx + gw, gy);
+    }
+    ctx.stroke();
+
+    // Gap label
+    ctx.font = '7px monospace';
+    ctx.fillStyle = '#fd79a8';
+    ctx.textAlign = 'left';
+    ctx.fillText('Gap', margin.left + plotW + 3, margin.top - 4);
+
+    // Update eigen list with SV info
+    var panel = document.getElementById('morph-eigen-list');
+    if(currentLayer < nLayers){
+        var f = flow[currentLayer];
+        var html = '<div style="color:#fd79a8;font-weight:bold;font-size:9px;margin-bottom:3px">' +
+                   'Layer ' + currentLayer + ' — Singular Values</div>';
+        html += '<div style="display:flex;gap:8px;margin-bottom:4px;font-size:9px">';
+        html += '<span style="color:#f5a623">gap=' + f.spectral_gap.toFixed(2) + '</span>';
+        html += '<span style="color:#e94560">logdet=' + f.log_det.toFixed(4) + '</span>';
+        html += '</div>';
+
+        html += '<div style="display:flex;flex-wrap:wrap;gap:3px;font-size:8px">';
+        for(var si = 0; si < Math.min(nSV, 16); si++){
+            var sv = f.singular_values[si];
+            var color = sv > 1.05 ? '#e94560' : sv < 0.95 ? '#0077b6' : '#888';
+            html += '<span style="color:' + color + ';background:rgba(255,255,255,0.05);' +
+                    'padding:1px 4px;border-radius:2px">σ' + si + '=' + sv.toFixed(3) + '</span>';
+        }
+        html += '</div>';
+        panel.innerHTML = html;
+    }
+}
+
+// ============================================================
+// MORPHING ANIMATION LOOP
+// ============================================================
+
+function startMorphAnimation(){
+    if(morphAnimId) return;
+    function loop(){
+        var speed = +document.getElementById('morph-speed').value;
+        morphAnimTime += 0.016 * speed;
+        if(document.getElementById('morph-animate').checked && morphingTab === 'eigenflow'){
+            renderEigenflow();
+        }
+        morphAnimId = requestAnimationFrame(loop);
+    }
+    morphAnimId = requestAnimationFrame(loop);
+}
+
+function stopMorphAnimation(){
+    if(morphAnimId){
+        cancelAnimationFrame(morphAnimId);
+        morphAnimId = null;
+    }
+}
+
+// ============================================================
+// MORPHING OVERLAY ON MAIN CANVAS
+// ============================================================
+
+// Store reference to original draw so we can chain
+var _origDraw_morph = typeof draw === 'function' ? draw : function(){};
+
+// We override draw to add morphing overlay after the main render
+var _drawWithMorphOverlay = function(){
+    _origDraw_morph();
+
+    if(!morphingOverlay || !morphingData || !D) return;
+    if(viewMode !== '2d') return;
+
+    var cv = document.getElementById('cv');
+    var c = cv.getContext('2d');
+    var W = cv.width, H = cv.height;
+
+    // Overlay eigenvalue magnitude as colored rings around token dots
+    var flow = morphingData.eigenvalue_flow;
+    var jf = morphingData.jacobian_field;
+    if(!flow && !jf) return;
+
+    var currentLayer = +document.getElementById('sl-layer').value;
+    if(currentLayer >= (flow ? flow.length : jf.length)) return;
+
+    var nR = D.n_real;
+    var dx = +document.getElementById('sl-dx').value;
+    var dy = +document.getElementById('sl-dy').value;
+    var nP = D.n_points;
+
+    // Get screen coordinates
+    var pos = extractPositions2D(D, nP, dx, dy);
+    var bounds = computeViewBounds2D(pos.fx, pos.fy, nP, 0.12);
+    var M = 42, dW = W - 2 * M, dH = H - 2 * M;
+
+    function SX(x){ return M + ((x - bounds.vx0) / bounds.vw) * dW; }
+    function SY(y){ return M + ((y - bounds.vy0) / bounds.vh) * dH; }
+
+    c.save();
+    c.translate(panX, panY);
+    c.scale(zoomLevel, zoomLevel);
+
+    if(jf && currentLayer < jf.length){
+        var j = jf[currentLayer];
+
+        // Draw divergence/curl indicators at each real token
+        for(var ti = 0; ti < nR; ti++){
+            var tx = SX(pos.fx[ti]);
+            var ty = SY(pos.fy[ti]);
+
+            // Divergence ring: expanding = red, contracting = blue
+            var divNorm = Math.min(1, Math.abs(j.divergence) * 2);
+            var divColor = j.divergence > 0 ?
+                'rgba(233,69,96,' + (divNorm * 0.4).toFixed(2) + ')' :
+                'rgba(0,119,182,' + (divNorm * 0.4).toFixed(2) + ')';
+
+            c.beginPath();
+            c.arc(tx, ty, 15 + divNorm * 10, 0, Math.PI * 2);
+            c.strokeStyle = divColor;
+            c.lineWidth = 2;
+            c.stroke();
+
+            // Curl indicator: small rotation arrow
+            if(j.curl_magnitude > 0.01){
+                var curlR = 20 + j.curl_magnitude * 5;
+                var curlAlpha = Math.min(0.6, j.curl_magnitude * 0.5);
+                c.strokeStyle = 'rgba(253,121,168,' + curlAlpha.toFixed(2) + ')';
+                c.lineWidth = 1.5;
+                c.beginPath();
+                c.arc(tx, ty, curlR, 0, Math.PI * 1.5);
+                c.stroke();
+
+                // Arrowhead on the curl arc
+                var endAngle = Math.PI * 1.5;
+                var arrowX = tx + curlR * Math.cos(endAngle);
+                var arrowY = ty + curlR * Math.sin(endAngle);
+                c.fillStyle = 'rgba(253,121,168,' + curlAlpha.toFixed(2) + ')';
+                c.beginPath();
+                c.moveTo(arrowX, arrowY);
+                c.lineTo(arrowX + 4, arrowY + 4);
+                c.lineTo(arrowX - 2, arrowY + 4);
+                c.closePath();
+                c.fill();
+            }
+        }
+
+        // Draw eigenvalue magnitude indicators
+        if(flow && currentLayer < flow.length){
+            var f = flow[currentLayer];
+            var nEigs = Math.min(f.eigenvalue_magnitudes.length, 4);
+
+            for(var ti = 0; ti < nR; ti++){
+                var tx = SX(pos.fx[ti]);
+                var ty = SY(pos.fy[ti]);
+
+                // Draw small eigenvalue magnitude bars around each token
+                for(var ei = 0; ei < nEigs; ei++){
+                    var mag = f.eigenvalue_magnitudes[ei];
+                    var phase = f.eigenvalue_phases[ei];
+                    var barAngle = (ei / nEigs) * Math.PI * 2;
+                    var barR = 25;
+                    var barLen = Math.min(15, mag * 8);
+
+                    var bx = tx + Math.cos(barAngle) * barR;
+                    var by = ty + Math.sin(barAngle) * barR;
+                    var ex = bx + Math.cos(barAngle) * barLen;
+                    var ey = by + Math.sin(barAngle) * barLen;
+
+                    var hue = (ei / nEigs) * 300;
+                    c.strokeStyle = 'hsla(' + hue + ',70%,60%,0.5)';
+                    c.lineWidth = 2;
+                    c.beginPath();
+                    c.moveTo(bx, by);
+                    c.lineTo(ex, ey);
+                    c.stroke();
+                }
+            }
+        }
+    }
+
+    c.restore();
+};
+
+// Patch the draw function to include morphing overlay
+// We need to be careful not to break the existing draw chain
+(function(){
+    var _existingDraw = draw;
+    draw = function(){
+        _existingDraw();
+        // Only overlay if morphing is active
+        if(morphingOverlay && morphingData && D && viewMode === '2d'){
+            var cv = document.getElementById('cv');
+            var c = cv.getContext('2d');
+            var W = cv.width, H = cv.height;
+
+            var flow = morphingData.eigenvalue_flow;
+            var jf = morphingData.jacobian_field;
+            if(!flow && !jf) return;
+
+            var currentLayer = +document.getElementById('sl-layer').value;
+            if(currentLayer >= (flow ? flow.length : jf ? jf.length : 0)) return;
+
+            var nR = D.n_real;
+            var dx = +document.getElementById('sl-dx').value;
+            var dy = +document.getElementById('sl-dy').value;
+            var nP = D.n_points;
+
+            var pos = extractPositions2D(D, nP, dx, dy);
+            var bounds = computeViewBounds2D(pos.fx, pos.fy, nP, 0.12);
+            var M = 42, dW = W - 2 * M, dH = H - 2 * M;
+
+            function SX(x){ return M + ((x - bounds.vx0) / bounds.vw) * dW; }
+            function SY(y){ return M + ((y - bounds.vy0) / bounds.vh) * dH; }
+
+            c.save();
+            c.translate(panX, panY);
+            c.scale(zoomLevel, zoomLevel);
+
+            if(jf && currentLayer < jf.length){
+                var j = jf[currentLayer];
+                for(var ti = 0; ti < nR; ti++){
+                    var tx = SX(pos.fx[ti]);
+                    var ty = SY(pos.fy[ti]);
+
+                    var divNorm = Math.min(1, Math.abs(j.divergence) * 2);
+                    var divColor = j.divergence > 0 ?
+                        'rgba(233,69,96,' + (divNorm * 0.4).toFixed(2) + ')' :
+                        'rgba(0,119,182,' + (divNorm * 0.4).toFixed(2) + ')';
+
+                    c.beginPath();
+                    c.arc(tx, ty, 15 + divNorm * 10, 0, Math.PI * 2);
+                    c.strokeStyle = divColor;
+                    c.lineWidth = 2;
+                    c.stroke();
+
+                    if(j.curl_magnitude > 0.01){
+                        var curlR = 20 + j.curl_magnitude * 5;
+                        var curlAlpha = Math.min(0.6, j.curl_magnitude * 0.5);
+                        c.strokeStyle = 'rgba(253,121,168,' + curlAlpha.toFixed(2) + ')';
+                        c.lineWidth = 1.5;
+                        c.beginPath();
+                        c.arc(tx, ty, curlR, 0, Math.PI * 1.5);
+                        c.stroke();
+                    }
+                }
+            }
+
+            c.restore();
+        }
+    };
+})();
+
+// ============================================================
+// MORPHING CANVAS MOUSE INTERACTION
+// ============================================================
+
+(function(){
+    var morphCv = document.getElementById('morph-canvas');
+    if(!morphCv) return;
+
+    morphCv.addEventListener('mousemove', function(e){
+        if(!morphingData) return;
+        var rect = morphCv.getBoundingClientRect();
+        var mx = (e.clientX - rect.left) * (morphCv.width / rect.width);
+        var my = (e.clientY - rect.top) * (morphCv.height / rect.height);
+
+        // Show tooltip with eigenvalue info on hover
+        if(morphingTab === 'eigenflow' && morphingData.eigenvalue_flow){
+            var flow = morphingData.eigenvalue_flow;
+            var currentLayer = +document.getElementById('sl-layer').value;
+            if(currentLayer < flow.length){
+                var f = flow[currentLayer];
+                morphCv.title = 'Layer ' + currentLayer +
+                    ' | div=' + f.divergence.toFixed(4) +
+                    ' | gap=' + f.spectral_gap.toFixed(2) +
+                    ' | logdet=' + f.log_det.toFixed(4);
+            }
+        } else if(morphingTab === 'connection' && morphingData.connection_field){
+            morphCv.title = 'Connection 1-form heatmap — brighter = stronger frame rotation';
+        } else if(morphingTab === 'svwaterfall'){
+            morphCv.title = 'Singular value waterfall — x=SV index, y=layer, color=magnitude';
+        }
+    });
+
+    morphCv.addEventListener('click', function(e){
+        if(!morphingData) return;
+        var rect = morphCv.getBoundingClientRect();
+        var mx = (e.clientX - rect.left) * (morphCv.width / rect.width);
+        var my = (e.clientY - rect.top) * (morphCv.height / rect.height);
+
+        // Click on connection heatmap or SV waterfall to jump to that layer
+        if(morphingTab === 'connection' || morphingTab === 'svwaterfall'){
+            var margin = {left: 50, top: 25, bottom: 30};
+            var plotH = morphCv.height - margin.top - margin.bottom;
+            var nLayers = morphingData.connection_field ?
+                morphingData.connection_field.length :
+                (morphingData.eigenvalue_flow ? morphingData.eigenvalue_flow.length : 0);
+
+            if(nLayers > 0 && my >= margin.top && my <= margin.top + plotH){
+                var clickedLayer = Math.floor(((my - margin.top) / plotH) * nLayers);
+                clickedLayer = Math.max(0, Math.min(nLayers - 1, clickedLayer));
+                var sl = document.getElementById('sl-layer');
+                sl.value = clickedLayer;
+                sl.dispatchEvent(new Event('input'));
+                renderMorphTab();
+            }
+        }
+    });
+})();
