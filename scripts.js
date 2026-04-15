@@ -4397,10 +4397,206 @@ function drawFibreBundleLegend(c, layout, nTokens, attnDeltas, mlpDeltas, D) {
     }
 }
 
+// ============================================================
+// REFACTORED drawFibreBundleFlowLines — broken into composable steps
+// ============================================================
+
+/**
+ * Interpolate a 2D deformation field at a single world-space point
+ * using Gaussian RBF weights. Reusable anywhere you need a quick
+ * field lookup without building a full grid.
+ *
+ * @param {number} worldX - query x coordinate
+ * @param {number} worldY - query y coordinate
+ * @param {Float64Array} fx - source x positions
+ * @param {Float64Array} fy - source y positions
+ * @param {Float64Array} edx - source x deltas
+ * @param {Float64Array} edy - source y deltas
+ * @param {number} nP - number of source points
+ * @param {number} s2i - precomputed 1/(2*sigma^2)
+ * @returns {number[]} [vx, vy] interpolated displacement
+ */
+function interpolateFieldRBF(worldX, worldY, fx, fy, edx, edy, nP, s2i) {
+    var vvx = 0, vvy = 0, ws = 0;
+    for (var k = 0; k < nP; k++) {
+        var eex = worldX - fx[k], eey = worldY - fy[k];
+        var w = Math.exp(-(eex * eex + eey * eey) * s2i);
+        vvx += w * edx[k];
+        vvy += w * edy[k];
+        ws += w;
+    }
+    if (ws > 1e-15) { vvx /= ws; vvy /= ws; }
+    return [vvx, vvy];
+}
+
+/**
+ * Compute the deformed world-space position of a grid sample point
+ * at a given layer, then map it to screen-space within a room.
+ *
+ * @param {number} worldX - original world x
+ * @param {number} worldY - original world y
+ * @param {number[]} field - [vx, vy] interpolated displacement
+ * @param {number} t - deformation parameter
+ * @param {number} roomCX - room screen x origin
+ * @param {number} roomCY - room screen y origin
+ * @param {number} roomSize - room pixel size
+ * @param {number} vx0 - view x origin
+ * @param {number} vy0 - view y origin
+ * @param {number} vw - view width
+ * @param {number} vh - view height
+ * @returns {Object} { deformedX, deformedY, screenX, screenY }
+ */
+function deformAndProject(worldX, worldY, field, t, roomCX, roomCY, roomSize, vx0, vy0, vw, vh) {
+    var deformedX = worldX + t * field[0];
+    var deformedY = worldY + t * field[1];
+    var screenX = roomCX + ((deformedX - vx0) / vw) * roomSize;
+    var screenY = roomCY + ((deformedY - vy0) / vh) * roomSize;
+    return { deformedX: deformedX, deformedY: deformedY, screenX: screenX, screenY: screenY };
+}
+
+/**
+ * Compute the visual properties (color, alpha, line width) for a single
+ * flow strand connecting two layers, based on how much the deformed
+ * position shifts between them.
+ *
+ * @param {number} deformedX1 - deformed x at current layer
+ * @param {number} deformedY1 - deformed y at current layer
+ * @param {number} deformedX2 - deformed x at next layer
+ * @param {number} deformedY2 - deformed y at next layer
+ * @param {number} vw - view width (for strain normalization)
+ * @param {number} N - grid resolution (for strain normalization)
+ * @returns {Object} { moveDist, moveAlpha, strainColor, lineWidth }
+ */
+function computeFlowStrandStyle(deformedX1, deformedY1, deformedX2, deformedY2, vw, N) {
+    var moveDist = Math.hypot(deformedX2 - deformedX1, deformedY2 - deformedY1);
+    var moveAlpha = Math.min(0.5, moveDist * 0.3 + 0.03);
+    var strain = (moveDist > 1e-8) ? moveDist / (vw / N + 1e-12) : 0;
+    var sc = s2c(0.5 + strain * 0.5);
+    var lineWidth = Math.min(1.5, 0.3 + moveDist * 0.5);
+    return {
+        moveDist: moveDist,
+        moveAlpha: moveAlpha,
+        strainColor: sc,
+        lineWidth: lineWidth
+    };
+}
+
+/**
+ * Draw a single flow strand (curved line + endpoint dot) between two
+ * screen-space points representing the same grid sample at consecutive layers.
+ *
+ * @param {CanvasRenderingContext2D} c
+ * @param {number} sx1 - screen x at current layer
+ * @param {number} sy1 - screen y at current layer
+ * @param {number} sx2 - screen x at next layer
+ * @param {number} sy2 - screen y at next layer
+ * @param {Object} style - from computeFlowStrandStyle
+ */
+function drawFlowStrand(c, sx1, sy1, sx2, sy2, style) {
+    if (style.moveAlpha < 0.02) return; // skip invisible strands
+
+    var sc = style.strainColor;
+    var alphaStr = style.moveAlpha.toFixed(2);
+
+    // Curved connecting line
+    c.strokeStyle = 'rgba(' + sc[0] + ',' + sc[1] + ',' + sc[2] + ',' + alphaStr + ')';
+    c.lineWidth = style.lineWidth;
+
+    var midX = (sx1 + sx2) / 2 + (sx2 - sx1) * 0.3;
+    var midY = (sy1 + sy2) / 2;
+
+    c.beginPath();
+    c.moveTo(sx1, sy1);
+    c.quadraticCurveTo(midX, midY, sx2, sy2);
+    c.stroke();
+
+    // Endpoint dot
+    var dotAlpha = (style.moveAlpha * 1.5).toFixed(2);
+    c.beginPath();
+    c.arc(sx2, sy2, 1, 0, Math.PI * 2);
+    c.fillStyle = 'rgba(' + sc[0] + ',' + sc[1] + ',' + sc[2] + ',' + dotAlpha + ')';
+    c.fill();
+}
+
+/**
+ * Draw all flow strands for a single token column between two consecutive layers.
+ *
+ * @param {CanvasRenderingContext2D} c
+ * @param {number} roomCX - room screen x origin for this token
+ * @param {number} roomCY - current layer room screen y
+ * @param {number} nextRoomCY - next layer room screen y
+ * @param {Object} layerDeltas - { edx, edy } for current layer
+ * @param {Object} nextDeltas - { edx, edy } for next layer
+ * @param {Float64Array} fx - base x positions
+ * @param {Float64Array} fy - base y positions
+ * @param {number} nP - total points
+ * @param {number} s2i - precomputed 1/(2*sigma^2)
+ * @param {number} t - deformation parameter
+ * @param {number} N - grid resolution
+ * @param {number} roomSize - room pixel size
+ * @param {number} vx0, vy0, vw, vh - view bounds
+ */
+function drawFlowStrandsForToken(c, roomCX, roomCY, nextRoomCY,
+    layerDeltas, nextDeltas, fx, fy, nP, s2i, t, N, roomSize,
+    vx0, vy0, vw, vh) {
+
+    var streamStep = Math.max(1, Math.floor(N / 3));
+
+    for (var sgy = 0; sgy <= N; sgy += streamStep) {
+        for (var sgx = 0; sgx <= N; sgx += streamStep) {
+            var worldX = vx0 + (sgx / N) * vw;
+            var worldY = vy0 + (sgy / N) * vh;
+
+            // Interpolate field at both layers
+            var field1 = interpolateFieldRBF(worldX, worldY, fx, fy,
+                layerDeltas.edx, layerDeltas.edy, nP, s2i);
+            var field2 = interpolateFieldRBF(worldX, worldY, fx, fy,
+                nextDeltas.edx, nextDeltas.edy, nP, s2i);
+
+            // Deform and project to screen space
+            var proj1 = deformAndProject(worldX, worldY, field1, t,
+                roomCX, roomCY, roomSize, vx0, vy0, vw, vh);
+            var proj2 = deformAndProject(worldX, worldY, field2, t,
+                roomCX, nextRoomCY, roomSize, vx0, vy0, vw, vh);
+
+            // Compute visual style
+            var style = computeFlowStrandStyle(
+                proj1.deformedX, proj1.deformedY,
+                proj2.deformedX, proj2.deformedY,
+                vw, N
+            );
+
+            // Draw the strand
+            drawFlowStrand(c, proj1.screenX, proj1.screenY,
+                proj2.screenX, proj2.screenY, style);
+        }
+    }
+}
+
+/**
+ * Top-level: the refactored drawFibreBundleFlowLines.
+ * Orchestrates all layer pairs × token columns using the helpers above.
+ *
+ * @param {CanvasRenderingContext2D} c
+ * @param {Object} layout - room layout from computeFibreRoomLayout
+ * @param {Object} rawDeltas - from computePerLayerRawDeltas
+ * @param {number} nLayers
+ * @param {number} nTokens
+ * @param {number} nP
+ * @param {Float64Array} fx - base x positions
+ * @param {Float64Array} fy - base y positions
+ * @param {number} vx0, vy0, vw, vh - view bounds
+ * @param {number} sig - RBF bandwidth
+ * @param {number} t - deformation parameter
+ * @param {number} currentLayer - (unused visually but available)
+ * @param {number} N - grid resolution
+ */
 function drawFibreBundleFlowLines(c, layout, rawDeltas, nLayers, nTokens, nP,
     fx, fy, vx0, vy0, vw, vh, sig, t, currentLayer, N) {
 
     var s2i = 1 / (2 * sig * sig);
+    var mode = document.getElementById('sel-mode').value;
+
     c.globalAlpha = 0.35;
 
     for (var li = 0; li < nLayers - 1; li++) {
@@ -4409,73 +4605,21 @@ function drawFibreBundleFlowLines(c, layout, rawDeltas, nLayers, nTokens, nP,
         var roomCY = layout.startY + rowIdx * (layout.roomSize + layout.gapY);
         var nextRoomCY = layout.startY + nextRowIdx * (layout.roomSize + layout.gapY);
 
+        // Reuse existing cumulative delta helper
         var layerDeltas = computeCumulativeDeltas(
-            rawDeltas.edxAll, rawDeltas.edyAll, li, nP, nLayers,
-            document.getElementById('sel-mode').value, false);
+            rawDeltas.edxAll, rawDeltas.edyAll, li, nP, nLayers, mode, false);
         var nextDeltas = computeCumulativeDeltas(
-            rawDeltas.edxAll, rawDeltas.edyAll, li + 1, nP, nLayers,
-            document.getElementById('sel-mode').value, false);
+            rawDeltas.edxAll, rawDeltas.edyAll, li + 1, nP, nLayers, mode, false);
 
         for (var ti = 0; ti < nTokens; ti++) {
             var roomCX = layout.startX + ti * (layout.roomSize + layout.gapX);
 
-            var streamStep = Math.max(1, Math.floor(N / 3));
-            for (var sgy = 0; sgy <= N; sgy += streamStep) {
-                for (var sgx = 0; sgx <= N; sgx += streamStep) {
-                    var worldX = vx0 + (sgx / N) * vw;
-                    var worldY = vy0 + (sgy / N) * vh;
-
-                    var vvx1 = 0, vvy1 = 0, ws1 = 0;
-                    for (var k = 0; k < nP; k++) {
-                        var eex = worldX - fx[k], eey = worldY - fy[k];
-                        var w = Math.exp(-(eex * eex + eey * eey) * s2i);
-                        vvx1 += w * layerDeltas.edx[k]; vvy1 += w * layerDeltas.edy[k]; ws1 += w;
-                    }
-                    if (ws1 > 1e-15) { vvx1 /= ws1; vvy1 /= ws1; }
-
-                    var vvx2 = 0, vvy2 = 0, ws2 = 0;
-                    for (var k = 0; k < nP; k++) {
-                        var eex = worldX - fx[k], eey = worldY - fy[k];
-                        var w = Math.exp(-(eex * eex + eey * eey) * s2i);
-                        vvx2 += w * nextDeltas.edx[k]; vvy2 += w * nextDeltas.edy[k]; ws2 += w;
-                    }
-                    if (ws2 > 1e-15) { vvx2 /= ws2; vvy2 /= ws2; }
-
-                    var deformedX1 = worldX + t * vvx1;
-                    var deformedY1 = worldY + t * vvy1;
-                    var deformedX2 = worldX + t * vvx2;
-                    var deformedY2 = worldY + t * vvy2;
-
-                    var sx1 = roomCX + ((deformedX1 - vx0) / vw) * layout.roomSize;
-                    var sy1 = roomCY + ((deformedY1 - vy0) / vh) * layout.roomSize;
-                    var sx2 = roomCX + ((deformedX2 - vx0) / vw) * layout.roomSize;
-                    var sy2 = nextRoomCY + ((deformedY2 - vy0) / vh) * layout.roomSize;
-
-                    var moveDist = Math.hypot(deformedX2 - deformedX1, deformedY2 - deformedY1);
-                    var moveAlpha = Math.min(0.5, moveDist * 0.3 + 0.03);
-
-                    var strain = (moveDist > 1e-8) ? moveDist / (vw / N + 1e-12) : 0;
-                    var sc = s2c(0.5 + strain * 0.5);
-
-                    c.strokeStyle = 'rgba(' + sc[0] + ',' + sc[1] + ',' + sc[2] + ',' + moveAlpha.toFixed(2) + ')';
-                    c.lineWidth = Math.min(1.5, 0.3 + moveDist * 0.5);
-
-                    var midX = (sx1 + sx2) / 2 + (sx2 - sx1) * 0.3;
-                    var midY = (sy1 + sy2) / 2;
-
-                    c.beginPath();
-                    c.moveTo(sx1, sy1);
-                    c.quadraticCurveTo(midX, midY, sx2, sy2);
-                    c.stroke();
-
-                    c.beginPath();
-                    c.arc(sx2, sy2, 1, 0, Math.PI * 2);
-                    c.fillStyle = 'rgba(' + sc[0] + ',' + sc[1] + ',' + sc[2] + ',' + (moveAlpha * 1.5).toFixed(2) + ')';
-                    c.fill();
-                }
-            }
+            drawFlowStrandsForToken(c, roomCX, roomCY, nextRoomCY,
+                layerDeltas, nextDeltas, fx, fy, nP, s2i, t, N,
+                layout.roomSize, vx0, vy0, vw, vh);
         }
     }
+
     c.globalAlpha = 1.0;
 }
 
