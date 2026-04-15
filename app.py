@@ -1240,6 +1240,86 @@ def find_k_neighbors(self_idx, query_vec, all_embeddings, all_labels, all_is_rea
 # 7b. NEXT TOKEN PREDICTION & VOCABULARY NEIGHBORS
 # ============================================================
 
+# ============================================================
+# 7c. PREDICTED TOKEN EMBEDDING & DELTA EXTRACTION
+# ============================================================
+
+def embed_predicted_tokens(tokenizer, model, lm_model, input_ids, model_config, k=20):
+    """
+    Predict the top-k next tokens, then for each one:
+      1. Append it to the input sequence
+      2. Run the extended sequence through the model
+      3. Extract the embedding (layer 0) and per-layer deltas
+         for the predicted token position
+
+    Returns:
+        pred_layer0: list of numpy arrays — embedding vectors for each predicted token
+        pred_deltas: list of list of numpy arrays — [k][n_layers] deltas
+        pred_labels: list of str — token labels
+        pred_probs:  list of float — probabilities
+        pred_token_ids: list of int — token IDs
+    """
+    if lm_model is None:
+        return [], [], [], [], []
+
+    n_layers = get_n_layers(model_config)
+
+    try:
+        with torch.no_grad():
+            outputs = lm_model(input_ids)
+            logits = outputs.logits[0, -1, :]  # last token's logits
+            probs = torch.softmax(logits, dim=-1)
+            topk = torch.topk(probs, k)
+    except Exception as e:
+        print(f"[Predicted] Could not get predictions: {e}")
+        return [], [], [], [], []
+
+    pred_layer0 = []
+    pred_deltas = []
+    pred_labels = []
+    pred_probs = []
+    pred_token_ids = []
+
+    for i in range(k):
+        tid = topk.indices[i].item()
+        prob = topk.values[i].item()
+        token_str = tokenizer.decode([tid]).replace("\u0120", " ").replace("\u010a", "\\n")
+
+        # Build extended sequence: original + this predicted token
+        extended_ids = torch.cat([
+            input_ids,
+            torch.tensor([[tid]], device=input_ids.device)
+        ], dim=1)
+
+        try:
+            with torch.no_grad():
+                hs = extract_hidden_states(model, extended_ids)
+
+            # The predicted token is at position -1 (last) in the extended sequence
+            pred_pos = extended_ids.shape[1] - 1
+
+            # Layer 0 embedding for the predicted token
+            layer0_vec = hs[0][0][pred_pos].cpu().float().numpy()
+            pred_layer0.append(layer0_vec)
+
+            # Per-layer deltas for the predicted token
+            deltas = []
+            for lay in range(n_layers):
+                delta = (hs[lay + 1][0][pred_pos] - hs[lay][0][pred_pos]).cpu().float().numpy()
+                deltas.append(delta)
+            pred_deltas.append(deltas)
+
+            pred_labels.append(f"→{token_str}")
+            pred_probs.append(round(prob, 4))
+            pred_token_ids.append(tid)
+
+        except Exception as e:
+            print(f"[Predicted] Error embedding token '{token_str}': {e}")
+            continue
+
+    print(f"[Predicted] Embedded {len(pred_layer0)}/{k} predicted next tokens")
+    return pred_layer0, pred_deltas, pred_labels, pred_probs, pred_token_ids
+
 def predict_next_token(tokenizer, model, input_ids, model_config, k=5):
     """Predict top-k next tokens using the pre-loaded LM model if available."""
     global LM_MODEL
@@ -2022,24 +2102,55 @@ def process_text(text, model_name=None, itp_method='rbf'):
     all_labels = list(tokens_clean)
     all_is_real = [True] * n_real
 
+    # ================================================================
+    # NEW: Embed predicted next tokens and add them as source points
+    # ================================================================
+    print("[Model] Embedding predicted next tokens...")
+    pred_layer0, pred_deltas, pred_labels, pred_probs, pred_token_ids = \
+        embed_predicted_tokens(
+            TOKENIZER, MODEL, LM_MODEL, real_ids, MODEL_CONFIG, k=20
+        )
+
+    n_predicted = len(pred_layer0)
+    is_predicted = []  # track which points are predictions
+
+    for pi in range(n_predicted):
+        all_layer0.append(pred_layer0[pi])
+        all_deltas_per_point.append(pred_deltas[pi])
+        if decomposition_available:
+            # For predicted tokens, we don't have attn/mlp decomposition
+            # (would require hooking the extended sequence separately)
+            # Use the full delta as both attn and mlp placeholder
+            all_attn_deltas.append([np.zeros(hidden_dim) for _ in range(n_layers)])
+            all_mlp_deltas.append([np.zeros(hidden_dim) for _ in range(n_layers)])
+        all_labels.append(pred_labels[pi])
+        all_is_real.append(False)
+        is_predicted.append(True)
+
+    n_after_predicted = len(all_layer0)
+    print(f"[Model] {n_real} real + {n_predicted} predicted = {n_after_predicted} source points for interpolation")
+
     n_total = len(all_layer0)
-    print(f"[Model] {n_total} real points")
 
     # Compute neighbors among real tokens only
     real_embeddings = np.stack(all_layer0[:n_real], axis=0)
     all_embeddings = np.stack(all_layer0, axis=0)
     neighbors = compute_neighbors(real_embeddings, all_embeddings, all_labels, all_is_real, k=10)
 
-    # Predict next token
-    print("[Model] Predicting next token...")
-    next_token_preds = predict_next_token(TOKENIZER, MODEL, real_ids, MODEL_CONFIG, k=5)
+    # Predict next token (for display — we already have the data)
+    print("[Model] Formatting next token predictions...")
+    next_token_preds = [
+        {"token": pred_labels[i].lstrip("→"), "prob": pred_probs[i]}
+        for i in range(n_predicted)
+    ]
 
     # Find vocabulary neighbors for each real token
     print("[Model] Finding vocabulary neighbors...")
     vocab_neighbors = find_vocab_neighbors(TOKENIZER, MODEL, all_layer0[:n_real], n_real, k=5)
 
-    # PCA on real points only, then generate systematic grid probes
-    print("[Model] Creating systematic grid probes around real points...")
+    # PCA on ALL source points (real + predicted) for grid probe generation
+    # This ensures the grid covers the predicted token region too
+    print("[Model] Creating systematic grid probes around real + predicted points...")
     layer0_mat = np.stack(all_layer0, axis=0)
 
     if n_real < 2:
@@ -2048,6 +2159,8 @@ def process_text(text, model_name=None, itp_method='rbf'):
     centroid, centered, pc1, pc2, proj1, proj2 = compute_pca_basis(layer0_mat, hidden_dim)
     existing_proj = np.stack([proj1, proj2], axis=1)
 
+    # Grid probes now interpolate from BOTH real tokens AND predicted tokens
+    # This means the diffeomorphism field incorporates predicted-token geometry
     grid_layer0, grid_deltas, grid_attn_deltas, grid_mlp_deltas = create_grid_probes(
         centroid, pc1, pc2, proj1, proj2, existing_proj,
         all_deltas_per_point, n_layers, hidden_dim,
@@ -2060,7 +2173,7 @@ def process_text(text, model_name=None, itp_method='rbf'):
     n_grid = len(grid_layer0)
     print(f"[Model] Added {n_grid} systematic grid probes (itp={itp_method})")
 
-    # Append grid probes as the ONLY synthetic points
+    # Append grid probes as synthetic points
     for gi in range(n_grid):
         all_layer0.append(grid_layer0[gi])
         all_deltas_per_point.append(grid_deltas[gi])
@@ -2098,8 +2211,11 @@ def process_text(text, model_name=None, itp_method='rbf'):
         strain_stats=strain_stats,
     )
 
-    # Include the interpolation method in the response
+    # Include metadata about predicted points
     data["itp_method"] = itp_method
+    data["n_predicted"] = n_predicted
+    data["predicted_indices"] = list(range(n_real, n_real + n_predicted))
+    data["predicted_probs"] = pred_probs
 
     json_str = json.dumps(data, cls=SafeFloatEncoder)
     print(f"[Model] JSON: {len(json_str)/1024/1024:.1f} MB")
@@ -2543,6 +2659,7 @@ ITP: <span id="i-itp">rbf</span>
 <div class="li"><div class="lc" style="background:#e94560"></div>Expansion</div>
 <div class="li"><div class="lc" style="background:#0f0"></div>Selected</div>
 <div class="li"><div class="lc" style="background:rgba(0,255,200,0.5)"></div>Neighbor</div>
+<div class="li"><div class="lc" style="background:#f5a623"></div>Predicted Next</div>
 </div>
 </div>
 <script>
@@ -3525,6 +3642,45 @@ function draw2D(){
                 }
             }
         });
+    }
+
+    // ---- Predicted next-token points ----
+    if(D.predicted_indices && D.predicted_indices.length > 0 && p.tok){
+        for(var pi2=0; pi2<D.predicted_indices.length; pi2++){
+            var pidx = D.predicted_indices[pi2];
+            if(pidx >= nP) continue;
+            var px2 = SX(fx[pidx]), py2 = SY(fy[pidx]);
+            var prob = D.predicted_probs ? D.predicted_probs[pi2] : 0;
+            var dotSize = 4 + prob * 12; // bigger dot = higher probability
+
+            // Pulsing glow for predicted tokens
+            var glowR = 20 + prob * 30;
+            var grad3 = c.createRadialGradient(px2, py2, 0, px2, py2, glowR);
+            grad3.addColorStop(0, 'rgba(245,166,35,0.2)');
+            grad3.addColorStop(1, 'rgba(245,166,35,0)');
+            c.beginPath(); c.arc(px2, py2, glowR, 0, Math.PI*2);
+            c.fillStyle = grad3; c.fill();
+
+            // Diamond shape for predicted tokens
+            c.save();
+            c.translate(px2, py2);
+            c.rotate(Math.PI/4);
+            c.fillStyle = 'rgba(245,166,35,' + (0.4 + prob * 0.6).toFixed(2) + ')';
+            c.fillRect(-dotSize/2, -dotSize/2, dotSize, dotSize);
+            c.strokeStyle = '#f5a623';
+            c.lineWidth = 1.5;
+            c.strokeRect(-dotSize/2, -dotSize/2, dotSize, dotSize);
+            c.restore();
+
+            // Label
+            c.font = '9px monospace';
+            c.lineWidth = 2;
+            c.strokeStyle = 'rgba(0,0,0,0.9)';
+            var plb = D.tokens[pidx] + ' (' + (prob*100).toFixed(1) + '%)';
+            c.strokeText(plb, px2+10, py2-6);
+            c.fillStyle = '#f5a623';
+            c.fillText(plb, px2+10, py2-6);
+        }
     }
 
     if(p.tok){
