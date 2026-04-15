@@ -8149,207 +8149,179 @@ function drawMiniPanel3D(c, sentD, W, H) {
 /**
  * Mini Fibre Bundle panel — renders the token-per-column, layer-per-row grid view
  */
+// ============================================================
+// REFACTORED drawMiniPanelFibre — reuses existing composable helpers
+// ============================================================
+
+/**
+ * Mini Fibre Bundle panel — renders the token-per-column, layer-per-row
+ * grid view for a single sentence into an offscreen context.
+ *
+ * Refactored to reuse:
+ *   - extractPositions2D
+ *   - computeViewBounds2D
+ *   - computeFibreGridResolution
+ *   - computeEdxEdyForLayerMini  (existing helper)
+ *   - buildDeformedGrid2D
+ *   - drawStrainHeatmapInRoom
+ *   - drawGridLinesInRoom
+ *   - drawReferenceGridInRoom
+ *   - drawFibreRoomBackground
+ *   - drawFibreTokenDot
+ *   - drawFibreTokenLabel
+ */
 function drawMiniPanelFibre(c, sentD, W, H) {
-  var p = gp();
-  var nR = sentD.n_real;
-  var nLayers = sentD.n_layers;
-  var nP = sentD.n_points;
-  var dx = Math.min(p.dx, sentD.hidden_dim - 1);
-  var dy = Math.min(p.dy, sentD.hidden_dim - 1);
-  var mode = p.mode;
-  var isEmb = (mode === 'embedding');
-  var layer = Math.min(p.layer, nLayers - 1);
-  var amp = p.amp, t = p.t, sig = p.sig;
+    var p = gp();
+    var nR = sentD.n_real;
+    var nLayers = sentD.n_layers;
+    var nP = sentD.n_points;
+    var dx = Math.min(p.dx, sentD.hidden_dim - 1);
+    var dy = Math.min(p.dy, sentD.hidden_dim - 1);
+    var mode = p.mode;
+    var isEmb = (mode === 'embedding');
+    var layer = Math.min(p.layer, nLayers - 1);
+    var amp = p.amp, t = p.t, sig = p.sig;
 
-  // Read display toggles from the checkboxes
-  var showGrid = document.getElementById('cb-grid').checked;
-  var showHeat = document.getElementById('cb-heat').checked;
-  var showSC = document.getElementById('cb-sc').checked;
+    var showGrid = document.getElementById('cb-grid').checked;
+    var showHeat = document.getElementById('cb-heat').checked;
+    var showSC   = document.getElementById('cb-sc').checked;
 
-  var decomp = document.getElementById('sel-decomp').value;
-  var activeDeltas = sentD.deltas;
-  if (decomp === 'attn' && sentD.attn_deltas) activeDeltas = sentD.attn_deltas;
-  if (decomp === 'mlp' && sentD.mlp_deltas) activeDeltas = sentD.mlp_deltas;
+    var decomp = document.getElementById('sel-decomp').value;
+    var activeDeltas = sentD.deltas;
+    if (decomp === 'attn' && sentD.attn_deltas) activeDeltas = sentD.attn_deltas;
+    if (decomp === 'mlp'  && sentD.mlp_deltas)  activeDeltas = sentD.mlp_deltas;
 
-  var fx = new Float64Array(nP), fy = new Float64Array(nP);
-  for (var i = 0; i < nP; i++) { fx[i] = sentD.fixed_pos[i][dx]; fy[i] = sentD.fixed_pos[i][dy]; }
+    var itpM = document.getElementById('sel-itp').value;
 
-  var mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
-  for (var i = 0; i < nR; i++) {
-    if (fx[i] < mnx) mnx = fx[i]; if (fx[i] > mxx) mxx = fx[i];
-    if (fy[i] < mny) mny = fy[i]; if (fy[i] > mxy) mxy = fy[i];
-  }
-  var mr = Math.max(mxx - mnx, mxy - mny) || 1;
-  var cxv = (mnx + mxx) / 2, cyv = (mny + mxy) / 2;
-  var pd = 0.15;
-  var vx0 = cxv - mr * (0.5 + pd), vy0 = cyv - mr * (0.5 + pd);
-  var vw = mr * (1 + 2 * pd), vh = vw;
+    // ---- Reuse extractPositions2D ----
+    var pos = extractPositions2D(sentD, nP, dx, dy);
+    var fx = pos.fx, fy = pos.fy;
 
-  // Layout: rooms
-  var margin = 4;
-  var labelW = 18;
-  var availW = W - 2 * margin - labelW;
-  var availH = H - 2 * margin;
-  var roomSize = Math.max(12, Math.min(
-    Math.floor(availW / (nR * 1.3)),
-    Math.floor(availH / (nLayers * 1.4))
-  ));
-  var gapX = Math.max(2, Math.floor(roomSize * 0.2));
-  var gapY = Math.max(3, Math.floor(roomSize * 0.25));
-  var startX = margin + labelW;
-  var startY = margin;
+    // ---- Reuse computeViewBounds2D (uses all points including probes) ----
+    var bounds = computeViewBounds2D(fx, fy, nP, 0.15);
+    var vx0 = bounds.vx0, vy0 = bounds.vy0, vw = bounds.vw, vh = bounds.vh;
 
-  var N = Math.max(3, Math.min(8, Math.floor(roomSize / 5)));
-  var itpM = document.getElementById('sel-itp').value;
+    // ---- Compute mini fibre layout ----
+    var layout = computeMiniFibreLayout(W, H, nR, nLayers);
 
-  var tc = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71','#e74c3c','#3498db','#9b59b6'];
+    // ---- Grid resolution via existing helper ----
+    var N = computeFibreGridResolution(layout.roomSize, 3, 8, 5);
 
-  for (var li = 0; li < nLayers; li++) {
-    var rowIdx = nLayers - 1 - li;
-    var roomCY = startY + rowIdx * (roomSize + gapY);
-    var isCurrent = (li === layer);
+    var tc = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71',
+              '#e74c3c','#3498db','#9b59b6'];
 
-    // Layer label
-    c.font = (isCurrent ? 'bold ' : '') + '6px monospace';
-    c.fillStyle = isCurrent ? '#e94560' : '#555';
-    c.textAlign = 'right';
-    c.fillText('L' + li, startX - 2, roomCY + roomSize / 2 + 3);
+    // ---- Draw each layer row ----
+    for (var li = 0; li < nLayers; li++) {
+        var rowIdx = nLayers - 1 - li;
+        var roomCY = layout.startY + rowIdx * (layout.roomSize + layout.gapY);
+        var isCurrent = (li === layer);
 
-    var layerDeltas = computeEdxEdyForLayerMini(sentD, li, nP, dx, dy, amp, mode, activeDeltas, nLayers);
-    var edxCum = layerDeltas.edx;
-    var edyCum = layerDeltas.edy;
+        // Layer label
+        c.font = (isCurrent ? 'bold ' : '') + '6px monospace';
+        c.fillStyle = isCurrent ? '#e94560' : '#555';
+        c.textAlign = 'right';
+        c.fillText('L' + li, layout.startX - 2, roomCY + layout.roomSize / 2 + 3);
 
-    for (var ti = 0; ti < nR; ti++) {
-      var roomCX = startX + ti * (roomSize + gapX);
+        // ---- Reuse computeEdxEdyForLayerMini ----
+        var layerDeltas = computeEdxEdyForLayerMini(
+            sentD, li, nP, dx, dy, amp, mode, activeDeltas, nLayers
+        );
 
-      // Room background
-      var bgAlpha = isCurrent ? 0.15 : 0.06;
-      c.fillStyle = 'rgba(30,30,60,' + bgAlpha + ')';
-      c.fillRect(roomCX, roomCY, roomSize, roomSize);
+        // ---- Draw each token's room ----
+        for (var ti = 0; ti < nR; ti++) {
+            var roomCX = layout.startX + ti * (layout.roomSize + layout.gapX);
 
-      // Room border
-      c.strokeStyle = isCurrent ? 'rgba(233,69,96,0.6)' : 'rgba(60,60,100,0.25)';
-      c.lineWidth = isCurrent ? 1.5 : 0.5;
-      c.strokeRect(roomCX, roomCY, roomSize, roomSize);
+            // ---- Reuse drawFibreRoomBackground ----
+            drawFibreRoomBackground(c, roomCX, roomCY, layout.roomSize, isCurrent);
 
-      // Build deformed grid for this room
-      var grid = buildDeformedGridMini(vx0, vy0, vw, vh, N, fx, fy, edxCum, edyCum, nP, sig, t, isEmb, itpM);
+            // ---- Reuse buildDeformedGrid2D ----
+            var grid = buildDeformedGrid2D(
+                vx0, vy0, vw, vh, N,
+                fx, fy, layerDeltas.edx, layerDeltas.edy,
+                nP, sig, t, isEmb, itpM
+            );
 
-      // Strain heatmap
-      if (showHeat && !isEmb) {
-        for (var hy = 0; hy < N; hy++) {
-          for (var hx = 0; hx < N; hx++) {
-            var avg = (grid.sH[hy * N + hx] + grid.sH[(hy + 1) * N + hx] +
-                       grid.sV[hy * (N + 1) + hx] + grid.sV[hy * (N + 1) + hx + 1]) / 4;
-            var co = s2c(avg);
-            var i00 = hy * (N + 1) + hx, i10 = i00 + 1;
-            var i01 = (hy + 1) * (N + 1) + hx, i11 = i01 + 1;
-            c.beginPath();
-            c.moveTo(roomCX + ((grid.gX[i00] - vx0) / vw) * roomSize,
-                     roomCY + ((grid.gY[i00] - vy0) / vh) * roomSize);
-            c.lineTo(roomCX + ((grid.gX[i10] - vx0) / vw) * roomSize,
-                     roomCY + ((grid.gY[i10] - vy0) / vh) * roomSize);
-            c.lineTo(roomCX + ((grid.gX[i11] - vx0) / vw) * roomSize,
-                     roomCY + ((grid.gY[i11] - vy0) / vh) * roomSize);
-            c.lineTo(roomCX + ((grid.gX[i01] - vx0) / vw) * roomSize,
-                     roomCY + ((grid.gY[i01] - vy0) / vh) * roomSize);
-            c.closePath();
-            c.fillStyle = 'rgba(' + co[0] + ',' + co[1] + ',' + co[2] + ',0.4)';
-            c.fill();
-          }
-        }
-      }
-
-      // Grid lines
-      if (showGrid && !isEmb) {
-        c.lineWidth = 0.5;
-        for (var dhy = 0; dhy <= N; dhy++) {
-          for (var dhx = 0; dhx < N; dhx++) {
-            var di1 = dhy * (N + 1) + dhx, di2 = di1 + 1;
-            var es = grid.sH[dhy * N + dhx];
-            if (showSC) {
-              var ec = s2c(es);
-              c.strokeStyle = 'rgba(' + ec[0] + ',' + ec[1] + ',' + ec[2] + ',0.8)';
-            } else {
-              c.strokeStyle = 'rgba(200,200,200,0.4)';
+            // ---- Reuse drawStrainHeatmapInRoom ----
+            if (showHeat && !isEmb) {
+                drawStrainHeatmapInRoom(
+                    c, grid, N, roomCX, roomCY, layout.roomSize,
+                    vx0, vy0, vw, vh
+                );
             }
-            c.beginPath();
-            c.moveTo(roomCX + ((grid.gX[di1] - vx0) / vw) * roomSize,
-                     roomCY + ((grid.gY[di1] - vy0) / vh) * roomSize);
-            c.lineTo(roomCX + ((grid.gX[di2] - vx0) / vw) * roomSize,
-                     roomCY + ((grid.gY[di2] - vy0) / vh) * roomSize);
-            c.stroke();
-          }
-        }
-        for (var dvx = 0; dvx <= N; dvx++) {
-          for (var dvy = 0; dvy < N; dvy++) {
-            var dvi1 = dvy * (N + 1) + dvx, dvi2 = (dvy + 1) * (N + 1) + dvx;
-            var vs = grid.sV[dvy * (N + 1) + dvx];
-            if (showSC) {
-              var vc = s2c(vs);
-              c.strokeStyle = 'rgba(' + vc[0] + ',' + vc[1] + ',' + vc[2] + ',0.8)';
-            } else {
-              c.strokeStyle = 'rgba(200,200,200,0.4)';
+
+            // ---- Reuse drawGridLinesInRoom ----
+            if (showGrid && !isEmb) {
+                drawGridLinesInRoom(
+                    c, grid, N, roomCX, roomCY, layout.roomSize,
+                    vx0, vy0, vw, vh, showSC
+                );
             }
-            c.beginPath();
-            c.moveTo(roomCX + ((grid.gX[dvi1] - vx0) / vw) * roomSize,
-                     roomCY + ((grid.gY[dvi1] - vy0) / vh) * roomSize);
-            c.lineTo(roomCX + ((grid.gX[dvi2] - vx0) / vw) * roomSize,
-                     roomCY + ((grid.gY[dvi2] - vy0) / vh) * roomSize);
-            c.stroke();
-          }
-        }
-      }
 
-      // Reference grid in embedding mode
-      if (isEmb) {
-        c.strokeStyle = 'rgba(255,255,255,0.12)';
-        c.lineWidth = 0.3;
-        for (var ry = 0; ry <= N; ry++) {
-          c.beginPath();
-          for (var rx = 0; rx <= N; rx++) {
-            var ri = ry * (N + 1) + rx;
-            var rsx = roomCX + ((grid.oX[ri] - vx0) / vw) * roomSize;
-            var rsy = roomCY + ((grid.oY[ri] - vy0) / vh) * roomSize;
-            if (rx === 0) c.moveTo(rsx, rsy); else c.lineTo(rsx, rsy);
-          }
-          c.stroke();
-        }
-        for (var rx = 0; rx <= N; rx++) {
-          c.beginPath();
-          for (var ry = 0; ry <= N; ry++) {
-            var ri = ry * (N + 1) + rx;
-            var rsx = roomCX + ((grid.oX[ri] - vx0) / vw) * roomSize;
-            var rsy = roomCY + ((grid.oY[ri] - vy0) / vh) * roomSize;
-            if (ry === 0) c.moveTo(rsx, rsy); else c.lineTo(rsx, rsy);
-          }
-          c.stroke();
-        }
-      }
+            // ---- Reuse drawReferenceGridInRoom (embedding mode) ----
+            if (isEmb) {
+                drawReferenceGridInRoom(
+                    c, grid, N, roomCX, roomCY, layout.roomSize,
+                    vx0, vy0, vw, vh
+                );
+            }
 
-      // Token dot
-      var tokX = roomCX + ((fx[ti] - vx0) / vw) * roomSize;
-      var tokY = roomCY + ((fy[ti] - vy0) / vh) * roomSize;
-      c.beginPath();
-      c.arc(tokX, tokY, Math.max(2, roomSize / 20), 0, Math.PI * 2);
-      c.fillStyle = tc[ti % tc.length];
-      c.fill();
+            // ---- Reuse drawFibreTokenDot ----
+            drawFibreTokenDot(
+                c, fx[ti], fy[ti],
+                layerDeltas.edx[ti], layerDeltas.edy[ti], t,
+                roomCX, roomCY, layout.roomSize,
+                vx0, vy0, vw, vh,
+                tc[ti % tc.length], isEmb, N
+            );
 
-      // Token label at bottom row only
-      if (li === 0 && roomSize > 25) {
-        c.font = 'bold 6px monospace';
-        c.fillStyle = tc[ti % tc.length];
-        c.textAlign = 'center';
-        c.fillText('[' + ti + ']', roomCX + roomSize / 2, roomCY + roomSize + 8);
-      }
+            // ---- Reuse drawFibreTokenLabel (bottom row only) ----
+            if (li === 0 && layout.roomSize > 25) {
+                drawFibreTokenLabel(c, ti, sentD.tokens[ti],
+                    roomCX, roomCY, layout.roomSize);
+            }
+        }
     }
-  }
 
-  // HUD
-  c.font = '7px monospace';
-  c.fillStyle = 'rgba(255,255,255,0.3)';
-  c.textAlign = 'left';
-  c.fillText('FIBRE L' + layer + ' d' + dx + ',' + dy, 4, 10);
+    // HUD
+    c.font = '7px monospace';
+    c.fillStyle = 'rgba(255,255,255,0.3)';
+    c.textAlign = 'left';
+    c.fillText('FIBRE L' + layer + ' d' + dx + ',' + dy, 4, 10);
+}
+
+// ============================================================
+// NEW HELPER: computeMiniFibreLayout
+// Computes the room layout for a mini fibre panel.
+// Extracted so it can be reused by any mini-panel renderer
+// that needs a token×layer grid layout within a given rectangle.
+//
+// @param {number} W - available width
+// @param {number} H - available height
+// @param {number} nTokens - number of token columns
+// @param {number} nLayers - number of layer rows
+// @returns {Object} { margin, labelW, roomSize, gapX, gapY, startX, startY }
+// ============================================================
+function computeMiniFibreLayout(W, H, nTokens, nLayers) {
+    var margin = 4;
+    var labelW = 18;
+    var availW = W - 2 * margin - labelW;
+    var availH = H - 2 * margin;
+    var roomSize = Math.max(12, Math.min(
+        Math.floor(availW / (nTokens * 1.3)),
+        Math.floor(availH / (nLayers * 1.4))
+    ));
+    var gapX = Math.max(2, Math.floor(roomSize * 0.2));
+    var gapY = Math.max(3, Math.floor(roomSize * 0.25));
+
+    return {
+        margin:   margin,
+        labelW:   labelW,
+        roomSize: roomSize,
+        gapX:     gapX,
+        gapY:     gapY,
+        startX:   margin + labelW,
+        startY:   margin
+    };
 }
 
 /**
