@@ -6124,7 +6124,7 @@ function drawFibreBundle() {
     var availH = (H / zoomLevel) - 2 * margin - labelH;
 
     var gapFracX = 0.35;
-    var gapFracY = 0.45; // slightly more gap for flow lines between layers
+    var gapFracY = 0.45;
     var roomW = Math.max(30, Math.floor(availW / (nTokens * (1 + gapFracX))));
     var roomH = Math.max(30, Math.floor(availH / (nLayers * (1 + gapFracY))));
     var roomSize = Math.min(roomW, roomH);
@@ -6280,14 +6280,12 @@ function drawFibreBundle() {
             for (var ti = 0; ti < nTokens; ti++) {
                 var roomCX = startX + ti * (roomSize + gapX);
 
-                // Sample a sparse set of grid points to draw streamlines
                 var streamStep = Math.max(1, Math.floor(N / 3));
                 for (var sgy = 0; sgy <= N; sgy += streamStep) {
                     for (var sgx = 0; sgx <= N; sgx += streamStep) {
                         var worldX = vx0 + (sgx / N) * vw;
                         var worldY = vy0 + (sgy / N) * vh;
 
-                        // Interpolate deformation at this grid point for current layer
                         var vvx1 = 0, vvy1 = 0, ws1 = 0;
                         for (var k = 0; k < nP; k++) {
                             var eex = worldX - fx[k], eey = worldY - fy[k];
@@ -6296,7 +6294,6 @@ function drawFibreBundle() {
                         }
                         if (ws1 > 1e-15) { vvx1 /= ws1; vvy1 /= ws1; }
 
-                        // Same for next layer
                         var vvx2 = 0, vvy2 = 0, ws2 = 0;
                         for (var k = 0; k < nP; k++) {
                             var eex = worldX - fx[k], eey = worldY - fy[k];
@@ -6305,7 +6302,6 @@ function drawFibreBundle() {
                         }
                         if (ws2 > 1e-15) { vvx2 /= ws2; vvy2 /= ws2; }
 
-                        // Screen positions of this grid point in current and next room
                         var deformedX1 = worldX + t * vvx1;
                         var deformedY1 = worldY + t * vvy1;
                         var deformedX2 = worldX + t * vvx2;
@@ -6316,18 +6312,15 @@ function drawFibreBundle() {
                         var sx2 = roomCX + ((deformedX2 - vx0) / vw) * roomSize;
                         var sy2 = nextRoomCY + ((deformedY2 - vy0) / vh) * roomSize;
 
-                        // Movement magnitude determines color intensity
                         var moveDist = Math.hypot(deformedX2 - deformedX1, deformedY2 - deformedY1);
                         var moveAlpha = Math.min(0.5, moveDist * 0.3 + 0.03);
 
-                        // Color: red if expanding, blue if contracting, gray if isometric
                         var strain = (moveDist > 1e-8) ? moveDist / (vw / N + 1e-12) : 0;
                         var sc = s2c(0.5 + strain * 0.5);
 
                         c.strokeStyle = 'rgba(' + sc[0] + ',' + sc[1] + ',' + sc[2] + ',' + moveAlpha.toFixed(2) + ')';
                         c.lineWidth = Math.min(1.5, 0.3 + moveDist * 0.5);
 
-                        // Draw a smooth bezier curve between the two rooms
                         var midX = (sx1 + sx2) / 2 + (sx2 - sx1) * 0.3;
                         var midY = (sy1 + sy2) / 2;
 
@@ -6336,7 +6329,6 @@ function drawFibreBundle() {
                         c.quadraticCurveTo(midX, midY, sx2, sy2);
                         c.stroke();
 
-                        // Small dot at the connection point in the next room
                         c.beginPath();
                         c.arc(sx2, sy2, 1, 0, Math.PI * 2);
                         c.fillStyle = 'rgba(' + sc[0] + ',' + sc[1] + ',' + sc[2] + ',' + (moveAlpha * 1.5).toFixed(2) + ')';
@@ -6380,8 +6372,6 @@ function drawFibreBundle() {
             // Build deformed grid for this room
             var grid = buildDeformedGrid(edxCum, edyCum);
 
-            // Coordinate transforms: world -> room screen
-            // We need closures that capture roomCX/roomCY properly
             var _roomCX = roomCX, _roomCY = roomCY;
             var _vx0 = vx0, _vy0 = vy0, _vw = vw, _vh = vh, _roomSize = roomSize;
 
@@ -6419,7 +6409,6 @@ function drawFibreBundle() {
             // ---- Deformed grid lines ----
             if (showGrid && !isEmb) {
                 c.lineWidth = 0.6;
-                // Horizontal edges
                 for (var dhy = 0; dhy <= N; dhy++) {
                     for (var dhx = 0; dhx < N; dhx++) {
                         var di1 = dhy * (N + 1) + dhx, di2 = di1 + 1;
@@ -6438,7 +6427,6 @@ function drawFibreBundle() {
                         c.stroke();
                     }
                 }
-                // Vertical edges
                 for (var dvx = 0; dvx <= N; dvx++) {
                     for (var dvy = 0; dvy < N; dvy++) {
                         var dvi1 = dvy * (N + 1) + dvx, dvi2 = (dvy + 1) * (N + 1) + dvx;
@@ -6589,6 +6577,66 @@ function drawFibreBundle() {
             }
         } // end token loop
 
+        // ========== PREDICTED NEXT-TOKEN POINTS at this layer ==========
+        if (D.predicted_indices && D.predicted_indices.length > 0 && !isEmb) {
+            for (var pi2 = 0; pi2 < D.predicted_indices.length; pi2++) {
+                var pidx = D.predicted_indices[pi2];
+                if (pidx >= nP) continue;
+                var prob = D.predicted_probs ? D.predicted_probs[pi2] : 0;
+
+                // Compute the predicted token's deformed world position at this layer
+                var predWX = fx[pidx] + t * edxCum[pidx];
+                var predWY = fy[pidx] + t * edyCum[pidx];
+
+                // For each real token's room, check if the predicted point
+                // falls within the view bounds and draw it there
+                for (var ti2 = 0; ti2 < nTokens; ti2++) {
+                    var roomCX2 = startX + ti2 * (roomSize + gapX);
+
+                    var predScreenX = roomCX2 + ((predWX - vx0) / vw) * roomSize;
+                    var predScreenY = roomCY + ((predWY - vy0) / vh) * roomSize;
+
+                    // Only draw if inside the room bounds (with margin)
+                    if (predScreenX >= roomCX2 - 3 && predScreenX <= roomCX2 + roomSize + 3 &&
+                        predScreenY >= roomCY - 3 && predScreenY <= roomCY + roomSize + 3) {
+
+                        var dotSz = 2 + prob * 5;
+
+                        // Glow
+                        var glowR2 = 5 + prob * 8;
+                        var grad4 = c.createRadialGradient(predScreenX, predScreenY, 0, predScreenX, predScreenY, glowR2);
+                        grad4.addColorStop(0, 'rgba(245,166,35,0.12)');
+                        grad4.addColorStop(1, 'rgba(245,166,35,0)');
+                        c.beginPath(); c.arc(predScreenX, predScreenY, glowR2, 0, Math.PI * 2);
+                        c.fillStyle = grad4; c.fill();
+
+                        // Diamond shape
+                        c.save();
+                        c.translate(predScreenX, predScreenY);
+                        c.rotate(Math.PI / 4);
+                        c.fillStyle = 'rgba(245,166,35,' + (0.3 + prob * 0.5).toFixed(2) + ')';
+                        c.fillRect(-dotSz / 2, -dotSz / 2, dotSz, dotSz);
+                        c.strokeStyle = '#f5a623';
+                        c.lineWidth = 0.7;
+                        c.strokeRect(-dotSz / 2, -dotSz / 2, dotSz, dotSz);
+                        c.restore();
+
+                        // Label only on current layer to avoid clutter
+                        if (isCurrentLayer && roomSize > 40) {
+                            c.font = '6px monospace';
+                            c.lineWidth = 1;
+                            c.strokeStyle = 'rgba(0,0,0,0.8)';
+                            c.fillStyle = '#f5a623';
+                            c.textAlign = 'left';
+                            var plb2 = D.tokens[pidx] + ' ' + (prob * 100).toFixed(0) + '%';
+                            c.strokeText(plb2, predScreenX + dotSz + 2, predScreenY - 2);
+                            c.fillText(plb2, predScreenX + dotSz + 2, predScreenY - 2);
+                        }
+                    }
+                }
+            }
+        }
+
         // ========== PASS 3: Diffeomorphism connections between layers ==========
         if (fibreState.showConnections && li < nLayers - 1 && !isEmb) {
             var nextRowIdx = nLayers - 2 - li;
@@ -6625,74 +6673,124 @@ function drawFibreBundle() {
                 c.quadraticCurveTo(midX, (sy1 + sy2) / 2, sx2, sy2);
                 c.stroke();
             }
+
+            // ========== Predicted token inter-layer connections ==========
+            if (D.predicted_indices && D.predicted_indices.length > 0) {
+                for (var pi3 = 0; pi3 < D.predicted_indices.length; pi3++) {
+                    var pidx3 = D.predicted_indices[pi3];
+                    if (pidx3 >= nP) continue;
+                    var prob3 = D.predicted_probs ? D.predicted_probs[pi3] : 0;
+
+                    var moveDistP = Math.hypot(
+                        edxNext[pidx3] - edxCum[pidx3],
+                        edyNext[pidx3] - edyCum[pidx3]
+                    );
+                    var moveAlphaP = Math.min(0.4, moveDistP * 0.01 + 0.02) * (0.3 + prob3 * 0.7);
+
+                    if (moveAlphaP < 0.02) continue;
+
+                    // Use the center of the first token's room as reference
+                    var refRoomCX = startX;
+                    var predCurrX = refRoomCX + ((fx[pidx3] + t * edxCum[pidx3] - vx0) / vw) * roomSize;
+                    var predCurrY = roomCY + ((fy[pidx3] + t * edyCum[pidx3] - vy0) / vh) * roomSize;
+                    var predNextX = refRoomCX + ((fx[pidx3] + t * edxNext[pidx3] - vx0) / vw) * roomSize;
+                    var predNextY = nextRoomCY + ((fy[pidx3] + t * edyNext[pidx3] - vy0) / vh) * roomSize;
+
+                    c.strokeStyle = 'rgba(245,166,35,' + moveAlphaP.toFixed(2) + ')';
+                    c.lineWidth = Math.min(1.5, 0.3 + moveDistP * 0.003);
+                    c.setLineDash([3, 3]);
+                    c.beginPath();
+                    c.moveTo(predCurrX, predCurrY);
+                    var midXP = (predCurrX + predNextX) / 2 + Math.sin(pi3 * 2.1 + li * 0.9) * gapX * 0.4;
+                    c.quadraticCurveTo(midXP, (predCurrY + predNextY) / 2, predNextX, predNextY);
+                    c.stroke();
+                    c.setLineDash([]);
+                }
+            }
         }
     } // end layer loop
 
-  // ========== Axis labels ==========
-  c.font = 'bold 10px monospace';
-  c.fillStyle = '#53a8b6';
-  c.textAlign = 'center';
-  var totalW = nTokens * (roomSize + gapX) - gapX;
-  c.fillText(
-    '\u2190 Base Manifold: Token Index \u2192',
-    startX + totalW / 2,
-    startY + nLayers * (roomSize + gapY) + 28
-  );
+    // ========== Axis labels ==========
+    c.font = 'bold 10px monospace';
+    c.fillStyle = '#53a8b6';
+    c.textAlign = 'center';
+    var totalW = nTokens * (roomSize + gapX) - gapX;
+    c.fillText(
+        '\u2190 Base Manifold: Token Index \u2192',
+        startX + totalW / 2,
+        startY + nLayers * (roomSize + gapY) + 28
+    );
 
-  c.save();
-  c.translate(startX - 35, startY + nLayers * (roomSize + gapY) / 2);
-  c.rotate(-Math.PI / 2);
-  c.font = 'bold 10px monospace';
-  c.fillStyle = '#53a8b6';
-  c.textAlign = 'center';
-  c.fillText('\u2190 Fibre: Layer Depth \u2192', 0, 0);
-  c.restore();
+    c.save();
+    c.translate(startX - 35, startY + nLayers * (roomSize + gapY) / 2);
+    c.rotate(-Math.PI / 2);
+    c.font = 'bold 10px monospace';
+    c.fillStyle = '#53a8b6';
+    c.textAlign = 'center';
+    c.fillText('\u2190 Fibre: Layer Depth \u2192', 0, 0);
+    c.restore();
 
-  // ========== Legend for vector field arrows ==========
-  if ((fibreState.showAttnField || fibreState.showMlpField) && !isEmb) {
-    var legX = startX + totalW + 20;
-    var legY = startY + 10;
-    c.font = '9px monospace';
-    c.textAlign = 'left';
+    // ========== Legend for vector field arrows ==========
+    if ((fibreState.showAttnField || fibreState.showMlpField) && !isEmb) {
+        var legX = startX + totalW + 20;
+        var legY = startY + 10;
+        c.font = '9px monospace';
+        c.textAlign = 'left';
 
-    if (fibreState.showAttnField && attnDeltas) {
-      drawFlowArrow(c, legX, legY, 18, 0, 'rgba(0,200,255,0.8)', 20);
-      c.fillStyle = 'rgba(0,200,255,0.8)';
-      c.fillText('Attention', legX + 24, legY + 3);
-      legY += 16;
+        if (fibreState.showAttnField && attnDeltas) {
+            drawFlowArrow(c, legX, legY, 18, 0, 'rgba(0,200,255,0.8)', 20);
+            c.fillStyle = 'rgba(0,200,255,0.8)';
+            c.fillText('Attention', legX + 24, legY + 3);
+            legY += 16;
+        }
+        if (fibreState.showMlpField && mlpDeltas) {
+            drawFlowArrow(c, legX, legY, 18, 0, 'rgba(255,165,0,0.8)', 20);
+            c.fillStyle = 'rgba(255,165,0,0.8)';
+            c.fillText('MLP', legX + 24, legY + 3);
+            legY += 16;
+        }
+        if (fibreState.showTransportFrame) {
+            drawFlowArrow(c, legX, legY, 14, 0, 'rgba(255,255,100,0.8)', 16);
+            c.fillStyle = 'rgba(255,255,100,0.8)';
+            c.fillText('Frame e1', legX + 24, legY + 3);
+            legY += 14;
+            drawFlowArrow(c, legX, legY, 0, -14, 'rgba(255,100,255,0.8)', 16);
+            c.fillStyle = 'rgba(255,100,255,0.8)';
+            c.fillText('Frame e2', legX + 24, legY + 3);
+            legY += 16;
+        }
+        if (fibreState.showFlowLines) {
+            c.strokeStyle = 'rgba(150,150,200,0.5)';
+            c.lineWidth = 1;
+            c.beginPath();
+            c.moveTo(legX, legY);
+            c.quadraticCurveTo(legX + 10, legY - 8, legX + 18, legY);
+            c.stroke();
+            c.fillStyle = 'rgba(150,150,200,0.7)';
+            c.fillText('Flow lines', legX + 24, legY + 3);
+            legY += 16;
+        }
+
+        // Predicted token legend entry
+        if (D.predicted_indices && D.predicted_indices.length > 0) {
+            c.save();
+            c.translate(legX + 6, legY);
+            c.rotate(Math.PI / 4);
+            c.fillStyle = 'rgba(245,166,35,0.8)';
+            c.fillRect(-3, -3, 6, 6);
+            c.strokeStyle = '#f5a623';
+            c.lineWidth = 0.8;
+            c.strokeRect(-3, -3, 6, 6);
+            c.restore();
+            c.fillStyle = '#f5a623';
+            c.fillText('Predicted (' + D.predicted_indices.length + ')', legX + 24, legY + 3);
+        }
     }
-    if (fibreState.showMlpField && mlpDeltas) {
-      drawFlowArrow(c, legX, legY, 18, 0, 'rgba(255,165,0,0.8)', 20);
-      c.fillStyle = 'rgba(255,165,0,0.8)';
-      c.fillText('MLP', legX + 24, legY + 3);
-      legY += 16;
-    }
-    if (fibreState.showTransportFrame) {
-      drawFlowArrow(c, legX, legY, 14, 0, 'rgba(255,255,100,0.8)', 16);
-      c.fillStyle = 'rgba(255,255,100,0.8)';
-      c.fillText('Frame e1', legX + 24, legY + 3);
-      legY += 14;
-      drawFlowArrow(c, legX, legY, 0, -14, 'rgba(255,100,255,0.8)', 16);
-      c.fillStyle = 'rgba(255,100,255,0.8)';
-      c.fillText('Frame e2', legX + 24, legY + 3);
-      legY += 16;
-    }
-    if (fibreState.showFlowLines) {
-      c.strokeStyle = 'rgba(150,150,200,0.5)';
-      c.lineWidth = 1;
-      c.beginPath();
-      c.moveTo(legX, legY);
-      c.quadraticCurveTo(legX + 10, legY - 8, legX + 18, legY);
-      c.stroke();
-      c.fillStyle = 'rgba(150,150,200,0.7)';
-      c.fillText('Flow lines', legX + 24, legY + 3);
-    }
-  }
 
-  c.restore();
+    c.restore();
 
-  // ========== HUD ==========
-  drawFibreBundleHUD(c, W, H, nTokens, nLayers, hiddenDim, currentLayer);
+    // ========== HUD ==========
+    drawFibreBundleHUD(c, W, H, nTokens, nLayers, hiddenDim, currentLayer);
 }
 
 function drawFibreBundleHUD(c, W, H, nTokens, nLayers, hiddenDim, currentLayer) {
