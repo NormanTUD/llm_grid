@@ -3088,7 +3088,7 @@ def compute_persistent_homology(hidden_states, max_dim=2, pca_dims=16, max_edge=
         )
 
     from sklearn.decomposition import PCA
-    from scipy.spatial.distance import pdist, squareform
+    from scipy.spatial.distance import pdist
 
     n_layers_plus_one = len(hidden_states)
     seq_len = hidden_states[0].shape[1]
