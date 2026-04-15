@@ -30,7 +30,11 @@ from scipy.stats import pearsonr, spearmanr
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 
-SAE_AVAILABLE = True
+_SAE_RELEASE_ID = None
+_SAE_N_LAYERS = 0
+_SAE_LOAD_ATTEMPTED = set()  # track layers we already tried to load
+
+
 
 def visualize_curvature_landscape(curvature_data, tokens, save_path=None):
     """
@@ -781,43 +785,66 @@ def get_sae_hook_template(model_name):
         return SAE_HOOK_TEMPLATES["pythia"]
     return SAE_HOOK_TEMPLATES["default"]
 
-
-
-
 def load_saes(model_name, n_layers):
-    """Load pre-trained SAEs for each layer. Fails gracefully per-layer."""
-    global SAE_MODELS
+    """Initialize SAE metadata but don't actually load weights yet (lazy loading)."""
+    global SAE_MODELS, _SAE_RELEASE_ID, _SAE_N_LAYERS, _SAE_LOAD_ATTEMPTED
     SAE_MODELS = {}
-
-    if not SAE_AVAILABLE:
-        print("[SAE] sae-lens not available — skipping SAE loading")
-        return
+    _SAE_RELEASE_ID = None
+    _SAE_N_LAYERS = n_layers
+    _SAE_LOAD_ATTEMPTED = set()
 
     release_id = get_sae_release_id(model_name)
     if release_id is None:
         print(f"[SAE] No known SAE release for model '{model_name}' — skipping")
         return
 
-    print(f"[SAE] Loading SAEs from release '{release_id}' for {n_layers} layers...")
+    _SAE_RELEASE_ID = release_id
+    print(f"[SAE] SAEs will be lazy-loaded from release '{release_id}' for {n_layers} layers on demand")
 
-    for layer in range(n_layers):
-        sae_id = f"blocks.{layer}.hook_resid_post"
-        from sae_lens import SAE
+def get_sae_for_layer(layer):
+    """Lazy-load and return the SAE for a given layer, or None if unavailable."""
+    global SAE_MODELS, _SAE_LOAD_ATTEMPTED
 
+    # Already loaded
+    if layer in SAE_MODELS:
+        return SAE_MODELS[layer]
+
+    # Already tried and failed
+    if layer in _SAE_LOAD_ATTEMPTED:
+        return None
+
+    _SAE_LOAD_ATTEMPTED.add(layer)
+
+    if _SAE_RELEASE_ID is None:
+        return None
+
+    from sae_lens import SAE
+
+    # Try hook_resid_pre first (used by gpt2-small-res-jb), then hook_resid_post
+    sae_id_candidates = [
+        f"blocks.{layer}.hook_resid_pre",
+        f"blocks.{layer}.hook_resid_post",
+    ]
+
+    for sae_id in sae_id_candidates:
         try:
-            # SAE.from_pretrained returns (sae, cfg_dict, sparsity)
-            sae, cfg_dict, sparsity = SAE.from_pretrained(
-                release=release_id,
+            sae = SAE.from_pretrained(
+                release=_SAE_RELEASE_ID,
                 sae_id=sae_id,
             )
+            # Handle the deprecation: from_pretrained now returns just the SAE
+            if isinstance(sae, tuple):
+                sae = sae[0]
             sae.eval()
             SAE_MODELS[layer] = sae
             d_sae = sae.cfg.d_sae if hasattr(sae.cfg, 'd_sae') else '?'
-            print(f"  [SAE] Layer {layer}: loaded ({d_sae} latents)")
-        except Exception as e:
-            print(f"  [SAE] Layer {layer}: not available ({e})")
+            print(f"  [SAE] Layer {layer}: loaded ({d_sae} latents) via {sae_id}")
+            return sae
+        except Exception:
+            continue
 
-    print(f"[SAE] Loaded SAEs for {len(SAE_MODELS)}/{n_layers} layers")
+    print(f"  [SAE] Layer {layer}: not available in release {_SAE_RELEASE_ID}")
+    return None
 
 # ============================================================
 # 1. ENVIRONMENT SAFETY
@@ -2842,7 +2869,8 @@ def handle_sae_intervene(body_bytes):
         return json.dumps({"error": "Empty text"}).encode()
     if LM_MODEL is None:
         return json.dumps({"error": "No LM head model loaded"}).encode()
-    if not SAE_AVAILABLE or layer not in SAE_MODELS:
+    sae = get_sae_for_layer(layer)
+    if sae is None:
         return json.dumps({"error": f"No SAE for layer {layer}"}).encode()
 
     input_ids, tokens = tokenize_text(TOKENIZER, text)
@@ -2914,10 +2942,11 @@ def handle_sae_intervene(body_bytes):
 def handle_sae_info(body_bytes):
     """Return info about which SAE layers are available."""
     info = {
-        "sae_available": SAE_AVAILABLE,
         "loaded_layers": sorted(SAE_MODELS.keys()),
         "model_name": MODEL_NAME,
         "total_layers": get_n_layers(MODEL_CONFIG) if MODEL_CONFIG else 0,
+        "lazy_loading": _SAE_RELEASE_ID is not None,
+        "release_id": _SAE_RELEASE_ID,
     }
     layer_info = {}
     for layer, sae in SAE_MODELS.items():
@@ -2937,14 +2966,17 @@ def handle_sae_features(body_bytes):
 
     if not text:
         return json.dumps({"error": "Empty text"}).encode()
-    if not SAE_AVAILABLE or len(SAE_MODELS) == 0:
+    if len(SAE_MODELS) == 0:
         return json.dumps({"error": "No SAEs loaded", "features": []}).encode()
     if layer not in SAE_MODELS:
-        available = sorted(SAE_MODELS.keys())
-        return json.dumps({
-            "error": f"No SAE for layer {layer}. Available: {available}",
-            "features": []
-        }).encode()
+        sae = get_sae_for_layer(layer)
+        if sae is None:
+            available = sorted(SAE_MODELS.keys())
+            return json.dumps({
+                "error": f"No SAE for layer {layer}. Available: {available}",
+                "features": []
+            }).encode()
+    sae = SAE_MODELS[layer]
 
     input_ids, tokens = tokenize_text(TOKENIZER, text)
     n_tokens = input_ids.shape[1]
