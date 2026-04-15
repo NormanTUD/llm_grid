@@ -641,170 +641,260 @@ function gp(){return{
     kn:+document.getElementById('sl-kn').value
 }}
 
+// ============================================================
+// REFACTORED onKey — broken into composable helpers
+// ============================================================
+
+/**
+ * Cycle a dimension slider value by a given step, skipping values
+ * that collide with any of the provided "avoid" values.
+ * Wraps around at [0, maxDim].
+ *
+ * Reusable anywhere dimension sliders need to be incremented
+ * while avoiding collisions with other active dimensions.
+ *
+ * @param {number} current - current slider value
+ * @param {number} step - increment (+1, -1, +10, -10, etc.)
+ * @param {number} maxDim - maximum dimension index
+ * @param {number[]} avoid - array of dimension values to skip over
+ * @returns {number} the new dimension value
+ */
+function cycleDimValue(current, step, maxDim, avoid) {
+    var newVal = current + step;
+    // Wrap around
+    if (newVal > maxDim) newVal = newVal % (maxDim + 1);
+    if (newVal < 0) newVal = (newVal + maxDim + 1) % (maxDim + 1);
+    // Skip collisions (bounded loop to prevent infinite cycle)
+    var guard = 0;
+    var direction = step >= 0 ? 1 : -1;
+    while (avoid.indexOf(newVal) >= 0 && guard < maxDim + 1) {
+        newVal = (newVal + direction + maxDim + 1) % (maxDim + 1);
+        guard++;
+    }
+    return newVal;
+}
+
+/**
+ * Apply a new value to a dimension slider element and fire its input event.
+ *
+ * @param {string} sliderId - DOM id of the slider element
+ * @param {number} value - new value to set
+ */
+function setSliderAndDispatch(sliderId, value) {
+    var el = document.getElementById(sliderId);
+    el.value = value;
+    el.dispatchEvent(new Event('input'));
+}
+
+/**
+ * Handle Shift+Arrow keys: cycle Dim Z while avoiding Dim X and Dim Y.
+ * Returns true if the event was handled, false otherwise.
+ *
+ * @param {KeyboardEvent} e
+ * @param {number} maxDim
+ * @returns {boolean}
+ */
+function handleShiftArrowDimZ(e, maxDim) {
+    if (!e.shiftKey) return false;
+
+    var sdz = document.getElementById('sl-dz');
+    var sdx = document.getElementById('sl-dx');
+    var sdy = document.getElementById('sl-dy');
+    var current = +sdz.value;
+    var avoid = [+sdx.value, +sdy.value];
+    var step = 0;
+
+    if (e.key === 'ArrowRight') step = 1;
+    else if (e.key === 'ArrowLeft') step = -1;
+    else if (e.key === 'ArrowUp') step = 10;
+    else if (e.key === 'ArrowDown') step = -10;
+    else return false;
+
+    e.preventDefault();
+    setSliderAndDispatch('sl-dz', cycleDimValue(current, step, maxDim, avoid));
+    return true;
+}
+
+/**
+ * Handle plain Arrow keys: cycle Dim X (left/right) and Dim Y (up/down),
+ * each avoiding the other.
+ * Returns true if the event was handled, false otherwise.
+ *
+ * @param {KeyboardEvent} e
+ * @param {number} maxDim
+ * @returns {boolean}
+ */
+function handleArrowDimXY(e, maxDim) {
+    var sdx = document.getElementById('sl-dx');
+    var sdy = document.getElementById('sl-dy');
+
+    if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        setSliderAndDispatch('sl-dx', cycleDimValue(+sdx.value, 1, maxDim, [+sdy.value]));
+        return true;
+    }
+    if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        setSliderAndDispatch('sl-dx', cycleDimValue(+sdx.value, -1, maxDim, [+sdy.value]));
+        return true;
+    }
+    if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSliderAndDispatch('sl-dy', cycleDimValue(+sdy.value, 1, maxDim, [+sdx.value]));
+        return true;
+    }
+    if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSliderAndDispatch('sl-dy', cycleDimValue(+sdy.value, -1, maxDim, [+sdx.value]));
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Handle layer navigation keys: [ ] , .
+ * Returns true if handled.
+ *
+ * @param {KeyboardEvent} e
+ * @returns {boolean}
+ */
+function handleLayerNavKeys(e) {
+    var sl = document.getElementById('sl-layer');
+    if (e.key === '.' || e.key === ']') {
+        sl.value = Math.min(+sl.max, +sl.value + 1);
+        sl.dispatchEvent(new Event('input'));
+        return true;
+    }
+    if (e.key === ',' || e.key === '[') {
+        sl.value = Math.max(0, +sl.value - 1);
+        sl.dispatchEvent(new Event('input'));
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Handle deformation t keys: ; and '
+ * Returns true if handled.
+ *
+ * @param {KeyboardEvent} e
+ * @returns {boolean}
+ */
+function handleDeformationTKeys(e) {
+    var st = document.getElementById('sl-t');
+    if (e.key === "'") {
+        st.value = Math.min(1, +st.value + 0.05).toFixed(2);
+        st.dispatchEvent(new Event('input'));
+        return true;
+    }
+    if (e.key === ';') {
+        st.value = Math.max(0, +st.value - 0.05).toFixed(2);
+        st.dispatchEvent(new Event('input'));
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Handle amplification keys: A (increase) and Z (decrease).
+ * Returns true if handled.
+ *
+ * @param {KeyboardEvent} e
+ * @returns {boolean}
+ */
+function handleAmplificationKeys(e) {
+    var sa = document.getElementById('sl-amp');
+    if (e.key === 'a' || e.key === 'A') {
+        sa.value = Math.min(500, +sa.value * 1.3).toFixed(1);
+        sa.dispatchEvent(new Event('input'));
+        return true;
+    }
+    if (e.key === 'z' || e.key === 'Z') {
+        sa.value = Math.max(0.1, +sa.value / 1.3).toFixed(1);
+        sa.dispatchEvent(new Event('input'));
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Handle 3D-specific PageUp/PageDown for Dim Z cycling.
+ * Returns true if handled.
+ *
+ * @param {KeyboardEvent} e
+ * @param {number} maxDim
+ * @returns {boolean}
+ */
+function handle3DPageKeys(e, maxDim) {
+    if (viewMode !== '3d') return false;
+
+    var sdz = document.getElementById('sl-dz');
+    var avoid = [+document.getElementById('sl-dx').value, +document.getElementById('sl-dy').value];
+    var current = +sdz.value;
+
+    if (e.key === 'PageUp') {
+        e.preventDefault();
+        setSliderAndDispatch('sl-dz', cycleDimValue(current, 1, maxDim, avoid));
+        return true;
+    }
+    if (e.key === 'PageDown') {
+        e.preventDefault();
+        setSliderAndDispatch('sl-dz', cycleDimValue(current, -1, maxDim, avoid));
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Top-level: the refactored onKey.
+ * Delegates to focused handler functions in priority order.
+ * Each handler returns true if it consumed the event.
+ */
 function onKey(e) {
-    // ================================================================
     // Guard: don't intercept keys when typing in text inputs
-    // ================================================================
     if (document.activeElement === document.getElementById('txt-in')) return;
     if (document.activeElement === document.getElementById('txt-b')) return;
 
-    // ================================================================
-    // FIBRE VIEW MODES: delegate to fibre-specific key handler
-    // (was added by the _origOnKey wrapper)
-    // ================================================================
+    // Fibre views: delegate entirely to fibre-specific handler
     if (viewMode === 'fibre' || viewMode === 'fibrekelp' || viewMode === 'fibre3d') {
         onKeyFibre(e);
         return;
     }
 
-    // ================================================================
-    // STANDARD KEY HANDLING (the original onKey body)
-    // ================================================================
-    var sl  = document.getElementById('sl-layer');
-    var st  = document.getElementById('sl-t');
-    var sa  = document.getElementById('sl-amp');
-    var sdx = document.getElementById('sl-dx');
-    var sdy = document.getElementById('sl-dy');
-    var sdz = document.getElementById('sl-dz');
     var maxDim = D ? D.hidden_dim - 1 : 767;
 
-    // ---- Shift+Arrow = Dim Z (third axis), works in all views ----
-    if (e.shiftKey && e.key === 'ArrowRight') {
-        e.preventDefault();
-        var newZ = +sdz.value + 1;
-        if (newZ > maxDim) newZ = 0;
-        while (newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ + 1) % (maxDim + 1);
-        sdz.value = newZ;
-        sdz.dispatchEvent(new Event('input'));
-        return;
-    }
-    else if (e.shiftKey && e.key === 'ArrowLeft') {
-        e.preventDefault();
-        var newZ = +sdz.value - 1;
-        if (newZ < 0) newZ = maxDim;
-        while (newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ - 1 + maxDim + 1) % (maxDim + 1);
-        sdz.value = newZ;
-        sdz.dispatchEvent(new Event('input'));
-        return;
-    }
-    else if (e.shiftKey && e.key === 'ArrowUp') {
-        e.preventDefault();
-        var newZ = +sdz.value + 10;
-        if (newZ > maxDim) newZ = newZ % (maxDim + 1);
-        while (newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ + 1) % (maxDim + 1);
-        sdz.value = newZ;
-        sdz.dispatchEvent(new Event('input'));
-        return;
-    }
-    else if (e.shiftKey && e.key === 'ArrowDown') {
-        e.preventDefault();
-        var newZ = +sdz.value - 10;
-        if (newZ < 0) newZ = (newZ + maxDim + 1) % (maxDim + 1);
-        while (newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ - 1 + maxDim + 1) % (maxDim + 1);
-        sdz.value = newZ;
-        sdz.dispatchEvent(new Event('input'));
-        return;
-    }
+    // Priority 1: Shift+Arrow = Dim Z cycling
+    if (handleShiftArrowDimZ(e, maxDim)) return;
 
-    // ---- Arrow keys (no shift) = Dim X / Dim Y ----
-    if (e.key === 'ArrowRight') {
-        e.preventDefault();
-        var newX = +sdx.value + 1;
-        if (newX > maxDim) newX = 0;
-        if (newX === +sdy.value) newX = (newX + 1) % (maxDim + 1);
-        sdx.value = newX;
-        sdx.dispatchEvent(new Event('input'));
-    }
-    else if (e.key === 'ArrowLeft') {
-        e.preventDefault();
-        var newX = +sdx.value - 1;
-        if (newX < 0) newX = maxDim;
-        if (newX === +sdy.value) newX = (newX - 1 + maxDim + 1) % (maxDim + 1);
-        sdx.value = newX;
-        sdx.dispatchEvent(new Event('input'));
-    }
-    else if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        var newY = +sdy.value + 1;
-        if (newY > maxDim) newY = 0;
-        if (newY === +sdx.value) newY = (newY + 1) % (maxDim + 1);
-        sdy.value = newY;
-        sdy.dispatchEvent(new Event('input'));
-    }
-    else if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        var newY = +sdy.value - 1;
-        if (newY < 0) newY = maxDim;
-        if (newY === +sdx.value) newY = (newY - 1 + maxDim + 1) % (maxDim + 1);
-        sdy.value = newY;
-        sdy.dispatchEvent(new Event('input'));
-    }
+    // Priority 2: Plain Arrow = Dim X / Dim Y cycling
+    if (handleArrowDimXY(e, maxDim)) return;
 
-    // ---- Layer navigation: [ ] or , . ----
-    else if (e.key === '.' || e.key === ']') {
-        sl.value = Math.min(+sl.max, +sl.value + 1);
-        sl.dispatchEvent(new Event('input'));
-    }
-    else if (e.key === ',' || e.key === '[') {
-        sl.value = Math.max(0, +sl.value - 1);
-        sl.dispatchEvent(new Event('input'));
-    }
+    // Priority 3: Layer navigation
+    if (handleLayerNavKeys(e)) return;
 
-    // ---- Deformation t: ; / ' ----
-    else if (e.key === "'") {
-        st.value = Math.min(1, +st.value + 0.05).toFixed(2);
-        st.dispatchEvent(new Event('input'));
-    }
-    else if (e.key === ';') {
-        st.value = Math.max(0, +st.value - 0.05).toFixed(2);
-        st.dispatchEvent(new Event('input'));
-    }
+    // Priority 4: Deformation t
+    if (handleDeformationTKeys(e)) return;
 
-    // ---- Amplification: A / Z ----
-    else if (e.key === 'a' || e.key === 'A') {
-        sa.value = Math.min(500, +sa.value * 1.3).toFixed(1);
-        sa.dispatchEvent(new Event('input'));
-    }
-    else if (e.key === 'z' || e.key === 'Z') {
-        sa.value = Math.max(0.1, +sa.value / 1.3).toFixed(1);
-        sa.dispatchEvent(new Event('input'));
-    }
+    // Priority 5: Amplification
+    if (handleAmplificationKeys(e)) return;
 
-    // ---- Reset all: R ----
-    else if (e.key === 'r' || e.key === 'R') {
-        rstAll();
-    }
+    // Priority 6: Reset all
+    if (e.key === 'r' || e.key === 'R') { rstAll(); return; }
 
-    // ---- Next dimension pair: D ----
-    else if (e.key === 'd' || e.key === 'D') {
-        nxtD();
-    }
+    // Priority 7: Next dimension pair
+    if (e.key === 'd' || e.key === 'D') { nxtD(); return; }
 
-    // ---- Reset zoom/pan: 0 ----
-    else if (e.key === '0') {
+    // Priority 8: Reset zoom/pan
+    if (e.key === '0') {
         zoomLevel = 1.0;
         panX = 0;
         panY = 0;
         draw();
+        return;
     }
 
-    // ---- 3D-specific: PageUp/PageDown for Dim Z ----
-    else if (viewMode === '3d' && e.key === 'PageUp') {
-        e.preventDefault();
-        var newZ = +sdz.value + 1;
-        if (newZ > maxDim) newZ = 0;
-        while (newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ + 1) % (maxDim + 1);
-        sdz.value = newZ;
-        sdz.dispatchEvent(new Event('input'));
-    }
-    else if (viewMode === '3d' && e.key === 'PageDown') {
-        e.preventDefault();
-        var newZ = +sdz.value - 1;
-        if (newZ < 0) newZ = maxDim;
-        while (newZ === +sdx.value || newZ === +sdy.value) newZ = (newZ - 1 + maxDim + 1) % (maxDim + 1);
-        sdz.value = newZ;
-        sdz.dispatchEvent(new Event('input'));
-    }
+    // Priority 9: 3D-specific PageUp/PageDown
+    if (handle3DPageKeys(e, maxDim)) return;
 }
 
 function rstAll(){
