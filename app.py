@@ -5378,12 +5378,12 @@ def compute_holonomy_loop(procrustes_rotations, token_i, token_j, layer_start, l
     """
     R_total = np.eye(d)
     # Up through layers at token i
-    for l in range(layer_start, layer_end):
-        R_total = procrustes_rotations[l][token_i] @ R_total
+    for lay in range(layer_start, layer_end):
+        R_total = procrustes_rotations[lay][token_i] @ R_total
     # Across tokens at top layer (would need token-to-token transport)
     # Down through layers at token j
-    for l in range(layer_end - 1, layer_start - 1, -1):
-        R_total = procrustes_rotations[l][token_j].T @ R_total
+    for lay in range(layer_end - 1, layer_start - 1, -1):
+        R_total = procrustes_rotations[lay][token_j].T @ R_total
 
     # R_total should be identity if space is flat
     # The deviation IS the curvature
