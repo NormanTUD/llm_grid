@@ -11874,3 +11874,517 @@ var _drawWithMorphOverlay = function(){
 		}
 	});
 })();
+
+// ============================================================
+// JACOBIAN FIELD VISUALIZATION — No Points, Pure Morphing
+// ============================================================
+
+var jfData = null;
+var jfAnimId = null;
+var jfTime = 0;
+
+// Slider bindings
+document.getElementById('jf-res').addEventListener('input', function(){
+    document.getElementById('v-jf-res').textContent = this.value;
+});
+document.getElementById('jf-pca').addEventListener('input', function(){
+    document.getElementById('v-jf-pca').textContent = this.value;
+});
+document.getElementById('jf-layer').addEventListener('input', function(){
+    document.getElementById('v-jf-layer').textContent = this.value;
+    renderJacobianField();
+});
+document.getElementById('jf-render').addEventListener('change', function(){
+    renderJacobianField();
+});
+['jf-animate','jf-eigvecs','jf-stretch-ellipses','jf-ghost-tokens'].forEach(function(id){
+    document.getElementById(id).addEventListener('change', function(){
+        renderJacobianField();
+    });
+});
+
+function runJacobianField(){
+    if(!D){
+        document.getElementById('jf-status').innerHTML =
+            '<span style="color:#e94560">Run a prompt first!</span>';
+        return;
+    }
+
+    var btn = document.getElementById('btn-jf');
+    btn.disabled = true;
+    btn.textContent = 'Extracting...';
+    document.getElementById('jf-status').innerHTML =
+        '<span style="color:#53a8b6">Extracting pure Jacobian field...</span>';
+
+    fetch('/jacobian_field', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            text: D.text,
+            pca_d: +document.getElementById('jf-pca').value,
+            grid_res: +document.getElementById('jf-res').value
+        })
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(data){
+        if(data.error){
+            document.getElementById('jf-status').innerHTML =
+                '<span style="color:#e94560">' + data.error + '</span>';
+            btn.disabled = false;
+            btn.textContent = 'Extract Jacobian Field';
+            return;
+        }
+        jfData = data;
+        btn.disabled = false;
+        btn.textContent = 'Extract Jacobian Field';
+
+        // Update layer slider max
+        document.getElementById('jf-layer').max = data.n_layers - 1;
+
+        document.getElementById('jf-status').innerHTML =
+            '<span style="color:#2ecc71">✓ Field extracted</span> — ' +
+            data.n_layers + ' layers × ' + data.grid_res + '² grid';
+
+        document.getElementById('jf-canvas-wrap').style.display = 'block';
+        renderJacobianField();
+        startJFAnimation();
+    })
+    .catch(function(e){
+        document.getElementById('jf-status').innerHTML =
+            '<span style="color:#e94560">Error: ' + e + '</span>';
+        btn.disabled = false;
+        btn.textContent = 'Extract Jacobian Field';
+    });
+}
+
+function startJFAnimation(){
+    if(jfAnimId) return;
+    function loop(){
+        jfTime += 0.016;
+        if(document.getElementById('jf-animate').checked && jfData){
+            renderJacobianField();
+        }
+        jfAnimId = requestAnimationFrame(loop);
+    }
+    jfAnimId = requestAnimationFrame(loop);
+}
+
+// ============================================================
+// COLORMAPS for the Jacobian field
+// ============================================================
+
+function jfDivergingColor(val, vmin, vmax){
+    // Blue (negative) → Black (zero) → Red (positive)
+    var range = Math.max(Math.abs(vmin), Math.abs(vmax), 0.001);
+    var norm = val / range; // -1..1
+    norm = Math.max(-1, Math.min(1, norm));
+
+    if(norm < 0){
+        var t = -norm;
+        return [Math.floor(t * 40), Math.floor(t * 80), Math.floor(t * 220), t];
+    } else {
+        var t = norm;
+        return [Math.floor(t * 233), Math.floor(t * 50), Math.floor(t * 40), t];
+    }
+}
+
+function jfMagmaColor(val, vmin, vmax){
+    var range = vmax - vmin || 1;
+    var t = Math.max(0, Math.min(1, (val - vmin) / range));
+    var r, g, b;
+    if(t < 0.25){
+        var f = t / 0.25;
+        r = Math.floor(f * 80); g = 0; b = Math.floor(20 + f * 100);
+    } else if(t < 0.5){
+        var f = (t - 0.25) / 0.25;
+        r = Math.floor(80 + f * 120); g = Math.floor(f * 30); b = Math.floor(120 + f * 40);
+    } else if(t < 0.75){
+        var f = (t - 0.5) / 0.25;
+        r = Math.floor(200 + f * 55); g = Math.floor(30 + f * 100); b = Math.floor(160 - f * 80);
+    } else {
+        var f = (t - 0.75) / 0.25;
+        r = 255; g = Math.floor(130 + f * 125); b = Math.floor(80 + f * 100);
+    }
+    return [r, g, b, t];
+}
+
+function jfCyclicColor(angle){
+    // HSL-based cyclic colormap for angles
+    var hue = ((angle / Math.PI) * 180 + 360) % 360;
+    var c = 0.7;
+    var x = c * (1 - Math.abs((hue / 60) % 2 - 1));
+    var r, g, b;
+    if(hue < 60){ r = c; g = x; b = 0; }
+    else if(hue < 120){ r = x; g = c; b = 0; }
+    else if(hue < 180){ r = 0; g = c; b = x; }
+    else if(hue < 240){ r = 0; g = x; b = c; }
+    else if(hue < 300){ r = x; g = 0; b = c; }
+    else { r = c; g = 0; b = x; }
+    return [Math.floor(r * 255), Math.floor(g * 255), Math.floor(b * 255)];
+}
+
+// ============================================================
+// MAIN RENDER FUNCTION
+// ============================================================
+
+function renderJacobianField(){
+    if(!jfData) return;
+
+    var cv = document.getElementById('jf-canvas');
+    var c = cv.getContext('2d');
+    var W = cv.width, H = cv.height;
+    c.clearRect(0, 0, W, H);
+
+    // Dark background
+    c.fillStyle = '#050510';
+    c.fillRect(0, 0, W, H);
+
+    var layerIdx = Math.min(+document.getElementById('jf-layer').value, jfData.n_layers - 1);
+    var renderMode = document.getElementById('jf-render').value;
+    var showEigvecs = document.getElementById('jf-eigvecs').checked;
+    var showEllipses = document.getElementById('jf-stretch-ellipses').checked;
+    var showGhosts = document.getElementById('jf-ghost-tokens').checked;
+    var animate = document.getElementById('jf-animate').checked;
+
+    var field = jfData.layer_fields[layerIdx];
+    var N = field.grid_res;
+    var data = field.grid_data;
+    var xRange = field.grid_x_range;
+    var yRange = field.grid_y_range;
+
+    var margin = 30;
+    var plotW = W - 2 * margin;
+    var plotH = H - 2 * margin;
+
+    function SX(gx){ return margin + ((gx - xRange[0]) / (xRange[1] - xRange[0])) * plotW; }
+    function SY(gy){ return margin + plotH - ((gy - yRange[0]) / (yRange[1] - yRange[0])) * plotH; }
+
+    var cellW = plotW / N;
+    var cellH = plotH / N;
+
+    // ---- Extract the scalar field for the chosen render mode ----
+    var values = [];
+    for(var i = 0; i < data.length; i++){
+        var d = data[i];
+        var v;
+        if(renderMode === 'divergence') v = d.divergence;
+        else if(renderMode === 'curl') v = d.curl;
+        else if(renderMode === 'shear') v = d.shear;
+        else if(renderMode === 'det') v = d.det;
+        else if(renderMode === 'rotation') v = d.rotation_angle;
+        else if(renderMode === 'condition') v = Math.log(d.condition + 1);
+        else if(renderMode === 'eigphase') v = d.eig_phase[0];
+        else if(renderMode === 'stretch') v = d.stretch_mag1 / Math.max(d.stretch_mag2, 0.001);
+        else if(renderMode === 'flow') v = Math.sqrt(d.flow_x * d.flow_x + d.flow_y * d.flow_y);
+        else v = d.divergence; // composite default
+        values.push(v);
+    }
+
+    var vmin = Infinity, vmax = -Infinity;
+    for(var i = 0; i < values.length; i++){
+        if(isFinite(values[i])){
+            if(values[i] < vmin) vmin = values[i];
+            if(values[i] > vmax) vmax = values[i];
+        }
+    }
+    if(!isFinite(vmin)) vmin = -1;
+    if(!isFinite(vmax)) vmax = 1;
+
+    var isDiverging = (renderMode === 'divergence' || renderMode === 'curl' ||
+                       renderMode === 'rotation' || renderMode === 'det');
+    var isCyclic = (renderMode === 'eigphase');
+
+    // ---- PASS 1: Heatmap cells ----
+    for(var gy = 0; gy < N; gy++){
+        for(var gx = 0; gx < N; gx++){
+            var idx = gy * N + gx;
+            if(idx >= data.length) continue;
+            var d = data[idx];
+            var v = values[idx];
+
+            var sx = SX(d.gx) - cellW / 2;
+            var sy = SY(d.gy) - cellH / 2;
+
+            var rgb;
+            if(isCyclic){
+                rgb = jfCyclicColor(v);
+            } else if(isDiverging){
+                var res = jfDivergingColor(v, vmin, vmax);
+                rgb = [res[0], res[1], res[2]];
+            } else {
+                var res = jfMagmaColor(v, vmin, vmax);
+                rgb = [res[0], res[1], res[2]];
+            }
+
+            c.fillStyle = 'rgb(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ')';
+            c.fillRect(sx, sy, cellW + 1, cellH + 1);
+        }
+    }
+
+    // ---- PASS 2: Stretch ellipses ----
+    if(showEllipses){
+        var ellipseStep = Math.max(1, Math.floor(N / 12));
+        for(var gy = 0; gy < N; gy += ellipseStep){
+            for(var gx = 0; gx < N; gx += ellipseStep){
+                var idx = gy * N + gx;
+                if(idx >= data.length) continue;
+                var d = data[idx];
+
+                var cx = SX(d.gx);
+                var cy = SY(d.gy);
+
+                // Draw an ellipse whose axes are the principal stretch directions
+                var maxR = Math.min(cellW, cellH) * ellipseStep * 0.4;
+                var rx = Math.min(maxR, d.stretch_mag1 * maxR * 0.5);
+                var ry = Math.min(maxR, d.stretch_mag2 * maxR * 0.5);
+
+                // Rotation from stretch direction
+                var angle = Math.atan2(d.stretch_dir1[1], d.stretch_dir1[0]);
+
+                // Animate: pulse the ellipse
+                var pulse = animate ? 1.0 + 0.1 * Math.sin(jfTime * 2 + idx * 0.3) : 1.0;
+                rx *= pulse;
+                ry *= pulse;
+
+                c.save();
+                c.translate(cx, cy);
+                c.rotate(-angle); // negative because canvas Y is flipped
+
+                // Ellipse outline
+                var anisotropy = d.condition;
+                var alpha = Math.min(0.7, 0.15 + anisotropy * 0.05);
+                c.strokeStyle = 'rgba(255,255,255,' + alpha.toFixed(2) + ')';
+                c.lineWidth = 0.8;
+                c.beginPath();
+                c.ellipse(0, 0, Math.max(1, rx), Math.max(1, ry), 0, 0, Math.PI * 2);
+                c.stroke();
+
+                // Fill with subtle color based on area change
+                var detColor = d.det > 1 ? 'rgba(233,69,96,0.08)' : 'rgba(0,119,182,0.08)';
+                c.fillStyle = detColor;
+                c.fill();
+
+                c.restore();
+            }
+        }
+    }
+
+    // ---- PASS 3: Eigenvector directions ----
+    if(showEigvecs){
+        var evecStep = Math.max(1, Math.floor(N / 10));
+        for(var gy = 0; gy < N; gy += evecStep){
+            for(var gx = 0; gx < N; gx += evecStep){
+                var idx = gy * N + gx;
+                if(idx >= data.length) continue;
+                var d = data[idx];
+
+                var cx = SX(d.gx);
+                var cy = SY(d.gy);
+
+                var evecLen = Math.min(cellW, cellH) * evecStep * 0.35;
+
+                // Eigenvector 1 (cyan)
+                var ev1x = d.evec1[0] * evecLen * d.eig_mag[0];
+                var ev1y = d.evec1[1] * evecLen * d.eig_mag[0];
+                // Clamp
+                var ev1L = Math.sqrt(ev1x * ev1x + ev1y * ev1y);
+                if(ev1L > evecLen * 2){ ev1x *= evecLen * 2 / ev1L; ev1y *= evecLen * 2 / ev1L; }
+
+                c.strokeStyle = 'rgba(0,200,255,0.4)';
+                c.lineWidth = 0.8;
+                c.beginPath();
+                c.moveTo(cx - ev1x, cy + ev1y);
+                c.lineTo(cx + ev1x, cy - ev1y);
+                c.stroke();
+
+                // Eigenvector 2 (magenta)
+                var ev2x = d.evec2[0] * evecLen * d.eig_mag[1];
+                var ev2y = d.evec2[1] * evecLen * d.eig_mag[1];
+                var ev2L = Math.sqrt(ev2x * ev2x + ev2y * ev2y);
+                if(ev2L > evecLen * 2){ ev2x *= evecLen * 2 / ev2L; ev2y *= evecLen * 2 / ev2L; }
+
+                c.strokeStyle = 'rgba(255,100,255,0.4)';
+                c.lineWidth = 0.8;
+                c.beginPath();
+                c.moveTo(cx - ev2x, cy + ev2y);
+                c.lineTo(cx + ev2x, cy - ev2y);
+                c.stroke();
+            }
+        }
+    }
+
+    // ---- PASS 4: Flow field (animated streamlines) ----
+    if(renderMode === 'flow' || renderMode === 'composite'){
+        var flowStep = Math.max(1, Math.floor(N / 14));
+        var maxArrowLen = Math.min(cellW, cellH) * flowStep * 0.6;
+
+        for(var gy = 0; gy < N; gy += flowStep){
+            for(var gx = 0; gx < N; gx += flowStep){
+                var idx = gy * N + gx;
+                if(idx >= data.length) continue;
+                var d = data[idx];
+
+                var cx = SX(d.gx);
+                var cy = SY(d.gy);
+
+                var flowMag = Math.sqrt(d.flow_x * d.flow_x + d.flow_y * d.flow_y);
+                if(flowMag < 1e-8) continue;
+
+                // Scale flow to pixel space
+                var pixPerWorldX = plotW / (xRange[1] - xRange[0]);
+                var pixPerWorldY = plotH / (yRange[1] - yRange[0]);
+
+                var arrowX = d.flow_x * pixPerWorldX * 0.3;
+                var arrowY = -d.flow_y * pixPerWorldY * 0.3; // flip Y
+
+                // Clamp arrow length
+                var arrowLen = Math.sqrt(arrowX * arrowX + arrowY * arrowY);
+                if(arrowLen > maxArrowLen){
+                    arrowX *= maxArrowLen / arrowLen;
+                    arrowY *= maxArrowLen / arrowLen;
+                    arrowLen = maxArrowLen;
+                }
+
+                if(arrowLen < 1.5) continue;
+
+                // Animate: pulse the arrow
+                var pulse = animate ? 0.7 + 0.3 * Math.sin(jfTime * 3 + idx * 0.2) : 1.0;
+                arrowX *= pulse;
+                arrowY *= pulse;
+
+                // Color by flow magnitude
+                var flowAlpha = Math.min(0.8, 0.2 + flowMag * 2);
+                c.strokeStyle = 'rgba(255,255,100,' + flowAlpha.toFixed(2) + ')';
+                c.fillStyle = 'rgba(255,255,100,' + flowAlpha.toFixed(2) + ')';
+                c.lineWidth = Math.max(0.5, Math.min(1.5, arrowLen / 15));
+
+                // Shaft
+                c.beginPath();
+                c.moveTo(cx, cy);
+                c.lineTo(cx + arrowX, cy + arrowY);
+                c.stroke();
+
+                // Arrowhead
+                var aa = Math.atan2(arrowY, arrowX);
+                var hl = Math.min(5, arrowLen * 0.3);
+                c.beginPath();
+                c.moveTo(cx + arrowX, cy + arrowY);
+                c.lineTo(cx + arrowX - hl * Math.cos(aa - 0.4), cy + arrowY - hl * Math.sin(aa - 0.4));
+                c.lineTo(cx + arrowX - hl * Math.cos(aa + 0.4), cy + arrowY - hl * Math.sin(aa + 0.4));
+                c.closePath();
+                c.fill();
+            }
+        }
+    }
+
+    // ---- PASS 5: Ghost token positions (faint dots showing where data lives) ----
+    if(showGhosts && field.token_positions_2d){
+        var tokPos = field.token_positions_2d;
+        var tc = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71',
+                  '#e74c3c','#3498db','#9b59b6','#1abc9c','#e67e22'];
+
+        for(var ti = 0; ti < tokPos.length; ti++){
+            var tx = SX(tokPos[ti][0]);
+            var ty = SY(tokPos[ti][1]);
+
+            // Very faint glow
+            var grad = c.createRadialGradient(tx, ty, 0, tx, ty, 8);
+            grad.addColorStop(0, 'rgba(255,255,255,0.06)');
+            grad.addColorStop(1, 'rgba(255,255,255,0)');
+            c.beginPath();
+            c.arc(tx, ty, 8, 0, Math.PI * 2);
+            c.fillStyle = grad;
+            c.fill();
+
+            // Tiny dot
+            c.beginPath();
+            c.arc(tx, ty, 2, 0, Math.PI * 2);
+            c.fillStyle = tc[ti % tc.length];
+            c.globalAlpha = 0.25;
+            c.fill();
+            c.globalAlpha = 1.0;
+
+            // Token label (very faint)
+            if(jfData.tokens && ti < jfData.tokens.length){
+                c.font = '7px monospace';
+                c.fillStyle = 'rgba(255,255,255,0.15)';
+                c.textAlign = 'left';
+                c.fillText(jfData.tokens[ti], tx + 4, ty - 3);
+            }
+        }
+    }
+
+    // ---- PASS 6: Animated particle advection (flow tracer particles) ----
+    if(animate && (renderMode === 'flow' || renderMode === 'composite')){
+        var nParticles = 40;
+        for(var pi = 0; pi < nParticles; pi++){
+            // Seed particles at pseudo-random positions that drift with time
+            var seed = pi * 137.5 + jfTime * 0.3;
+            var px = xRange[0] + ((Math.sin(seed * 1.1) * 0.5 + 0.5) +
+                     jfTime * 0.02 * Math.sin(pi * 0.7)) % 1.0 * (xRange[1] - xRange[0]);
+            var py = yRange[0] + ((Math.cos(seed * 0.9) * 0.5 + 0.5) +
+                     jfTime * 0.015 * Math.cos(pi * 0.5)) % 1.0 * (yRange[1] - yRange[0]);
+
+            // Wrap around
+            px = xRange[0] + ((px - xRange[0]) % (xRange[1] - xRange[0]) + (xRange[1] - xRange[0])) % (xRange[1] - xRange[0]);
+            py = yRange[0] + ((py - yRange[0]) % (yRange[1] - yRange[0]) + (yRange[1] - yRange[0])) % (yRange[1] - yRange[0]);
+
+            var sx = SX(px);
+            var sy = SY(py);
+
+            // Find nearest grid cell for flow direction
+            var gxi = Math.floor(((px - xRange[0]) / (xRange[1] - xRange[0])) * N);
+            var gyi = Math.floor(((py - yRange[0]) / (yRange[1] - yRange[0])) * N);
+            gxi = Math.max(0, Math.min(N - 1, gxi));
+            gyi = Math.max(0, Math.min(N - 1, gyi));
+            var nearIdx = gyi * N + gxi;
+
+            if(nearIdx < data.length){
+                var nd = data[nearIdx];
+                var particleAlpha = 0.3 + 0.3 * Math.sin(jfTime * 2 + pi * 0.8);
+
+                // Draw a small trail
+                c.beginPath();
+                c.arc(sx, sy, 1.5, 0, Math.PI * 2);
+                c.fillStyle = 'rgba(255,255,200,' + particleAlpha.toFixed(2) + ')';
+                c.fill();
+            }
+        }
+    }
+
+    // ---- HUD ----
+    c.font = '10px monospace';
+    c.fillStyle = 'rgba(255,255,255,0.4)';
+    c.textAlign = 'left';
+    c.fillText(
+        'JACOBIAN FIELD  Layer ' + layerIdx + '/' + (jfData.n_layers - 1) +
+        '  Grid ' + N + '×' + N +
+        '  Mode: ' + renderMode +
+        '  [No Points — Pure Morphing]',
+        8, H - 8
+    );
+
+    c.textAlign = 'right';
+    c.fillText(
+        jfData.seq_len + ' tokens (ghosted) | ' +
+        jfData.hidden_dim + 'd → PCA ' + jfData.pca_d + 'd',
+        W - 8, H - 8
+    );
+
+    // ---- Legend bar ----
+    var legendTitle = {
+        'divergence': 'Divergence (∇·F)',
+        'curl': 'Curl (∇×F)',
+        'shear': 'Shear (traceless strain)',
+        'det': 'Determinant (area change)',
+        'rotation': 'Rotation angle',
+        'condition': 'log(Condition number)',
+        'eigphase': 'Eigenvalue phase',
+        'stretch': 'Stretch ratio (σ₁/σ₂)',
+        'flow': 'Flow magnitude',
+        'composite': 'Composite'
+    };
+    document.getElementById('jf-legend-title').textContent = legendTitle[renderMode] || renderMode;
+    document.getElementById('jf-legend-min').textContent = vmin.toFixed(3);
+    document.getElementById('jf-legend-max').textContent = vmax.toFixed(3);
+}
