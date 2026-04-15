@@ -2566,153 +2566,250 @@ function updateDiffeoGrids(time) {
 /**
  * Render the stacked diffeomorphism slices as translucent kelp-swaying grids.
  */
-function renderDiffeoOverlay(time) {
-  if (!diffeoState.active || !diffeoCtx || diffeoState.slices.length === 0) return;
+// ============================================================
+// REFACTORED renderDiffeoOverlay — broken into composable steps
+// ============================================================
 
-  var dpr = window.devicePixelRatio || 1;
-  var W = diffeoCanvas.width / dpr;
-  var H = diffeoCanvas.height / dpr;
-  diffeoCtx.clearRect(0, 0, W, H);
-
-  var nSlices = diffeoState.slices.length;
-  var spacing = diffeoState.layerSpacing;
-  var totalHeight = nSlices * spacing;
-  var startY = (H - totalHeight) / 2;
-
-  var amp = diffeoState.kelpAmplitude;
-  var sens = diffeoState.divergenceSensitivity;
-  var alpha = diffeoState.sliceAlpha;
-
-  // Normalize delta magnitudes for visible sway
-  var maxDelta = 0;
-  for (var si = 0; si < nSlices; si++) {
-    var grid = diffeoState.slices[si].grid;
-    for (var gi = 0; gi < grid.length; gi++) {
-      var mag = Math.sqrt(grid[gi].dx * grid[gi].dx + grid[gi].dy * grid[gi].dy);
-      if (mag > maxDelta) maxDelta = mag;
+/**
+ * Compute the maximum delta magnitude across all slices.
+ * Reusable for any normalization that needs a global scale.
+ *
+ * @param {Object[]} slices - array of diffeo slice objects
+ * @returns {number} maximum delta magnitude (>= 1e-8 fallback)
+ */
+function computeMaxDeltaMagnitude(slices) {
+    var maxDelta = 0;
+    for (var si = 0; si < slices.length; si++) {
+        var grid = slices[si].grid;
+        for (var gi = 0; gi < grid.length; gi++) {
+            var mag = Math.sqrt(grid[gi].dx * grid[gi].dx + grid[gi].dy * grid[gi].dy);
+            if (mag > maxDelta) maxDelta = mag;
+        }
     }
-  }
-  var deltaScale = maxDelta > 1e-8 ? 1.0 / maxDelta : 1.0;
+    return maxDelta > 1e-8 ? maxDelta : 1.0;
+}
 
-  for (var si = 0; si < nSlices; si++) {
-    var slice = diffeoState.slices[si];
-    var res = slice.res;
-    var grid = slice.grid;
-    var baseY = startY + si * spacing;
-
+/**
+ * Compute the perspective layout for a single diffeo slice.
+ *
+ * @param {number} si - slice index
+ * @param {number} nSlices - total number of slices
+ * @param {number} W - canvas width
+ * @param {number} H - canvas height (unused but available)
+ * @param {number} startY - vertical start of the stack
+ * @param {number} spacing - vertical spacing between slices
+ * @returns {Object} { depthFactor, perspW, perspH, perspX, perspY, sliceW, sliceH }
+ */
+function computeDiffeoSlicePerspective(si, nSlices, W, startY, spacing) {
     var sliceW = W * 0.55;
     var sliceH = spacing * 0.75;
-
-    // Perspective: further slices smaller
     var depthFactor = 0.65 + 0.35 * (si / Math.max(nSlices - 1, 1));
     var perspW = sliceW * depthFactor;
     var perspH = sliceH * depthFactor;
     var perspX = (W - perspW) / 2;
+    var baseY = startY + si * spacing;
     var perspY = baseY + (sliceH - perspH) / 2;
 
-    diffeoCtx.save();
-    diffeoCtx.globalAlpha = alpha * (0.4 + 0.6 * depthFactor);
+    return {
+        depthFactor: depthFactor,
+        perspW: perspW,
+        perspH: perspH,
+        perspX: perspX,
+        perspY: perspY,
+        sliceW: sliceW,
+        sliceH: sliceH,
+        baseY: baseY
+    };
+}
 
-    // Draw deformed grid cells
+/**
+ * Compute the screen position of a single grid cell vertex,
+ * including kelp sway animation driven by divergence and time.
+ *
+ * @param {Object} cell - grid cell { ox, oy, dx, dy, divergence }
+ * @param {number} cornerIdx - index used for phase offset
+ * @param {number} si - slice index (for phase offset)
+ * @param {number} time - animation time
+ * @param {number} amp - kelp amplitude
+ * @param {number} sens - divergence sensitivity
+ * @param {number} deltaScale - normalization factor for deltas
+ * @param {Object} persp - perspective layout from computeDiffeoSlicePerspective
+ * @returns {Object} { x, y }
+ */
+function computeKelpSwayPosition(cell, cornerIdx, si, time, amp, sens, deltaScale, persp) {
+    var div = cell.divergence * sens;
+    var swayX = Math.sin(time * 0.7 + cornerIdx * 0.5 + si * 1.3) * div * amp * 35 * deltaScale;
+    var swayY = Math.sin(time * 0.5 + cornerIdx * 0.3 + si * 0.9) * div * amp * 12 * deltaScale;
+
+    var screenX = persp.perspX + (cell.ox + cell.dx * deltaScale * amp * 0.3) * persp.perspW + swayX;
+    var screenY = persp.perspY + (cell.oy + cell.dy * deltaScale * amp * 0.3) * persp.perspH + swayY;
+
+    return { x: screenX, y: screenY };
+}
+
+/**
+ * Render the filled and stroked grid cells for a single diffeo slice.
+ *
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {Object} slice - { grid, hue, res }
+ * @param {number} si - slice index
+ * @param {number} time - animation time
+ * @param {number} amp - kelp amplitude
+ * @param {number} sens - divergence sensitivity
+ * @param {number} deltaScale - normalization factor
+ * @param {number} alpha - base alpha for this slice
+ * @param {Object} persp - perspective layout
+ */
+function renderDiffeoSliceCells(ctx, slice, si, time, amp, sens, deltaScale, alpha, persp) {
+    var res = slice.res;
+    var grid = slice.grid;
+
     for (var gy = 0; gy < res; gy++) {
-      for (var gx = 0; gx < res; gx++) {
-        var idx00 = gy * (res + 1) + gx;
-        var idx10 = idx00 + 1;
-        var idx01 = idx00 + (res + 1);
-        var idx11 = idx01 + 1;
+        for (var gx = 0; gx < res; gx++) {
+            var idx00 = gy * (res + 1) + gx;
+            var idx10 = idx00 + 1;
+            var idx01 = idx00 + (res + 1);
+            var idx11 = idx01 + 1;
 
-        var corners = [idx00, idx10, idx11, idx01];
-        var pts = [];
-        for (var ci = 0; ci < 4; ci++) {
-          var cell = grid[corners[ci]];
-          var div = cell.divergence * sens;
-          // Kelp sway: divergence drives amplitude, time drives oscillation
-          var swayX = Math.sin(time * 0.7 + corners[ci] * 0.5 + si * 1.3) * div * amp * 35 * deltaScale;
-          var swayY = Math.sin(time * 0.5 + corners[ci] * 0.3 + si * 0.9) * div * amp * 12 * deltaScale;
+            var corners = [idx00, idx10, idx11, idx01];
+            var pts = [];
+            for (var ci = 0; ci < 4; ci++) {
+                var cell = grid[corners[ci]];
+                pts.push(computeKelpSwayPosition(cell, corners[ci], si, time, amp, sens, deltaScale, persp));
+            }
 
-          var screenX = perspX + (cell.ox + cell.dx * deltaScale * amp * 0.3) * perspW + swayX;
-          var screenY = perspY + (cell.oy + cell.dy * deltaScale * amp * 0.3) * perspH + swayY;
-          pts.push({ x: screenX, y: screenY });
+            var cellDiv = grid[idx00].divergence * sens;
+            var brightness = Math.min(70, 30 + cellDiv * 300 * deltaScale);
+            var saturation = 50 + Math.min(30, cellDiv * 50 * deltaScale);
+
+            // Filled quad
+            ctx.beginPath();
+            ctx.moveTo(pts[0].x, pts[0].y);
+            ctx.lineTo(pts[1].x, pts[1].y);
+            ctx.lineTo(pts[2].x, pts[2].y);
+            ctx.lineTo(pts[3].x, pts[3].y);
+            ctx.closePath();
+            ctx.fillStyle = 'hsla(' + slice.hue + ',' + saturation + '%,' + brightness + '%,' + (alpha * 0.4) + ')';
+            ctx.fill();
+
+            // Grid lines
+            ctx.strokeStyle = 'hsla(' + slice.hue + ',70%,' + Math.min(80, 40 + cellDiv * 150 * deltaScale) + '%,' + (alpha * 1.2) + ')';
+            ctx.lineWidth = 0.5 + cellDiv * 3 * deltaScale;
+            ctx.stroke();
         }
-
-        var cellDiv = grid[idx00].divergence * sens;
-        var brightness = Math.min(70, 30 + cellDiv * 300 * deltaScale);
-        var saturation = 50 + Math.min(30, cellDiv * 50 * deltaScale);
-
-        // Filled quad
-        diffeoCtx.beginPath();
-        diffeoCtx.moveTo(pts[0].x, pts[0].y);
-        diffeoCtx.lineTo(pts[1].x, pts[1].y);
-        diffeoCtx.lineTo(pts[2].x, pts[2].y);
-        diffeoCtx.lineTo(pts[3].x, pts[3].y);
-        diffeoCtx.closePath();
-        diffeoCtx.fillStyle = 'hsla(' + slice.hue + ',' + saturation + '%,' + brightness + '%,' + (alpha * 0.4) + ')';
-        diffeoCtx.fill();
-
-        // Grid lines
-        diffeoCtx.strokeStyle = 'hsla(' + slice.hue + ',70%,' + Math.min(80, 40 + cellDiv * 150 * deltaScale) + '%,' + (alpha * 1.2) + ')';
-        diffeoCtx.lineWidth = 0.5 + cellDiv * 3 * deltaScale;
-        diffeoCtx.stroke();
-      }
     }
+}
 
-    // Kelp strands connecting to next slice
-    if (si < nSlices - 1) {
-      var nextSlice = diffeoState.slices[si + 1];
-      var nextBaseY = startY + (si + 1) * spacing;
-      var nextDepth = 0.65 + 0.35 * ((si + 1) / Math.max(nSlices - 1, 1));
-      var nextPerspW = sliceW * nextDepth;
-      var nextPerspH = spacing * 0.75 * nextDepth;
-      var nextPerspX = (W - nextPerspW) / 2;
-      var nextPerspY = nextBaseY + (spacing * 0.75 - nextPerspH) / 2;
+/**
+ * Render the kelp strand connections between two consecutive diffeo slices.
+ *
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {Object} slice - current slice
+ * @param {Object} nextSlice - next slice
+ * @param {number} si - current slice index
+ * @param {number} time - animation time
+ * @param {number} amp - kelp amplitude
+ * @param {number} sens - divergence sensitivity
+ * @param {number} deltaScale - normalization factor
+ * @param {number} alpha - base alpha
+ * @param {Object} persp - current slice perspective layout
+ * @param {Object} nextPersp - next slice perspective layout
+ */
+function renderDiffeoInterSliceStrands(ctx, slice, nextSlice, si, time, amp, sens, deltaScale, alpha, persp, nextPersp) {
+    var res = slice.res;
+    var grid = slice.grid;
+    var nextGrid = nextSlice.grid;
 
-      var step = Math.max(1, Math.floor(res / 3));
-      for (var gy = 0; gy <= res; gy += step) {
+    var step = Math.max(1, Math.floor(res / 3));
+    for (var gy = 0; gy <= res; gy += step) {
         for (var gx = 0; gx <= res; gx += step) {
-          var idx = gy * (res + 1) + gx;
-          if (idx >= grid.length) continue;
-          var cell = grid[idx];
-          var div = cell.divergence * sens;
+            var idx = gy * (res + 1) + gx;
+            if (idx >= grid.length) continue;
 
-          var swX1 = Math.sin(time * 0.7 + idx * 0.5 + si * 1.3) * div * amp * 35 * deltaScale;
-          var swY1 = Math.sin(time * 0.5 + idx * 0.3 + si * 0.9) * div * amp * 12 * deltaScale;
-          var x1 = perspX + (cell.ox + cell.dx * deltaScale * amp * 0.3) * perspW + swX1;
-          var y1 = perspY + (cell.oy + cell.dy * deltaScale * amp * 0.3) * perspH + swY1;
+            var pt1 = computeKelpSwayPosition(grid[idx], idx, si, time, amp, sens, deltaScale, persp);
 
-          var nextGrid = nextSlice.grid;
-          var nIdx = Math.min(idx, nextGrid.length - 1);
-          var nCell = nextGrid[nIdx];
-          var nDiv = nCell.divergence * sens;
-          var swX2 = Math.sin(time * 0.7 + nIdx * 0.5 + (si + 1) * 1.3) * nDiv * amp * 35 * deltaScale;
-          var swY2 = Math.sin(time * 0.5 + nIdx * 0.3 + (si + 1) * 0.9) * nDiv * amp * 12 * deltaScale;
-          var x2 = nextPerspX + (nCell.ox + nCell.dx * deltaScale * amp * 0.3) * nextPerspW + swX2;
-          var y2 = nextPerspY + (nCell.oy + nCell.dy * deltaScale * amp * 0.3) * nextPerspH + swY2;
+            var nIdx = Math.min(idx, nextGrid.length - 1);
+            var pt2 = computeKelpSwayPosition(nextGrid[nIdx], nIdx, si + 1, time, amp, sens, deltaScale, nextPersp);
 
-          var midX = (x1 + x2) / 2 + Math.sin(time * 1.1 + idx) * div * amp * 18 * deltaScale;
-          var midY = (y1 + y2) / 2;
+            var div = grid[idx].divergence * sens;
+            var midX = (pt1.x + pt2.x) / 2 + Math.sin(time * 1.1 + idx) * div * amp * 18 * deltaScale;
+            var midY = (pt1.y + pt2.y) / 2;
 
-          diffeoCtx.strokeStyle = 'hsla(' + Math.round((slice.hue + nextSlice.hue) / 2) + ',60%,45%,' + (alpha * 0.7) + ')';
-          diffeoCtx.lineWidth = 0.8 + div * 2.5 * deltaScale;
-          diffeoCtx.beginPath();
-          diffeoCtx.moveTo(x1, y1);
-          diffeoCtx.quadraticCurveTo(midX, midY, x2, y2);
-          diffeoCtx.stroke();
+            ctx.strokeStyle = 'hsla(' + Math.round((slice.hue + nextSlice.hue) / 2) + ',60%,45%,' + (alpha * 0.7) + ')';
+            ctx.lineWidth = 0.8 + div * 2.5 * deltaScale;
+            ctx.beginPath();
+            ctx.moveTo(pt1.x, pt1.y);
+            ctx.quadraticCurveTo(midX, midY, pt2.x, pt2.y);
+            ctx.stroke();
         }
-      }
     }
+}
 
-    // Slice label
-    diffeoCtx.globalAlpha = 0.6;
-    diffeoCtx.fillStyle = 'hsl(' + slice.hue + ',70%,65%)';
-    diffeoCtx.font = '9px monospace';
-    diffeoCtx.fillText(
-      'L' + slice.layerIdx + ' d' + slice.dimA + '\u00d7d' + slice.dimB,
-      perspX - 65,
-      perspY + perspH / 2 + 3
+/**
+ * Render the label for a single diffeo slice.
+ *
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {Object} slice - { layerIdx, dimA, dimB, hue }
+ * @param {Object} persp - perspective layout
+ */
+function renderDiffeoSliceLabel(ctx, slice, persp) {
+    ctx.globalAlpha = 0.6;
+    ctx.fillStyle = 'hsl(' + slice.hue + ',70%,65%)';
+    ctx.font = '9px monospace';
+    ctx.fillText(
+        'L' + slice.layerIdx + ' d' + slice.dimA + '\u00d7d' + slice.dimB,
+        persp.perspX - 65,
+        persp.perspY + persp.perspH / 2 + 3
     );
+}
 
-    diffeoCtx.restore();
-  }
+/**
+ * Top-level: the refactored renderDiffeoOverlay.
+ * Orchestrates all passes using the helpers above.
+ */
+function renderDiffeoOverlay(time) {
+    if (!diffeoState.active || !diffeoCtx || diffeoState.slices.length === 0) return;
+
+    var dpr = window.devicePixelRatio || 1;
+    var W = diffeoCanvas.width / dpr;
+    var H = diffeoCanvas.height / dpr;
+    diffeoCtx.clearRect(0, 0, W, H);
+
+    var nSlices = diffeoState.slices.length;
+    var spacing = diffeoState.layerSpacing;
+    var totalHeight = nSlices * spacing;
+    var startY = (H - totalHeight) / 2;
+
+    var amp = diffeoState.kelpAmplitude;
+    var sens = diffeoState.divergenceSensitivity;
+    var alpha = diffeoState.sliceAlpha;
+
+    // Compute global normalization
+    var maxDelta = computeMaxDeltaMagnitude(diffeoState.slices);
+    var deltaScale = 1.0 / maxDelta;
+
+    for (var si = 0; si < nSlices; si++) {
+        var slice = diffeoState.slices[si];
+        var persp = computeDiffeoSlicePerspective(si, nSlices, W, startY, spacing);
+
+        diffeoCtx.save();
+        diffeoCtx.globalAlpha = alpha * (0.4 + 0.6 * persp.depthFactor);
+
+        // PASS 1: Render grid cells for this slice
+        renderDiffeoSliceCells(diffeoCtx, slice, si, time, amp, sens, deltaScale, alpha, persp);
+
+        // PASS 2: Render kelp strands connecting to the next slice
+        if (si < nSlices - 1) {
+            var nextSlice = diffeoState.slices[si + 1];
+            var nextPersp = computeDiffeoSlicePerspective(si + 1, nSlices, W, startY, spacing);
+            renderDiffeoInterSliceStrands(diffeoCtx, slice, nextSlice, si, time, amp, sens, deltaScale, alpha, persp, nextPersp);
+        }
+
+        // PASS 3: Slice label
+        renderDiffeoSliceLabel(diffeoCtx, slice, persp);
+
+        diffeoCtx.restore();
+    }
 }
 
 function draw() {
