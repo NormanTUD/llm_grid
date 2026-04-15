@@ -1283,8 +1283,128 @@ function onData() {
     }
 }
 
-function fetchSAEFeatures(){
-    if(!D) return;
+// =====================================================================
+// REFACTORED fetchSAEFeatures — broken into composable helper functions
+// =====================================================================
+
+/**
+ * Build the HTML for the token × feature activation heatmap table.
+ * @param {Object} data - response from /sae_features
+ * @param {number} tokenIdx - the selected token index
+ * @returns {string} HTML string for the heatmap section
+ */
+function buildSAEActivationHeatmapHTML(data, tokenIdx) {
+    if (!data.token_activations || !data.tokens) return '';
+
+    var html = '<div style="margin-bottom:6px;font-size:9px;color:#888">' +
+               'Activation heatmap (top features × tokens):</div>';
+    html += '<div style="overflow-x:auto;margin-bottom:6px">' +
+            '<table style="border-collapse:collapse;font-size:8px">';
+
+    // Header row: tokens
+    html += '<tr><td></td>';
+    for (var ti = 0; ti < data.tokens.length; ti++) {
+        var isSel = (ti === tokenIdx);
+        html += '<td style="padding:1px 3px;text-align:center;color:' +
+                (isSel ? '#e94560' : '#888') + ';font-weight:' +
+                (isSel ? 'bold' : 'normal') + '">' + data.tokens[ti] + '</td>';
+    }
+    html += '</tr>';
+
+    // Feature rows (up to 8)
+    var taKeys = Object.keys(data.token_activations);
+    for (var fi = 0; fi < Math.min(taKeys.length, 8); fi++) {
+        var fid = taKeys[fi];
+        var acts = data.token_activations[fid];
+        html += buildSAEHeatmapRow(fid, acts);
+    }
+
+    html += '</table></div>';
+    return html;
+}
+
+/**
+ * Build a single row of the SAE activation heatmap table.
+ * @param {string} featureId - the feature ID label
+ * @param {number[]} acts - activation values per token
+ * @returns {string} HTML <tr> string
+ */
+function buildSAEHeatmapRow(featureId, acts) {
+    // Find max for color scaling
+    var maxAct = 0;
+    for (var ai = 0; ai < acts.length; ai++) {
+        if (Math.abs(acts[ai]) > maxAct) maxAct = Math.abs(acts[ai]);
+    }
+    if (maxAct < 1e-8) maxAct = 1;
+
+    var html = '<tr><td style="padding:1px 4px;color:#53a8b6;white-space:nowrap">F' +
+               featureId + '</td>';
+    for (var ai = 0; ai < acts.length; ai++) {
+        var intensity = Math.min(1, Math.abs(acts[ai]) / maxAct);
+        var r = acts[ai] > 0 ? Math.round(233 * intensity) : 0;
+        var g = acts[ai] > 0 ? Math.round(69 * intensity) : Math.round(119 * intensity);
+        var b = acts[ai] > 0 ? Math.round(96 * intensity) : Math.round(182 * intensity);
+        var bg = 'rgba(' + r + ',' + g + ',' + b + ',' +
+                 (0.2 + 0.6 * intensity).toFixed(2) + ')';
+        html += '<td style="padding:1px 3px;text-align:center;background:' + bg + '">' +
+                acts[ai].toFixed(2) + '</td>';
+    }
+    html += '</tr>';
+    return html;
+}
+
+/**
+ * Build the HTML for the SAE feature list (clickable rows).
+ * @param {Object[]} features - array of { feature_id, activation }
+ * @returns {string} HTML string for the feature list
+ */
+function buildSAEFeatureListHTML(features) {
+    var html = '<div style="font-size:9px;color:#888;margin-bottom:2px">' +
+               'Click a feature to set up intervention:</div>';
+
+    for (var i = 0; i < features.length; i++) {
+        var f = features[i];
+        var barW = Math.min(120, Math.max(2, Math.abs(f.activation) * 10));
+        var barColor = f.activation > 0 ? '#e94560' : '#0077b6';
+
+        html += '<div class="sae-feat-row" onclick="selectSAEFeature(' +
+                f.feature_id + ',' + f.activation.toFixed(4) + ')" ' +
+                'style="display:flex;align-items:center;gap:4px;padding:2px 4px;' +
+                'cursor:pointer;border-radius:2px;margin:1px 0" ' +
+                'onmouseover="this.style.background=\'#1a1a2e\'" ' +
+                'onmouseout="this.style.background=\'transparent\'">';
+        html += '<span style="color:#53a8b6;min-width:55px;font-family:monospace">' +
+                'F' + f.feature_id + '</span>';
+        html += '<div style="background:' + barColor + ';height:6px;width:' + barW +
+                'px;border-radius:2px;flex-shrink:0"></div>';
+        html += '<span style="color:#888;font-size:9px;min-width:60px">' +
+                f.activation.toFixed(4) + '</span>';
+        html += '</div>';
+    }
+
+    return html;
+}
+
+/**
+ * Build the header HTML shown above the heatmap and feature list.
+ * @param {Object} data - response from /sae_features
+ * @param {number} tokenIdx - the selected token index
+ * @returns {string} HTML string
+ */
+function buildSAEFeatureHeaderHTML(data, tokenIdx) {
+    var nLatents = data.n_latents || '?';
+    return '<div style="color:#888;margin-bottom:4px">Token: ' +
+           '<b style="color:#e94560">' + data.tokens[tokenIdx] + '</b> | Layer ' +
+           (+document.getElementById('sae-layer').value) +
+           ' | ' + nLatents + ' total latents</div>';
+}
+
+/**
+ * Top-level: the refactored fetchSAEFeatures.
+ * Orchestrates the fetch and delegates HTML building to helpers.
+ */
+function fetchSAEFeatures() {
+    if (!D) return;
     var layer = +document.getElementById('sae-layer').value;
     var tokenIdx = +document.getElementById('sae-token').value;
     var topK = +document.getElementById('sae-topk').value;
@@ -1295,78 +1415,36 @@ function fetchSAEFeatures(){
 
     fetch('/sae_features', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({text: text, layer: layer, token_idx: tokenIdx, top_k: topK})
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            text: text, layer: layer,
+            token_idx: tokenIdx, top_k: topK
+        })
     })
-    .then(function(r){return r.json()})
-    .then(function(data){
-        if(data.error){
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.error) {
             list.innerHTML = '<span style="color:#e94560">' + data.error + '</span>';
             return;
         }
-        var features = data.features;
-        var nLatents = data.n_latents || '?';
-        var html = '<div style="color:#888;margin-bottom:4px">Token: <b style="color:#e94560">' +
-                   data.tokens[tokenIdx] + '</b> | Layer ' + layer +
-                   ' | ' + nLatents + ' total latents</div>';
 
-        // Token activation heatmap for top features
-        if(data.token_activations && data.tokens){
-            html += '<div style="margin-bottom:6px;font-size:9px;color:#888">Activation heatmap (top features × tokens):</div>';
-            html += '<div style="overflow-x:auto;margin-bottom:6px"><table style="border-collapse:collapse;font-size:8px">';
-            // Header row: tokens
-            html += '<tr><td></td>';
-            for(var ti = 0; ti < data.tokens.length; ti++){
-                var isSel = (ti === tokenIdx);
-                html += '<td style="padding:1px 3px;text-align:center;color:' + (isSel ? '#e94560' : '#888') + ';font-weight:' + (isSel ? 'bold' : 'normal') + '">' + data.tokens[ti] + '</td>';
-            }
-            html += '</tr>';
-            // Feature rows
-            var taKeys = Object.keys(data.token_activations);
-            for(var fi = 0; fi < Math.min(taKeys.length, 8); fi++){
-                var fid = taKeys[fi];
-                var acts = data.token_activations[fid];
-                // Find max for color scaling
-                var maxAct = 0;
-                for(var ai = 0; ai < acts.length; ai++){
-                    if(Math.abs(acts[ai]) > maxAct) maxAct = Math.abs(acts[ai]);
-                }
-                if(maxAct < 1e-8) maxAct = 1;
-                html += '<tr><td style="padding:1px 4px;color:#53a8b6;white-space:nowrap">F' + fid + '</td>';
-                for(var ai = 0; ai < acts.length; ai++){
-                    var intensity = Math.min(1, Math.abs(acts[ai]) / maxAct);
-                    var r = acts[ai] > 0 ? Math.round(233 * intensity) : Math.round(0);
-                    var g = acts[ai] > 0 ? Math.round(69 * intensity) : Math.round(119 * intensity);
-                    var b = acts[ai] > 0 ? Math.round(96 * intensity) : Math.round(182 * intensity);
-                    var bg = 'rgba(' + r + ',' + g + ',' + b + ',' + (0.2 + 0.6 * intensity).toFixed(2) + ')';
-                    html += '<td style="padding:1px 3px;text-align:center;background:' + bg + '">' + acts[ai].toFixed(2) + '</td>';
-                }
-                html += '</tr>';
-            }
-            html += '</table></div>';
-        }
+        var html = '';
 
-        // Feature list
-        html += '<div style="font-size:9px;color:#888;margin-bottom:2px">Click a feature to set up intervention:</div>';
-        for(var i = 0; i < features.length; i++){
-            var f = features[i];
-            var barW = Math.min(120, Math.max(2, Math.abs(f.activation) * 10));
-            var barColor = f.activation > 0 ? '#e94560' : '#0077b6';
-            html += '<div class="sae-feat-row" onclick="selectSAEFeature(' + f.feature_id + ',' + f.activation.toFixed(4) + ')" ' +
-                    'style="display:flex;align-items:center;gap:4px;padding:2px 4px;cursor:pointer;border-radius:2px;margin:1px 0" ' +
-                    'onmouseover="this.style.background=\'#1a1a2e\'" onmouseout="this.style.background=\'transparent\'">';
-            html += '<span style="color:#53a8b6;min-width:55px;font-family:monospace">F' + f.feature_id + '</span>';
-            html += '<div style="background:' + barColor + ';height:6px;width:' + barW + 'px;border-radius:2px;flex-shrink:0"></div>';
-            html += '<span style="color:#888;font-size:9px;min-width:60px">' + f.activation.toFixed(4) + '</span>';
-            html += '</div>';
-        }
+        // 1. Header with token info
+        html += buildSAEFeatureHeaderHTML(data, tokenIdx);
+
+        // 2. Activation heatmap table
+        html += buildSAEActivationHeatmapHTML(data, tokenIdx);
+
+        // 3. Clickable feature list
+        html += buildSAEFeatureListHTML(data.features);
 
         list.innerHTML = html;
 
         // Show intervention panel
         document.getElementById('sae-intervention').style.display = 'block';
     })
-    .catch(function(e){
+    .catch(function(e) {
         list.innerHTML = '<span style="color:#e94560">Error: ' + e + '</span>';
     });
 }
