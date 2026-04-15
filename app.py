@@ -3345,241 +3345,231 @@ def _eigvec_to_top_dims(eigvec, principal_dirs, hidden_dim, top_k=10):
     top_idx = np.argsort(-np.abs(full_vec))[:top_k]
     return [{"dim": int(idx), "weight": round(float(full_vec[idx]), 6)} for idx in top_idx]
 
-def handle_contrastive_spectrum(body_bytes):
+def _compute_principal_directions(h_cloud, n_tokens, hidden_dim, max_k=32):
     """
-    Given two sets of prompts, compute the diffeomorphism spectrum
-    for each, then find which geometric features (eigenvalue patterns,
-    curl, divergence, rank) are most discriminative.
+    Compute principal directions from a token cloud via SVD.
 
-    This automatically finds "the math layers" or "the censorship layers"
-    by looking at WHERE and HOW the geometry differs.
+    Args:
+        h_cloud: np.ndarray of shape (n_tokens, hidden_dim)
+        n_tokens: number of tokens
+        hidden_dim: hidden dimension size
+        max_k: maximum number of principal components
+
+    Returns:
+        K: int — number of principal directions
+        principal_dirs: np.ndarray of shape (K, hidden_dim)
     """
-    req = json.loads(body_bytes)
-    positive_texts = req.get("positive", [])
-    negative_texts = req.get("negative", [])
-    behavior_name = req.get("behavior", "unknown")
+    if n_tokens >= 3:
+        cloud_centered = h_cloud - h_cloud.mean(axis=0)
+        U, S, Vt = np.linalg.svd(cloud_centered, full_matrices=False)
+        K = min(max_k, hidden_dim, n_tokens - 1)
+        principal_dirs = Vt[:K]
+    else:
+        K = min(max_k, hidden_dim)
+        principal_dirs = np.eye(hidden_dim)[:K]
+    return K, principal_dirs
 
-    if not positive_texts or not negative_texts:
-        return json.dumps({"error": "Need both positive and negative texts"}).encode()
+def _estimate_jacobian_from_cloud(hs, lay, n_tokens, hidden_dim, K, principal_dirs, h_cloud):
+    """
+    Estimate the projected Jacobian of the layer-to-layer map
+    from the token cloud using least-squares regression.
 
+    Args:
+        hs: hidden states tuple
+        lay: layer index
+        n_tokens: number of tokens
+        hidden_dim: hidden dimension
+        K: number of principal components
+        principal_dirs: np.ndarray of shape (K, hidden_dim)
+        h_cloud: np.ndarray of shape (n_tokens, hidden_dim) at layer `lay`
+
+    Returns:
+        J_proj: np.ndarray of shape (K, K) — projected Jacobian
+    """
+    deltas_cloud = np.stack([
+        (hs[lay + 1][0, t] - hs[lay][0, t]).cpu().float().numpy()
+        for t in range(n_tokens)
+    ], axis=0)
+
+    if n_tokens >= 3:
+        cloud_centered = h_cloud - h_cloud.mean(axis=0)
+        pos_proj = cloud_centered @ principal_dirs.T
+        del_centered = deltas_cloud - deltas_cloud.mean(axis=0)
+        del_proj = del_centered @ principal_dirs.T
+        try:
+            J_proj = np.linalg.lstsq(pos_proj, del_proj, rcond=None)[0].T
+        except Exception:
+            J_proj = np.eye(K)
+    else:
+        J_proj = np.eye(K)
+
+    return J_proj
+
+def compute_spectrum_for_text(text):
+    """
+    Compute the diffeomorphism spectrum for a single text.
+
+    Returns:
+        dict with keys: tokens, n_tokens, n_layers, layer_spectra
+        where layer_spectra[lay][tok] is a dict of geometric invariants.
+    """
+    input_ids, tokens = tokenize_text(TOKENIZER, text)
+    hs = extract_hidden_states(MODEL, input_ids)
+    n_tokens = input_ids.shape[1]
     n_layers = get_n_layers(MODEL_CONFIG)
+    hidden_dim = get_hidden_dim(MODEL_CONFIG)
 
-    # Compute spectrum for each text
-    def compute_spectrum_for_text(text):
-        """Compute the diffeomorphism spectrum for a single text."""
-        input_ids, tokens = tokenize_text(TOKENIZER, text)
-        hs = extract_hidden_states(MODEL, input_ids)
-        n_tokens = input_ids.shape[1]
-        n_layers = get_n_layers(MODEL_CONFIG)
-        hidden_dim = get_hidden_dim(MODEL_CONFIG)
-
-        layer_spectra = []  # [n_layers][n_tokens] -> spectrum dict
-
-        for lay in range(n_layers):
-            token_spectra = []
-
-            # Get the token cloud at this layer for PCA directions
-            h_cloud = hs[lay][0].cpu().float().numpy()  # (n_tokens, hidden_dim)
-            if n_tokens >= 3:
-                cloud_centered = h_cloud - h_cloud.mean(axis=0)
-                U, S, Vt = np.linalg.svd(cloud_centered, full_matrices=False)
-                K = min(32, hidden_dim, n_tokens - 1)
-                principal_dirs = Vt[:K]
-            else:
-                K = min(32, hidden_dim)
-                principal_dirs = np.eye(hidden_dim)[:K]
-
-            for ti in range(n_tokens):
-                hs[lay][0, ti].cpu().float().numpy()
-                delta_base = (hs[lay + 1][0, ti] - hs[lay][0, ti]).cpu().float().numpy()
-
-                eps = 1e-3 * max(np.linalg.norm(delta_base), 1e-6)
-
-                # Compute projected Jacobian via finite differences
-                # using the model's actual forward pass through hooks
-                J_proj = np.zeros((K, K))
-
-                blocks = _get_transformer_blocks(MODEL)
-                can_hook = blocks is not None and lay < len(blocks)
-
-                for j in range(K):
-                    perturbation = torch.tensor(
-                        principal_dirs[j] * eps,
-                        dtype=hs[lay].dtype
-                    ).to(hs[lay].device)
-
-                    if can_hook:
-                        perturbed_delta = _compute_perturbed_delta(
-                            MODEL, input_ids, lay, ti, perturbation, hs
-                        )
-                    else:
-                        perturbed_delta = None
-
-                    if perturbed_delta is not None:
-                        Jv = (perturbed_delta - delta_base) / eps
-                        for i in range(K):
-                            J_proj[i, j] = np.dot(principal_dirs[i], Jv)
-                    else:
-                        # Fallback: use finite differences on stored hidden states
-                        # This is a linear approximation using the delta field
-                        # J_proj[i,j] ≈ how much delta changes in direction i
-                        # when we move in direction j
-                        # Use the token cloud to estimate this
-                        if n_tokens >= 3:
-                            # Estimate from variation across tokens
-                            deltas_cloud = np.stack([
-                                (hs[lay + 1][0, t] - hs[lay][0, t]).cpu().float().numpy()
-                                for t in range(n_tokens)
-                            ], axis=0)  # (n_tokens, hidden_dim)
-                            # Project deltas and positions onto principal dirs
-                            pos_proj = cloud_centered @ principal_dirs.T  # (n_tokens, K)
-                            del_proj = (deltas_cloud - deltas_cloud.mean(axis=0)) @ principal_dirs.T
-                            # Least-squares estimate of Jacobian
-                            try:
-                                J_proj = np.linalg.lstsq(pos_proj, del_proj, rcond=None)[0].T
-                            except Exception:
-                                J_proj = np.eye(K)
-                            break  # Only need to do this once, not per j
-                        else:
-                            J_proj = np.eye(K)
-                            break
-
-                # ---- Spectral decomposition ----
-                eigenvalues, eigenvectors = np.linalg.eig(J_proj)
-
-                sort_idx = np.argsort(-np.abs(eigenvalues))
-                eigenvalues = eigenvalues[sort_idx]
-                eigenvectors = eigenvectors[:, sort_idx]
-
-                eig_real = eigenvalues.real
-                eig_imag = eigenvalues.imag
-                eig_magnitude = np.abs(eigenvalues)
-                eig_phase = np.angle(eigenvalues)
-
-                # ---- Geometric invariants ----
-                divergence = float(np.real(np.sum(eigenvalues)))
-
-                J_antisym = (J_proj - J_proj.T) / 2
-                curl_magnitude = float(np.linalg.norm(J_antisym, 'fro'))
-
-                J_sym = (J_proj + J_proj.T) / 2
-                J_traceless = J_sym - np.eye(K) * np.trace(J_sym) / K
-                shear_magnitude = float(np.linalg.norm(J_traceless, 'fro'))
-
-                # Safe determinant (product of eigenvalues can overflow)
-                log_det = float(np.real(np.sum(np.log(np.abs(eigenvalues) + 1e-30))))
-                det = float(np.exp(np.clip(log_det, -50, 50)))
-
-                sv = np.linalg.svd(J_proj, compute_uv=False)
-                condition_number = float(sv[0] / max(sv[-1], 1e-12))
-
-                sv_norm = sv / max(sv.sum(), 1e-12)
-                sv_norm = sv_norm[sv_norm > 1e-12]
-                effective_rank = float(np.exp(-np.sum(sv_norm * np.log(sv_norm))))
-
-                n_expanding = int(np.sum(eig_magnitude > 1.05))
-                n_contracting = int(np.sum(eig_magnitude < 0.95))
-                n_rotating = int(np.sum(np.abs(eig_imag) > 0.05))
-
-                # ---- Holonomy estimate ----
-                # Approximate the parallel transport deficit by computing
-                # how much the Jacobian's rotation component accumulates
-                # This is the antisymmetric part's Frobenius norm
-                # (a proxy for the connection's curvature)
-                holonomy_proxy = curl_magnitude / max(K, 1)
-
-                # ---- Top eigenvector in hidden space ----
-                top_eigvec_dims = _eigvec_to_top_dims(
-                    eigenvectors[:, 0], principal_dirs, hidden_dim, top_k=10
-                ) if len(eigenvectors) > 0 else []
-
-                token_spectra.append({
-                    "eigenvalues_real": eig_real[:16].tolist(),
-                    "eigenvalues_imag": eig_imag[:16].tolist(),
-                    "eigenvalues_magnitude": eig_magnitude[:16].tolist(),
-                    "eigenvalues_phase": eig_phase[:16].tolist(),
-                    "divergence": round(divergence, 6),
-                    "curl": round(curl_magnitude, 6),
-                    "shear": round(shear_magnitude, 6),
-                    "determinant": round(det, 6),
-                    "condition_number": round(condition_number, 4),
-                    "effective_rank": round(effective_rank, 4),
-                    "holonomy": round(holonomy_proxy, 6),
-                    "n_expanding": n_expanding,
-                    "n_contracting": n_contracting,
-                    "n_rotating": n_rotating,
-                    "singular_values": sv[:16].tolist(),
-                    "top_eigenvector_dims": top_eigvec_dims,
-                })
-
-            layer_spectra.append(token_spectra)
-
-        return {
-            "tokens": tokens,
-            "n_tokens": n_tokens,
-            "n_layers": n_layers,
-            "layer_spectra": layer_spectra,
-        }
-
-    # ================================================================
-    # MAIN: Compute spectra for positive and negative sets
-    # ================================================================
-
-    pos_spectra = []
-    for text in positive_texts:
-        try:
-            spec = compute_spectrum_for_text(text)
-            pos_spectra.append(spec)
-        except Exception as e:
-            print(f"[ContrastiveSpectrum] Error on positive text: {e}")
-
-    neg_spectra = []
-    for text in negative_texts:
-        try:
-            spec = compute_spectrum_for_text(text)
-            neg_spectra.append(spec)
-        except Exception as e:
-            print(f"[ContrastiveSpectrum] Error on negative text: {e}")
-
-    if not pos_spectra or not neg_spectra:
-        return json.dumps({"error": "Failed to compute spectra for one or both sets"}).encode()
-
-    n_layers = pos_spectra[0]["n_layers"]
-
-    # ================================================================
-    # AGGREGATE: For each layer, compute mean geometric invariants
-    # for positive vs negative sets, then find the biggest differences
-    # ================================================================
-
-    invariant_keys = [
-        "divergence", "curl", "shear", "determinant",
-        "condition_number", "effective_rank", "holonomy",
-        "n_expanding", "n_contracting", "n_rotating"
-    ]
-
-    layer_contrasts = []  # one per layer
+    layer_spectra = []
 
     for lay in range(n_layers):
-        # Collect invariants across all tokens and all texts in each set
-        pos_vals = {k: [] for k in invariant_keys}
-        neg_vals = {k: [] for k in invariant_keys}
+        token_spectra = []
+
+        h_cloud = hs[lay][0].cpu().float().numpy()
+        K, principal_dirs = _compute_principal_directions(h_cloud, n_tokens, hidden_dim)
+
+        # Estimate Jacobian from token cloud
+        J_proj = _estimate_jacobian_from_cloud(hs, lay, n_tokens, hidden_dim, K, principal_dirs, h_cloud)
+
+        for ti in range(n_tokens):
+            delta = (hs[lay + 1][0, ti] - hs[lay][0, ti]).cpu().float().numpy()
+            eigenvalues, eigenvectors = np.linalg.eig(J_proj)
+            sort_idx = np.argsort(-np.abs(eigenvalues))
+            eigenvalues = eigenvalues[sort_idx]
+            eigenvectors = eigenvectors[:, sort_idx]
+
+            spec = _compute_geometric_invariants(eigenvalues, eigenvectors, J_proj, K, delta, principal_dirs, hidden_dim)
+            token_spectra.append(spec)
+
+        layer_spectra.append(token_spectra)
+
+    return {
+        "tokens": tokens,
+        "n_tokens": n_tokens,
+        "n_layers": n_layers,
+        "layer_spectra": layer_spectra,
+    }
+
+def _compute_geometric_invariants(eigenvalues, eigenvectors, J_proj, K, delta, principal_dirs, hidden_dim):
+    """
+    Compute geometric invariants from a Jacobian's eigendecomposition.
+    
+    Args:
+        eigenvalues: np.ndarray of complex eigenvalues (sorted by magnitude)
+        eigenvectors: np.ndarray of eigenvectors (columns, sorted)
+        J_proj: np.ndarray of shape (K, K) — the projected Jacobian
+        K: number of projected dimensions
+        delta: np.ndarray of shape (hidden_dim,) — the residual delta for this token
+        principal_dirs: np.ndarray of shape (K, hidden_dim)
+        hidden_dim: int
+    
+    Returns:
+        dict of geometric invariants
+    """
+    eig_real = eigenvalues.real
+    eig_imag = eigenvalues.imag
+    eig_magnitude = np.abs(eigenvalues)
+    eig_phase = np.angle(eigenvalues)
+
+    # Divergence = trace of Jacobian
+    divergence = float(np.real(np.sum(eigenvalues)))
+
+    # Curl = antisymmetric part
+    J_antisym = (J_proj - J_proj.T) / 2
+    curl_magnitude = float(np.linalg.norm(J_antisym, 'fro'))
+
+    # Shear = traceless symmetric part
+    J_sym = (J_proj + J_proj.T) / 2
+    J_traceless = J_sym - np.eye(K) * np.trace(J_sym) / K
+    shear_magnitude = float(np.linalg.norm(J_traceless, 'fro'))
+
+    # Determinant (via log for stability)
+    log_det = float(np.real(np.sum(np.log(np.abs(eigenvalues) + 1e-30))))
+    det = float(np.exp(np.clip(log_det, -50, 50)))
+
+    # Singular values and derived quantities
+    sv = np.linalg.svd(J_proj, compute_uv=False)
+    condition_number = float(sv[0] / max(sv[-1], 1e-12))
+
+    sv_norm = sv / max(sv.sum(), 1e-12)
+    sv_norm = sv_norm[sv_norm > 1e-12]
+    effective_rank = float(np.exp(-np.sum(sv_norm * np.log(sv_norm))))
+
+    n_expanding = int(np.sum(eig_magnitude > 1.05))
+    n_contracting = int(np.sum(eig_magnitude < 0.95))
+    n_rotating = int(np.sum(np.abs(eig_imag) > 0.05))
+
+    # Holonomy proxy
+    holonomy_proxy = curl_magnitude / max(K, 1)
+
+    # Delta norm
+    delta_norm = float(np.linalg.norm(delta))
+
+    # Top eigenvector mapped back to hidden dims
+    top_eigvec_dims = _eigvec_to_top_dims(
+        eigenvectors[:, 0], principal_dirs, hidden_dim, top_k=10
+    ) if len(eigenvectors) > 0 else []
+
+    return {
+        "eigenvalues_real": eig_real[:16].tolist(),
+        "eigenvalues_imag": eig_imag[:16].tolist(),
+        "eigenvalues_magnitude": eig_magnitude[:16].tolist(),
+        "eigenvalues_phase": eig_phase[:16].tolist(),
+        "divergence": round(divergence, 6),
+        "curl": round(curl_magnitude, 6),
+        "shear": round(shear_magnitude, 6),
+        "determinant": round(det, 6),
+        "condition_number": round(condition_number, 4),
+        "effective_rank": round(effective_rank, 4),
+        "holonomy": round(holonomy_proxy, 6),
+        "n_expanding": n_expanding,
+        "n_contracting": n_contracting,
+        "n_rotating": n_rotating,
+        "singular_values": sv[:16].tolist(),
+        "delta_norm": round(delta_norm, 6),
+        "top_eigenvector_dims": top_eigvec_dims,
+    }
+
+INVARIANT_KEYS = [
+    "divergence", "curl", "shear", "determinant",
+    "condition_number", "effective_rank", "holonomy",
+    "n_expanding", "n_contracting", "n_rotating"
+]
+
+
+def _aggregate_contrastive_invariants(pos_spectra, neg_spectra, n_layers):
+    """
+    For each layer, compute mean geometric invariants for positive vs negative
+    sets and find the biggest differences (effect sizes).
+    
+    Returns:
+        layer_contrasts: list of dicts (one per layer)
+        best_layer: int
+        best_invariant: str
+        best_effect: float
+        ranked_layers: list of ints sorted by total contrast score
+    """
+    layer_contrasts = []
+
+    for lay in range(n_layers):
+        pos_vals = {k: [] for k in INVARIANT_KEYS}
+        neg_vals = {k: [] for k in INVARIANT_KEYS}
 
         for spec in pos_spectra:
             if lay < len(spec["layer_spectra"]):
                 for tok_spec in spec["layer_spectra"][lay]:
-                    for k in invariant_keys:
+                    for k in INVARIANT_KEYS:
                         pos_vals[k].append(tok_spec[k])
 
         for spec in neg_spectra:
             if lay < len(spec["layer_spectra"]):
                 for tok_spec in spec["layer_spectra"][lay]:
-                    for k in invariant_keys:
+                    for k in INVARIANT_KEYS:
                         neg_vals[k].append(tok_spec[k])
 
         contrast = {"layer": lay}
         total_contrast_score = 0.0
 
-        for k in invariant_keys:
+        for k in INVARIANT_KEYS:
             pos_arr = np.array(pos_vals[k]) if pos_vals[k] else np.array([0.0])
             neg_arr = np.array(neg_vals[k]) if neg_vals[k] else np.array([0.0])
 
@@ -3588,7 +3578,6 @@ def handle_contrastive_spectrum(body_bytes):
             pos_std = float(np.std(pos_arr))
             neg_std = float(np.std(neg_arr))
 
-            # Effect size (Cohen's d approximation)
             pooled_std = np.sqrt((pos_std**2 + neg_std**2) / 2) if (pos_std + neg_std) > 1e-12 else 1.0
             effect_size = abs(pos_mean - neg_mean) / pooled_std
 
@@ -3605,37 +3594,36 @@ def handle_contrastive_spectrum(body_bytes):
         contrast["total_contrast_score"] = round(total_contrast_score, 4)
         layer_contrasts.append(contrast)
 
-    # ================================================================
-    # RANK: Find the most discriminative layers and invariants
-    # ================================================================
-
-    # Sort layers by total contrast score
     ranked_layers = sorted(
         range(n_layers),
         key=lambda lll: layer_contrasts[lll]["total_contrast_score"],
         reverse=True
     )
 
-    # Find the single most discriminative invariant across all layers
     best_invariant = None
     best_effect = 0.0
     best_layer = 0
     for lay in range(n_layers):
-        for k in invariant_keys:
+        for k in INVARIANT_KEYS:
             es = layer_contrasts[lay][k]["effect_size"]
             if es > best_effect:
                 best_effect = es
                 best_invariant = k
                 best_layer = lay
 
-    # ================================================================
-    # EIGENVALUE SPECTRUM COMPARISON
-    # For the top-3 most contrastive layers, compare the full
-    # eigenvalue magnitude distributions
-    # ================================================================
+    return layer_contrasts, best_layer, best_invariant, best_effect, ranked_layers
 
+def _compare_eigenvalue_distributions(pos_spectra, neg_spectra, ranked_layers, top_n=3):
+    """
+    For the top-N most contrastive layers, compare eigenvalue magnitude
+    distributions between positive and negative sets.
+    
+    Returns:
+        list of dicts with histogram data and KL divergence
+    """
     eigenvalue_comparisons = []
-    for lay in ranked_layers[:3]:
+
+    for lay in ranked_layers[:top_n]:
         pos_eigs = []
         neg_eigs = []
 
@@ -3649,35 +3637,78 @@ def handle_contrastive_spectrum(body_bytes):
                 for tok_spec in spec["layer_spectra"][lay]:
                     neg_eigs.extend(tok_spec["eigenvalues_magnitude"])
 
-        # Compute histogram comparison
         all_eigs = pos_eigs + neg_eigs
-        if all_eigs:
-            bins = np.linspace(min(all_eigs), max(all_eigs), 30)
-            pos_hist, _ = np.histogram(pos_eigs, bins=bins, density=True) if pos_eigs else (np.zeros(29), bins)
-            neg_hist, _ = np.histogram(neg_eigs, bins=bins, density=True) if neg_eigs else (np.zeros(29), bins)
+        if not all_eigs:
+            continue
 
-            # KL divergence (symmetrized)
-            pos_hist_safe = pos_hist + 1e-10
-            neg_hist_safe = neg_hist + 1e-10
-            pos_hist_safe /= pos_hist_safe.sum()
-            neg_hist_safe /= neg_hist_safe.sum()
-            kl_div = float(0.5 * np.sum(pos_hist_safe * np.log(pos_hist_safe / neg_hist_safe)) +
-                          0.5 * np.sum(neg_hist_safe * np.log(neg_hist_safe / pos_hist_safe)))
+        bins = np.linspace(min(all_eigs), max(all_eigs), 30)
+        pos_hist, _ = np.histogram(pos_eigs, bins=bins, density=True) if pos_eigs else (np.zeros(29), bins)
+        neg_hist, _ = np.histogram(neg_eigs, bins=bins, density=True) if neg_eigs else (np.zeros(29), bins)
 
-            eigenvalue_comparisons.append({
-                "layer": lay,
-                "pos_histogram": pos_hist.tolist(),
-                "neg_histogram": neg_hist.tolist(),
-                "bin_edges": bins.tolist(),
-                "kl_divergence": round(kl_div, 6),
-                "pos_mean_magnitude": round(float(np.mean(pos_eigs)), 6) if pos_eigs else 0.0,
-                "neg_mean_magnitude": round(float(np.mean(neg_eigs)), 6) if neg_eigs else 0.0,
-            })
+        pos_hist_safe = pos_hist + 1e-10
+        neg_hist_safe = neg_hist + 1e-10
+        pos_hist_safe /= pos_hist_safe.sum()
+        neg_hist_safe /= neg_hist_safe.sum()
+        kl_div = float(
+            0.5 * np.sum(pos_hist_safe * np.log(pos_hist_safe / neg_hist_safe)) +
+            0.5 * np.sum(neg_hist_safe * np.log(neg_hist_safe / pos_hist_safe))
+        )
 
-    # ================================================================
-    # GEOMETRIC SIGNATURE: A compact fingerprint of the behavior
-    # ================================================================
+        eigenvalue_comparisons.append({
+            "layer": lay,
+            "pos_histogram": pos_hist.tolist(),
+            "neg_histogram": neg_hist.tolist(),
+            "bin_edges": bins.tolist(),
+            "kl_divergence": round(kl_div, 6),
+            "pos_mean_magnitude": round(float(np.mean(pos_eigs)), 6) if pos_eigs else 0.0,
+            "neg_mean_magnitude": round(float(np.mean(neg_eigs)), 6) if neg_eigs else 0.0,
+        })
 
+    return eigenvalue_comparisons
+
+def handle_contrastive_spectrum(body_bytes):
+    """
+    Given two sets of prompts, compute the diffeomorphism spectrum
+    for each, then find which geometric features are most discriminative.
+    """
+    req = json.loads(body_bytes)
+    positive_texts = req.get("positive", [])
+    negative_texts = req.get("negative", [])
+    behavior_name = req.get("behavior", "unknown")
+
+    if not positive_texts or not negative_texts:
+        return json.dumps({"error": "Need both positive and negative texts"}).encode()
+
+    # Stage 1: Compute spectra for both sets
+    pos_spectra = []
+    for text in positive_texts:
+        try:
+            pos_spectra.append(compute_spectrum_for_text(text))
+        except Exception as e:
+            print(f"[ContrastiveSpectrum] Error on positive text: {e}")
+
+    neg_spectra = []
+    for text in negative_texts:
+        try:
+            neg_spectra.append(compute_spectrum_for_text(text))
+        except Exception as e:
+            print(f"[ContrastiveSpectrum] Error on negative text: {e}")
+
+    if not pos_spectra or not neg_spectra:
+        return json.dumps({"error": "Failed to compute spectra for one or both sets"}).encode()
+
+    n_layers = pos_spectra[0]["n_layers"]
+
+    # Stage 2: Aggregate and compare invariants
+    layer_contrasts, best_layer, best_invariant, best_effect, ranked_layers = \
+        _aggregate_contrastive_invariants(pos_spectra, neg_spectra, n_layers)
+
+    # Stage 3: Compare eigenvalue distributions
+    eigenvalue_comparisons = _compare_eigenvalue_distributions(
+        pos_spectra, neg_spectra, ranked_layers, top_n=3
+    )
+
+    # Stage 4: Build geometric signature
     geometric_signature = {
         "behavior": behavior_name,
         "most_discriminative_layer": best_layer,
@@ -3699,12 +3730,9 @@ def handle_contrastive_spectrum(body_bytes):
         "ranked_layers": ranked_layers,
         "eigenvalue_comparisons": eigenvalue_comparisons,
         "geometric_signature": geometric_signature,
-        # Include individual spectra for the first text of each set
-        # (for detailed visualization)
         "example_positive_spectrum": pos_spectra[0] if pos_spectra else None,
         "example_negative_spectrum": neg_spectra[0] if neg_spectra else None,
     }, cls=SafeFloatEncoder).encode()
-
 
 def _generate_signature_description(best_layer, best_invariant, best_effect,
                                      layer_contrasts, behavior_name):
