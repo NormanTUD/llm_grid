@@ -36,6 +36,37 @@ var fibreState = {
   flowArrowScale: 1.0,
 };
 
+// ============================================================
+// PREDICTED TOKEN VISUAL STYLE — single source of truth
+// ============================================================
+var predictedTokenStyle = {
+	opacity: 0.20,  // Master opacity: 0.0 = invisible, 1.0 = full
+	color: [245, 166, 35],  // RGB base color
+
+	// Derived helpers (call these, don't hardcode rgba values)
+	glowAlpha: function(prob) {
+		return (0.2 * this.opacity).toFixed(3);
+	},
+	fillAlpha: function(prob) {
+		return ((0.4 + prob * 0.6) * this.opacity).toFixed(3);
+	},
+	strokeAlpha: function() {
+		return this.opacity.toFixed(3);
+	},
+	labelStrokeAlpha: function() {
+		return (0.9 * this.opacity).toFixed(3);
+	},
+	labelFillAlpha: function() {
+		return this.opacity.toFixed(3);
+	},
+	rgba: function(a) {
+		return 'rgba(' + this.color[0] + ',' + this.color[1] + ',' + this.color[2] + ',' + a + ')';
+	},
+	hex: function() {
+		return this.rgba(this.opacity.toFixed(3));
+	}
+};
+
 var diffeoState = {
   active: false,
   numSlices: 8,
@@ -1126,6 +1157,7 @@ function drawSyntheticProbes(c, fx, fy, nR, nP, SX, SY) {
 }
 
 function drawPredictedTokens2D(c, D, fx, fy, nP, SX, SY) {
+    var ps = predictedTokenStyle;
     for(var pi2=0; pi2<D.predicted_indices.length; pi2++){
         var pidx = D.predicted_indices[pi2];
         if(pidx >= nP) continue;
@@ -1136,8 +1168,8 @@ function drawPredictedTokens2D(c, D, fx, fy, nP, SX, SY) {
         // Pulsing glow
         var glowR = 20 + prob * 30;
         var grad3 = c.createRadialGradient(px2, py2, 0, px2, py2, glowR);
-        grad3.addColorStop(0, 'rgba(245,166,35,0.2)');
-        grad3.addColorStop(1, 'rgba(245,166,35,0)');
+        grad3.addColorStop(0, ps.rgba(ps.glowAlpha(prob)));
+        grad3.addColorStop(1, ps.rgba('0'));
         c.beginPath(); c.arc(px2, py2, glowR, 0, Math.PI*2);
         c.fillStyle = grad3; c.fill();
 
@@ -1145,9 +1177,9 @@ function drawPredictedTokens2D(c, D, fx, fy, nP, SX, SY) {
         c.save();
         c.translate(px2, py2);
         c.rotate(Math.PI/4);
-        c.fillStyle = 'rgba(245,166,35,' + (0.4 + prob * 0.6).toFixed(2) + ')';
+        c.fillStyle = ps.rgba(ps.fillAlpha(prob));
         c.fillRect(-dotSize/2, -dotSize/2, dotSize, dotSize);
-        c.strokeStyle = '#f5a623';
+        c.strokeStyle = ps.rgba(ps.strokeAlpha());
         c.lineWidth = 1.5;
         c.strokeRect(-dotSize/2, -dotSize/2, dotSize, dotSize);
         c.restore();
@@ -1155,10 +1187,10 @@ function drawPredictedTokens2D(c, D, fx, fy, nP, SX, SY) {
         // Label
         c.font = '9px monospace';
         c.lineWidth = 2;
-        c.strokeStyle = 'rgba(0,0,0,0.9)';
+        c.strokeStyle = 'rgba(0,0,0,' + ps.labelStrokeAlpha() + ')';
         var plb = D.tokens[pidx] + ' (' + (prob*100).toFixed(1) + '%)';
         c.strokeText(plb, px2+10, py2-6);
-        c.fillStyle = '#f5a623';
+        c.fillStyle = ps.rgba(ps.labelFillAlpha());
         c.fillText(plb, px2+10, py2-6);
     }
 }
@@ -4139,6 +4171,7 @@ function drawFibrePredictedTokensInLayer(c, D, edxCum, edyCum, fx, fy, t, nP, nT
     layout, roomCY, vx0, vy0, vw, vh, isCurrentLayer) {
 
     if (!D.predicted_indices || D.predicted_indices.length === 0) return;
+    var ps = predictedTokenStyle;
 
     for (var pi2 = 0; pi2 < D.predicted_indices.length; pi2++) {
         var pidx = D.predicted_indices[pi2];
@@ -4154,7 +4187,6 @@ function drawFibrePredictedTokensInLayer(c, D, edxCum, edyCum, fx, fy, t, nP, nT
             var predScreenX = roomCX2 + ((predWX - vx0) / vw) * layout.roomSize;
             var predScreenY = roomCY + ((predWY - vy0) / vh) * layout.roomSize;
 
-            // Only draw if within the room bounds (with small tolerance)
             if (predScreenX < roomCX2 - 3 || predScreenX > roomCX2 + layout.roomSize + 3 ||
                 predScreenY < roomCY - 3 || predScreenY > roomCY + layout.roomSize + 3) {
                 continue;
@@ -4165,8 +4197,8 @@ function drawFibrePredictedTokensInLayer(c, D, edxCum, edyCum, fx, fy, t, nP, nT
             // Glow
             var glowR2 = 5 + prob * 8;
             var grad4 = c.createRadialGradient(predScreenX, predScreenY, 0, predScreenX, predScreenY, glowR2);
-            grad4.addColorStop(0, 'rgba(245,166,35,0.12)');
-            grad4.addColorStop(1, 'rgba(245,166,35,0)');
+            grad4.addColorStop(0, ps.rgba(ps.glowAlpha(prob)));
+            grad4.addColorStop(1, ps.rgba('0'));
             c.beginPath();
             c.arc(predScreenX, predScreenY, glowR2, 0, Math.PI * 2);
             c.fillStyle = grad4;
@@ -4176,9 +4208,9 @@ function drawFibrePredictedTokensInLayer(c, D, edxCum, edyCum, fx, fy, t, nP, nT
             c.save();
             c.translate(predScreenX, predScreenY);
             c.rotate(Math.PI / 4);
-            c.fillStyle = 'rgba(245,166,35,' + (0.3 + prob * 0.5).toFixed(2) + ')';
+            c.fillStyle = ps.rgba(ps.fillAlpha(prob));
             c.fillRect(-dotSz / 2, -dotSz / 2, dotSz, dotSz);
-            c.strokeStyle = '#f5a623';
+            c.strokeStyle = ps.rgba(ps.strokeAlpha());
             c.lineWidth = 0.7;
             c.strokeRect(-dotSz / 2, -dotSz / 2, dotSz, dotSz);
             c.restore();
@@ -4187,8 +4219,8 @@ function drawFibrePredictedTokensInLayer(c, D, edxCum, edyCum, fx, fy, t, nP, nT
             if (isCurrentLayer && layout.roomSize > 40) {
                 c.font = '6px monospace';
                 c.lineWidth = 1;
-                c.strokeStyle = 'rgba(0,0,0,0.8)';
-                c.fillStyle = '#f5a623';
+                c.strokeStyle = 'rgba(0,0,0,' + ps.labelStrokeAlpha() + ')';
+                c.fillStyle = ps.rgba(ps.labelFillAlpha());
                 c.textAlign = 'left';
                 var plb2 = D.tokens[pidx] + ' ' + (prob * 100).toFixed(0) + '%';
                 c.strokeText(plb2, predScreenX + dotSz + 2, predScreenY - 2);
@@ -4473,16 +4505,17 @@ function drawFibreBundleLegend(c, layout, nTokens, attnDeltas, mlpDeltas, D) {
 
     // Predicted token legend entry
     if (D.predicted_indices && D.predicted_indices.length > 0) {
+        var ps = predictedTokenStyle;
         c.save();
         c.translate(legX + 6, legY);
         c.rotate(Math.PI / 4);
-        c.fillStyle = 'rgba(245,166,35,0.8)';
+        c.fillStyle = ps.rgba(ps.fillAlpha(0.5));
         c.fillRect(-3, -3, 6, 6);
-        c.strokeStyle = '#f5a623';
+        c.strokeStyle = ps.rgba(ps.strokeAlpha());
         c.lineWidth = 0.8;
         c.strokeRect(-3, -3, 6, 6);
         c.restore();
-        c.fillStyle = '#f5a623';
+        c.fillStyle = ps.rgba(ps.labelFillAlpha());
         c.fillText('Predicted (' + D.predicted_indices.length + ')', legX + 24, legY + 3);
     }
 }
