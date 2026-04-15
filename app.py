@@ -2963,6 +2963,10 @@ The capital of Germany is Berlin</textarea>
       breathe — divergence, curl, shear, eigenflows — as pure geometry.
     </div>
 
+    <label style="color:#a0a0c0;font-size:9px;display:block;margin-top:4px">
+      <input type="checkbox" id="jf-raw-dims"> Use selected Dim X,Y (no PCA)
+    </label>
+
     <div class="cr"><label>Grid res:</label>
       <input type="range" id="jf-res" min="8" max="40" value="20" step="1">
       <span class="v" id="v-jf-res">20</span>
