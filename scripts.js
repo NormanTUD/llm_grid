@@ -2954,133 +2954,138 @@ function drawTransportFrame(c, cx, cy, edx, edy, fx, fy, tokenIdx, nP, sig, fram
     c.fill();
 }
 
-function drawFibreBundleKelp() {
-    var cv = document.getElementById('cv');
-    var c = cv.getContext('2d');
-    var W = cv.width, H = cv.height;
-    c.clearRect(0, 0, W, H);
+// ============================================================
+// REFACTORED drawFibreBundleKelp — broken into composable steps
+// ============================================================
 
-    if (!D) {
-        c.font = '14px monospace';
-        c.fillStyle = '#555';
-        c.fillText('Run a prompt first', W / 2 - 80, H / 2);
-        return;
-    }
-
-    var nTokens = D.n_real;
-    var nLayers = D.n_layers;
+/**
+ * Read all kelp-relevant parameters from the DOM and data model.
+ * Returns a self-contained config object so downstream helpers
+ * never touch the DOM themselves.
+ */
+function getKelpParams() {
     var hiddenDim = D.hidden_dim;
-    var nP = D.n_points;
-
     var dxDim = Math.min(+document.getElementById('sl-dx').value, hiddenDim - 1);
     var dyDim = Math.min(+document.getElementById('sl-dy').value, hiddenDim - 1);
-    var amp = +document.getElementById('sl-amp').value;
-    var t = +document.getElementById('sl-t').value;
-    var sig = +document.getElementById('sl-sig').value;
-    var currentLayer = +document.getElementById('sl-layer').value;
-    var showGrid = document.getElementById('cb-grid').checked;
-    var showHeat = document.getElementById('cb-heat').checked;
-    var showSC = document.getElementById('cb-sc').checked;
-    var mode = document.getElementById('sel-mode').value;
-    var itpMethod = document.getElementById('sel-itp').value;
 
     var activeDeltas = getActiveDeltas();
     if (!activeDeltas) activeDeltas = D.deltas;
-    var attnDeltas = D.attn_deltas || null;
-    var mlpDeltas = D.mlp_deltas || null;
-    var isEmb = (mode === 'embedding');
 
-    // --- Use extracted helpers for positions and bounds ---
-    var pos = extractPositions2D(D, nP, dxDim, dyDim);
-    var fx = pos.fx, fy = pos.fy;
-    var bounds = computeViewBounds2D(fx, fy, nP, 0.15);
-    var vx0 = bounds.vx0, vy0 = bounds.vy0, vw = bounds.vw, vh = bounds.vh;
+    return {
+        nTokens:      D.n_real,
+        nLayers:      D.n_layers,
+        hiddenDim:    hiddenDim,
+        nP:           D.n_points,
+        dxDim:        dxDim,
+        dyDim:        dyDim,
+        amp:          +document.getElementById('sl-amp').value,
+        t:            +document.getElementById('sl-t').value,
+        sig:          +document.getElementById('sl-sig').value,
+        currentLayer: +document.getElementById('sl-layer').value,
+        showGrid:     document.getElementById('cb-grid').checked,
+        showHeat:     document.getElementById('cb-heat').checked,
+        showSC:       document.getElementById('cb-sc').checked,
+        mode:         document.getElementById('sel-mode').value,
+        itpMethod:    document.getElementById('sel-itp').value,
+        activeDeltas: activeDeltas,
+        attnDeltas:   D.attn_deltas || null,
+        mlpDeltas:    D.mlp_deltas || null,
+        isEmb:        document.getElementById('sel-mode').value === 'embedding',
+    };
+}
 
-    // --- Use extracted helper for per-layer raw deltas ---
-    var rawDeltas = computePerLayerRawDeltas(activeDeltas, nLayers, nP, dxDim, dyDim, amp);
-
-    // Layout: the entire canvas is one vertical column.
-    // Y axis = layer depth (layer 0 at bottom, layer N-1 at top)
-    // X axis = world-space position projected from hidden dims
+/**
+ * Compute the kelp-view layout metrics from canvas size and data shape.
+ * Returns { margin, plotW, plotH, layerH, SX(wx), LY(li) }.
+ */
+function computeKelpLayout(W, H, nLayers, vx0, vw) {
     var margin = 40;
-    var plotW = W / zoomLevel - 2 * margin;
-    var plotH = H / zoomLevel - 2 * margin;
+    var plotW  = W / zoomLevel - 2 * margin;
+    var plotH  = H / zoomLevel - 2 * margin;
     var layerH = plotH / nLayers;
 
-    c.save();
-    c.translate(panX, panY);
-    c.scale(zoomLevel, zoomLevel);
+    return {
+        margin:  margin,
+        plotW:   plotW,
+        plotH:   plotH,
+        layerH:  layerH,
+        SX: function(wx) { return margin + ((wx - vx0) / vw) * plotW; },
+        LY: function(li) { return margin + (nLayers - 1 - li) * layerH + layerH * 0.5; },
+    };
+}
 
-    // World-to-screen transforms
-    function SX(wx) { return margin + ((wx - vx0) / vw) * plotW; }
-    function LY(layerIdx) { return margin + (nLayers - 1 - layerIdx) * layerH + layerH * 0.5; }
+/**
+ * PASS 1 — Draw the per-layer background deformed grids.
+ */
+function drawKelpBackgroundGrids(c, kp, layout, fx, fy, rawDeltas, bounds) {
+    if (!kp.showGrid || kp.isEmb) return;
 
-    // ================================================================
-    // PRECOMPUTE: Token world-space positions at each layer
-    // ================================================================
-    var tokenPaths = computeKelpTokenPaths(
-        nTokens, nLayers, nP, fx, fy, dxDim, dyDim, amp, t,
-        activeDeltas, attnDeltas, mlpDeltas, mode, isEmb);
+    var N = Math.max(8, Math.min(25, Math.floor(layout.plotW / 20)));
 
-    // ================================================================
-    // PASS 1: BACKGROUND DEFORMED GRIDS per layer
-    // ================================================================
-    if (showGrid && !isEmb) {
-        var N = Math.max(8, Math.min(25, Math.floor(plotW / 20)));
+    for (var li = 0; li < kp.nLayers; li++) {
+        var ly       = layout.LY(li);
+        var bandTop  = ly - layout.layerH * 0.4;
+        var bandH    = layout.layerH * 0.8;          // bandBot - bandTop
+        var isActive = (li === kp.currentLayer);
 
-        for (var li = 0; li < nLayers; li++) {
-            var ly = LY(li);
-            var bandTop = ly - layerH * 0.4;
-            var bandBot = ly + layerH * 0.4;
-            var bandH = bandBot - bandTop;
-            var isActive = (li === currentLayer);
+        // Reuse existing helpers
+        var layerDeltas = computeCumulativeDeltas(
+            rawDeltas.edxAll, rawDeltas.edyAll,
+            li, kp.nP, kp.nLayers, kp.mode, kp.isEmb
+        );
 
-            // --- Use extracted helper for cumulative deltas ---
-            var layerDeltas = computeCumulativeDeltas(
-                rawDeltas.edxAll, rawDeltas.edyAll, li, nP, nLayers, mode, isEmb);
+        var grid = buildDeformedGrid2D(
+            bounds.vx0, bounds.vy0, bounds.vw, bounds.vh,
+            N, fx, fy,
+            layerDeltas.edx, layerDeltas.edy,
+            kp.nP, kp.sig, kp.t, kp.isEmb, kp.itpMethod
+        );
 
-            // --- Use extracted helper for deformed grid ---
-            var grid = buildDeformedGrid2D(vx0, vy0, vw, vh, N, fx, fy,
-                layerDeltas.edx, layerDeltas.edy, nP, sig, t, isEmb, itpMethod);
-
-            // Map grid world coords to the narrow band for this layer
-            function GSX(wx) { return margin + ((wx - vx0) / vw) * plotW; }
-            function GSY(wy) { return bandTop + ((wy - vy0) / vh) * bandH; }
-
-            // --- Strain heatmap using band-mapped coordinates ---
-            if (showHeat) {
-                drawStrainHeatmapInBand(c, grid, N, vx0, vy0, vw, vh,
-                    margin, plotW, bandTop, bandH, isActive ? 0.2 : 0.07);
-            }
-
-            // --- Grid lines using band-mapped coordinates ---
-            drawGridLinesInBand(c, grid, N, vx0, vy0, vw, vh,
-                margin, plotW, bandTop, bandH, showSC, isActive ? 0.3 : 0.08,
-                isActive ? 0.7 : 0.3);
-
-            // Layer label
-            c.font = (isActive ? 'bold ' : '') + '10px monospace';
-            c.fillStyle = isActive ? '#e94560' : '#444';
-            c.textAlign = 'right';
-            c.fillText('L' + li, margin - 8, ly + 3);
-
-            // Thin separator
-            c.strokeStyle = 'rgba(60,60,100,' + (isActive ? 0.3 : 0.1) + ')';
-            c.lineWidth = 0.5;
-            c.beginPath();
-            c.moveTo(margin, ly + layerH * 0.48);
-            c.lineTo(margin + plotW, ly + layerH * 0.48);
-            c.stroke();
+        // Strain heatmap
+        if (kp.showHeat) {
+            drawStrainHeatmapInBand(
+                c, grid, N,
+                bounds.vx0, bounds.vy0, bounds.vw, bounds.vh,
+                layout.margin, layout.plotW, bandTop, bandH,
+                isActive ? 0.2 : 0.07
+            );
         }
-    }
 
-    // ================================================================
-    // PASS 2: TOKEN PATHLINES — the parallel transport made visible
-    // ================================================================
+        // Grid lines
+        drawGridLinesInBand(
+            c, grid, N,
+            bounds.vx0, bounds.vy0, bounds.vw, bounds.vh,
+            layout.margin, layout.plotW, bandTop, bandH,
+            kp.showSC,
+            isActive ? 0.3 : 0.08,
+            isActive ? 0.7 : 0.3
+        );
+
+        // Layer label
+        c.font = (isActive ? 'bold ' : '') + '10px monospace';
+        c.fillStyle = isActive ? '#e94560' : '#444';
+        c.textAlign = 'right';
+        c.fillText('L' + li, layout.margin - 8, ly + 3);
+
+        // Thin separator
+        c.strokeStyle = 'rgba(60,60,100,' + (isActive ? 0.3 : 0.1) + ')';
+        c.lineWidth = 0.5;
+        c.beginPath();
+        c.moveTo(layout.margin, ly + layout.layerH * 0.48);
+        c.lineTo(layout.margin + layout.plotW, ly + layout.layerH * 0.48);
+        c.stroke();
+    }
+}
+
+/**
+ * PASS 2+3+4 — Draw every token's pathline, force-decomposition
+ * arrows, transport frames, and node dots.
+ */
+function drawKelpTokenPathlines(c, kp, layout, fx, fy, rawDeltas, bounds, tokenPaths) {
     var tc = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71',
               '#e74c3c','#3498db','#9b59b6','#1abc9c','#e67e22'];
 
-    for (var ti = 0; ti < nTokens; ti++) {
+    for (var ti = 0; ti < kp.nTokens; ti++) {
         var col = tc[ti % tc.length];
         var r = parseInt(col.slice(1, 3), 16);
         var g = parseInt(col.slice(3, 5), 16);
@@ -3088,56 +3093,47 @@ function drawFibreBundleKelp() {
 
         // Build screen-space path
         var path = [];
-        for (var li = 0; li < nLayers; li++) {
+        for (var li = 0; li < kp.nLayers; li++) {
             path.push({
-                x: SX(tokenPaths.worldX[ti][li]),
-                y: LY(li)
+                x: layout.SX(tokenPaths.worldX[ti][li]),
+                y: layout.LY(li)
             });
         }
 
-        // Outer glow
-        drawKelpPathGlow(c, path, nLayers, r, g, b);
+        // Outer glow + main pathline (existing helpers)
+        drawKelpPathGlow(c, path, kp.nLayers, r, g, b);
+        drawKelpPathLine(c, path, kp.nLayers, r, g, b);
 
-        // Main pathline
-        drawKelpPathLine(c, path, nLayers, r, g, b);
-
-        // ============================================================
-        // PASS 3: FORCE DECOMPOSITION at each layer node
-        // ============================================================
-        for (var li = 0; li < nLayers; li++) {
-            var pt = path[li];
-            var isActive = (li === currentLayer);
-            var pixPerWorld = plotW / vw;
-            var maxArrow = layerH * 0.35;
+        // Per-layer decorations
+        for (var li = 0; li < kp.nLayers; li++) {
+            var pt       = path[li];
+            var isActive = (li === kp.currentLayer);
+            var pixPerWorld = layout.plotW / bounds.vw;
+            var maxArrow = layout.layerH * 0.35;
             var arrowAlpha = isActive ? 0.85 : 0.3;
 
             // Attention arrow (cyan)
-            if (attnDeltas && !isEmb) {
-                var avx = tokenPaths.attnDx[ti][li] * pixPerWorld;
-                if (Math.abs(avx) > 1.5) {
-                    if (Math.abs(avx) > maxArrow) avx *= maxArrow / Math.abs(avx);
-                    drawFlowArrow(c, pt.x, pt.y - 3, avx, 0,
-                        'rgba(0,200,255,' + arrowAlpha + ')', maxArrow);
-                }
-            }
+            drawKelpComponentArrow(
+                c, pt, tokenPaths.attnDx[ti][li], pixPerWorld,
+                maxArrow, 'rgba(0,200,255,' + arrowAlpha + ')',
+                -3, kp.attnDeltas, kp.isEmb
+            );
 
             // MLP arrow (orange)
-            if (mlpDeltas && !isEmb) {
-                var mvx = tokenPaths.mlpDx[ti][li] * pixPerWorld;
-                if (Math.abs(mvx) > 1.5) {
-                    if (Math.abs(mvx) > maxArrow) mvx *= maxArrow / Math.abs(mvx);
-                    drawFlowArrow(c, pt.x, pt.y + 3, mvx, 0,
-                        'rgba(255,165,0,' + arrowAlpha + ')', maxArrow);
-                }
-            }
+            drawKelpComponentArrow(
+                c, pt, tokenPaths.mlpDx[ti][li], pixPerWorld,
+                maxArrow, 'rgba(255,165,0,' + arrowAlpha + ')',
+                3, kp.mlpDeltas, kp.isEmb
+            );
 
-            // ============================================================
-            // PASS 4: TRANSPORT FRAME at each layer node
-            // ============================================================
-            if (fibreState.showTransportFrame && !isEmb) {
-                drawKelpTransportFrame(c, pt, li, ti, nP, nLayers, fx, fy,
-                    rawDeltas, mode, isEmb, dxDim, dyDim, amp, sig, pixPerWorld,
-                    layerH, isActive);
+            // Transport frame
+            if (fibreState.showTransportFrame && !kp.isEmb) {
+                drawKelpTransportFrame(
+                    c, pt, li, ti, kp.nP, kp.nLayers, fx, fy,
+                    rawDeltas, kp.mode, kp.isEmb,
+                    kp.dxDim, kp.dyDim, kp.amp, kp.sig,
+                    pixPerWorld, layout.layerH, isActive
+                );
             }
 
             // Node dot
@@ -3159,16 +3155,77 @@ function drawFibreBundleKelp() {
         c.textAlign = 'center';
         c.fillText('[' + ti + '] ' + D.tokens[ti], path[0].x, path[0].y + 16);
     }
+}
 
-    // ================================================================
-    // LEGEND — reuse drawKelpLegend
-    // ================================================================
-    drawKelpLegend(c, margin, plotW, attnDeltas, mlpDeltas);
+/**
+ * Draw a single component (attn or mlp) horizontal arrow at a path node.
+ * Extracted so both attn and mlp use the same logic.
+ */
+function drawKelpComponentArrow(c, pt, dxValue, pixPerWorld, maxArrow, color, yOffset, deltasExist, isEmb) {
+    if (!deltasExist || isEmb) return;
+    var avx = dxValue * pixPerWorld;
+    if (Math.abs(avx) <= 1.5) return;
+    if (Math.abs(avx) > maxArrow) avx *= maxArrow / Math.abs(avx);
+    drawFlowArrow(c, pt.x, pt.y + yOffset, avx, 0, color, maxArrow);
+}
+
+/**
+ * Top-level: the refactored drawFibreBundleKelp.
+ * Orchestrates all passes using the helpers above.
+ */
+function drawFibreBundleKelp() {
+    var cv = document.getElementById('cv');
+    var c  = cv.getContext('2d');
+    var W  = cv.width, H = cv.height;
+    c.clearRect(0, 0, W, H);
+
+    if (!D) {
+        c.font = '14px monospace';
+        c.fillStyle = '#555';
+        c.fillText('Run a prompt first', W / 2 - 80, H / 2);
+        return;
+    }
+
+    // ---- Gather parameters ----
+    var kp = getKelpParams();
+
+    // ---- Reuse existing position / bounds / delta helpers ----
+    var pos    = extractPositions2D(D, kp.nP, kp.dxDim, kp.dyDim);
+    var fx     = pos.fx, fy = pos.fy;
+    var bounds = computeViewBounds2D(fx, fy, kp.nP, 0.15);
+    var rawDeltas = computePerLayerRawDeltas(
+        kp.activeDeltas, kp.nLayers, kp.nP, kp.dxDim, kp.dyDim, kp.amp
+    );
+
+    // ---- Layout ----
+    var layout = computeKelpLayout(W, H, kp.nLayers, bounds.vx0, bounds.vw);
+
+    // ---- Token world-space positions at each layer ----
+    var tokenPaths = computeKelpTokenPaths(
+        kp.nTokens, kp.nLayers, kp.nP, fx, fy,
+        kp.dxDim, kp.dyDim, kp.amp, kp.t,
+        kp.activeDeltas, kp.attnDeltas, kp.mlpDeltas,
+        kp.mode, kp.isEmb
+    );
+
+    // ---- Render ----
+    c.save();
+    c.translate(panX, panY);
+    c.scale(zoomLevel, zoomLevel);
+
+    // PASS 1: Background deformed grids per layer
+    drawKelpBackgroundGrids(c, kp, layout, fx, fy, rawDeltas, bounds);
+
+    // PASS 2+3+4: Token pathlines, arrows, frames, dots
+    drawKelpTokenPathlines(c, kp, layout, fx, fy, rawDeltas, bounds, tokenPaths);
+
+    // PASS 5: Legend (existing helper)
+    drawKelpLegend(c, layout.margin, layout.plotW, kp.attnDeltas, kp.mlpDeltas);
 
     c.restore();
 
-    // HUD
-    drawFibreBundleHUD(c, W, H, nTokens, nLayers, hiddenDim, currentLayer);
+    // HUD (existing helper)
+    drawFibreBundleHUD(c, W, H, kp.nTokens, kp.nLayers, kp.hiddenDim, kp.currentLayer);
 }
 
 function drawStrainHeatmapInBand(c, grid, N, vx0, vy0, vw, vh,
