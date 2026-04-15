@@ -9767,3 +9767,959 @@ function drawMiniDeformedGrid(c, sentD, p, px, py, pw, ph) {
   }
 }
 
+// ============================================================
+// PERSISTENT HOMOLOGY / TDA — Frontend
+// ============================================================
+
+var tdaData = null;
+
+// Slider value displays
+document.getElementById('tda-pca').addEventListener('input', function(){
+    document.getElementById('v-tda-pca').textContent = this.value;
+});
+document.getElementById('tda-maxedge').addEventListener('input', function(){
+    document.getElementById('v-tda-maxedge').textContent = parseFloat(this.value).toFixed(1);
+});
+document.getElementById('tda-collapse').addEventListener('input', function(){
+    document.getElementById('v-tda-collapse').textContent = parseFloat(this.value).toFixed(1);
+});
+
+function runTDA(){
+    if(!D){
+        document.getElementById('tda-status').innerHTML =
+            '<span style="color:#e94560">Run a prompt first!</span>';
+        return;
+    }
+
+    var btn = document.getElementById('btn-tda');
+    btn.disabled = true;
+    btn.textContent = 'Computing...';
+    document.getElementById('tda-status').innerHTML =
+        '<span style="color:#00bcd4">Computing persistent homology (may take a moment)...</span>';
+
+    var maxDim = +document.getElementById('tda-maxdim').value;
+    var pcaDims = +document.getElementById('tda-pca').value;
+    var maxEdge = +document.getElementById('tda-maxedge').value;
+    var collapse = +document.getElementById('tda-collapse').value;
+
+    fetch('/tda', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            text: D.text,
+            max_dim: maxDim,
+            pca_dims: pcaDims,
+            max_edge: maxEdge,
+            collapse_eps: collapse
+        })
+    })
+    .then(function(r){
+        if(!r.ok) throw new Error('Server error ' + r.status);
+        return r.json();
+    })
+    .then(function(data){
+        if(data.error){
+            document.getElementById('tda-status').innerHTML =
+                '<span style="color:#e94560">' + data.error + '</span>';
+            btn.disabled = false;
+            btn.textContent = 'Compute Persistent Homology';
+            return;
+        }
+        tdaData = data;
+        btn.disabled = false;
+        btn.textContent = 'Compute Persistent Homology';
+
+        document.getElementById('tda-status').innerHTML =
+            '<span style="color:#2ecc71">✓ Homology computed</span> — ' +
+            data.seq_len + ' tokens × ' + (data.n_layers + 1) + ' layers | ' +
+            data.total_features + ' topological features found';
+
+        renderTDASummary();
+        populateTDALayerSelect();
+        renderTDALayer();
+        renderTDABettiEvolution();
+        renderTDAEvents();
+        renderTDAWasserstein();
+        renderTDAEntropy();
+    })
+    .catch(function(e){
+        document.getElementById('tda-status').innerHTML =
+            '<span style="color:#e94560">Error: ' + e + '</span>';
+        btn.disabled = false;
+        btn.textContent = 'Compute Persistent Homology';
+    });
+}
+
+function renderTDASummary(){
+    var panel = document.getElementById('tda-summary');
+    if(!tdaData){ panel.style.display = 'none'; return; }
+    panel.style.display = 'block';
+
+    var html = '<div style="color:#00bcd4;font-weight:bold;margin-bottom:4px">Topological Summary</div>';
+    html += '<div>' + tdaData.summary + '</div>';
+
+    // Per-layer Betti numbers table
+    html += '<div style="margin-top:6px"><table style="width:100%;border-collapse:collapse;font-size:8px">';
+    html += '<tr><th style="color:#00bcd4;padding:2px 3px;text-align:left">Layer</th>';
+    html += '<th style="color:#e94560;padding:2px 3px">β₀</th>';
+    html += '<th style="color:#f5a623;padding:2px 3px">β₁</th>';
+    if(tdaData.max_dim >= 2) html += '<th style="color:#7b68ee;padding:2px 3px">β₂</th>';
+    html += '<th style="color:#2ecc71;padding:2px 3px">Entropy</th>';
+    html += '<th style="color:#888;padding:2px 3px">Features</th></tr>';
+
+    for(var li = 0; li < tdaData.layer_summaries.length; li++){
+        var ls = tdaData.layer_summaries[li];
+        var isCurrent = (li === +document.getElementById('sl-layer').value);
+        var rowStyle = isCurrent ? 'background:rgba(0,188,212,0.15)' : '';
+        html += '<tr style="' + rowStyle + ';cursor:pointer" ' +
+                'onclick="document.getElementById(\'tda-layer-sel\').value=' + li +
+                ';renderTDALayer()">';
+        html += '<td style="color:#00bcd4;font-weight:bold;padding:2px 3px">' +
+                (li === 0 ? 'Emb' : 'L' + (li - 1)) + '</td>';
+        html += '<td style="padding:2px 3px;color:#e94560">' + ls.betti_0 + '</td>';
+        html += '<td style="padding:2px 3px;color:#f5a623">' + ls.betti_1 + '</td>';
+        if(tdaData.max_dim >= 2)
+            html += '<td style="padding:2px 3px;color:#7b68ee">' + ls.betti_2 + '</td>';
+        html += '<td style="padding:2px 3px;color:#2ecc71">' + ls.entropy.toFixed(3) + '</td>';
+        html += '<td style="padding:2px 3px;color:#888">' + ls.n_features + '</td>';
+        html += '</tr>';
+    }
+    html += '</table></div>';
+
+    panel.innerHTML = html;
+}
+
+function populateTDALayerSelect(){
+    var sel = document.getElementById('tda-layer-sel');
+    sel.innerHTML = '';
+    if(!tdaData) return;
+    for(var li = 0; li < tdaData.layer_summaries.length; li++){
+        var opt = document.createElement('option');
+        opt.value = li;
+        var ls = tdaData.layer_summaries[li];
+        opt.textContent = (li === 0 ? 'Embedding' : 'Layer ' + (li - 1)) +
+                          ' (β₀=' + ls.betti_0 + ', β₁=' + ls.betti_1 + ')';
+        sel.appendChild(opt);
+    }
+    document.getElementById('tda-layer-controls').style.display = 'block';
+}
+
+function renderTDALayer(){
+    if(!tdaData) return;
+    var layerIdx = +document.getElementById('tda-layer-sel').value;
+    var viewType = document.getElementById('tda-view-sel').value;
+
+    document.getElementById('tda-diagram-wrap').style.display = 'block';
+
+    var cv = document.getElementById('tda-diagram-cv');
+    var ctx = cv.getContext('2d');
+    var W = cv.width, H = cv.height;
+    ctx.fillStyle = '#0a0a1a';
+    ctx.fillRect(0, 0, W, H);
+
+    var diagrams = tdaData.persistence_diagrams[layerIdx]; // {dim: [[birth, death], ...]}
+
+    if(viewType === 'persistence'){
+        drawPersistenceDiagram(ctx, diagrams, W, H, layerIdx);
+    } else if(viewType === 'barcode'){
+        drawBarcode(ctx, diagrams, W, H, layerIdx);
+    } else if(viewType === 'landscape'){
+        drawPersistenceLandscape(ctx, diagrams, W, H, layerIdx);
+    } else if(viewType === 'betti'){
+        drawBettiCurve(ctx, diagrams, W, H, layerIdx);
+    }
+
+    document.getElementById('tda-diagram-title').textContent =
+        viewType.charAt(0).toUpperCase() + viewType.slice(1) + ' — ' +
+        (layerIdx === 0 ? 'Embedding' : 'Layer ' + (layerIdx - 1));
+}
+
+// ---- Persistence Diagram ----
+function drawPersistenceDiagram(ctx, diagrams, W, H, layerIdx){
+    var margin = {left: 45, right: 15, top: 20, bottom: 35};
+    var plotW = W - margin.left - margin.right;
+    var plotH = H - margin.top - margin.bottom;
+
+    // Collect all birth/death pairs
+    var allPairs = [];
+    var dimColors = {0: '#e94560', 1: '#f5a623', 2: '#7b68ee'};
+    var dimLabels = {0: 'H₀ (components)', 1: 'H₁ (loops)', 2: 'H₂ (voids)'};
+
+    for(var dim in diagrams){
+        var pairs = diagrams[dim];
+        for(var i = 0; i < pairs.length; i++){
+            allPairs.push({birth: pairs[i][0], death: pairs[i][1], dim: +dim});
+        }
+    }
+
+    if(allPairs.length === 0){
+        ctx.font = '12px monospace';
+        ctx.fillStyle = '#555';
+        ctx.textAlign = 'center';
+        ctx.fillText('No features found', W / 2, H / 2);
+        return;
+    }
+
+    // Find range
+    var maxVal = 0;
+    for(var i = 0; i < allPairs.length; i++){
+        var d = allPairs[i].death;
+        if(d === Infinity || d > 1e10) d = allPairs[i].birth * 2 + 1;
+        if(allPairs[i].birth > maxVal) maxVal = allPairs[i].birth;
+        if(d > maxVal) maxVal = d;
+    }
+    if(maxVal < 1e-8) maxVal = 1;
+    maxVal *= 1.1;
+
+    function SX(v){ return margin.left + (v / maxVal) * plotW; }
+    function SY(v){ return margin.top + plotH - (v / maxVal) * plotH; }
+
+    // Diagonal line (birth = death)
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(SX(0), SY(0));
+    ctx.lineTo(SX(maxVal), SY(maxVal));
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Axes
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    ctx.moveTo(margin.left, margin.top);
+    ctx.lineTo(margin.left, margin.top + plotH);
+    ctx.lineTo(margin.left + plotW, margin.top + plotH);
+    ctx.stroke();
+
+    ctx.font = '8px monospace';
+    ctx.fillStyle = '#666';
+    ctx.textAlign = 'center';
+    ctx.fillText('Birth', margin.left + plotW / 2, H - 5);
+    ctx.save();
+    ctx.translate(10, margin.top + plotH / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText('Death', 0, 0);
+    ctx.restore();
+
+    // Tick marks
+    var nTicks = 5;
+    for(var ti = 0; ti <= nTicks; ti++){
+        var v = (ti / nTicks) * maxVal;
+        var sx = SX(v), sy = SY(v);
+        ctx.fillStyle = '#555';
+        ctx.font = '7px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(v.toFixed(1), sx, margin.top + plotH + 12);
+        ctx.textAlign = 'right';
+        ctx.fillText(v.toFixed(1), margin.left - 4, sy + 3);
+
+        // Grid lines
+        ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+        ctx.beginPath();
+        ctx.moveTo(sx, margin.top);
+        ctx.lineTo(sx, margin.top + plotH);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(margin.left, sy);
+        ctx.lineTo(margin.left + plotW, sy);
+        ctx.stroke();
+    }
+
+    // Plot points
+    for(var i = 0; i < allPairs.length; i++){
+        var p = allPairs[i];
+        var death = p.death;
+        var isInfinite = (death === Infinity || death > 1e10);
+        if(isInfinite) death = maxVal * 0.95;
+
+        var px = SX(p.birth);
+        var py = SY(death);
+        var persistence = death - p.birth;
+        var dotR = Math.max(2, Math.min(6, persistence / maxVal * 15 + 2));
+
+        var color = dimColors[p.dim] || '#888';
+
+        // Glow for high-persistence features
+        if(persistence / maxVal > 0.3){
+            var grad = ctx.createRadialGradient(px, py, 0, px, py, dotR * 3);
+            grad.addColorStop(0, color.replace(')', ',0.2)').replace('rgb', 'rgba'));
+            grad.addColorStop(1, 'rgba(0,0,0,0)');
+            ctx.beginPath();
+            ctx.arc(px, py, dotR * 3, 0, Math.PI * 2);
+            ctx.fillStyle = grad;
+            ctx.fill();
+        }
+
+        ctx.beginPath();
+        ctx.arc(px, py, dotR, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.fill();
+
+        if(isInfinite){
+            // Draw an upward arrow for infinite persistence
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(px, py - dotR);
+            ctx.lineTo(px, py - dotR - 8);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(px - 3, py - dotR - 5);
+            ctx.lineTo(px, py - dotR - 8);
+            ctx.lineTo(px + 3, py - dotR - 5);
+            ctx.stroke();
+        }
+
+        ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+        ctx.lineWidth = 0.5;
+        ctx.stroke();
+    }
+
+    // Legend
+    var legX = margin.left + plotW - 100;
+    var legY = margin.top + 8;
+    for(var dim in dimColors){
+        if(!diagrams[dim] || diagrams[dim].length === 0) continue;
+        ctx.beginPath();
+        ctx.arc(legX, legY, 4, 0, Math.PI * 2);
+        ctx.fillStyle = dimColors[dim];
+        ctx.fill();
+        ctx.font = '8px monospace';
+        ctx.fillStyle = '#a0a0c0';
+        ctx.textAlign = 'left';
+        ctx.fillText(dimLabels[dim] + ' (' + diagrams[dim].length + ')', legX + 8, legY + 3);
+        legY += 14;
+    }
+}
+
+// ---- Barcode ----
+function drawBarcode(ctx, diagrams, W, H, layerIdx){
+    var margin = {left: 45, right: 15, top: 20, bottom: 25};
+    var plotW = W - margin.left - margin.right;
+    var plotH = H - margin.top - margin.bottom;
+
+    var dimColors = {0: '#e94560', 1: '#f5a623', 2: '#7b68ee'};
+    var allBars = [];
+    for(var dim in diagrams){
+        var pairs = diagrams[dim];
+        for(var i = 0; i < pairs.length; i++){
+            allBars.push({birth: pairs[i][0], death: pairs[i][1], dim: +dim});
+        }
+    }
+
+    // Sort by birth time, then by dimension
+    allBars.sort(function(a, b){
+        if(a.dim !== b.dim) return a.dim - b.dim;
+        return a.birth - b.birth;
+    });
+
+    if(allBars.length === 0){
+        ctx.font = '12px monospace';
+        ctx.fillStyle = '#555';
+        ctx.textAlign = 'center';
+        ctx.fillText('No features found', W / 2, H / 2);
+        return;
+    }
+
+    var maxVal = 0;
+    for(var i = 0; i < allBars.length; i++){
+        var d = allBars[i].death;
+        if(d === Infinity || d > 1e10) d = allBars[i].birth * 2 + 1;
+        if(d > maxVal) maxVal = d;
+        if(allBars[i].birth > maxVal) maxVal = allBars[i].birth;
+    }
+    if(maxVal < 1e-8) maxVal = 1;
+    maxVal *= 1.1;
+
+    var barH = Math.max(1.5, Math.min(6, plotH / allBars.length - 0.5));
+    var gap = Math.max(0.5, barH * 0.2);
+
+    function SX(v){ return margin.left + (v / maxVal) * plotW; }
+
+    // Axis
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    ctx.moveTo(margin.left, margin.top + plotH);
+    ctx.lineTo(margin.left + plotW, margin.top + plotH);
+    ctx.stroke();
+
+    ctx.font = '8px monospace';
+    ctx.fillStyle = '#666';
+    ctx.textAlign = 'center';
+    ctx.fillText('Filtration value', margin.left + plotW / 2, H - 5);
+
+    // Tick marks
+    for(var ti = 0; ti <= 5; ti++){
+        var v = (ti / 5) * maxVal;
+        var sx = SX(v);
+        ctx.fillStyle = '#555';
+        ctx.font = '7px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(v.toFixed(1), sx, margin.top + plotH + 12);
+    }
+
+    // Draw bars
+    for(var i = 0; i < allBars.length; i++){
+        var bar = allBars[i];
+        var death = bar.death;
+        var isInfinite = (death === Infinity || death > 1e10);
+        if(isInfinite) death = maxVal;
+
+        var y = margin.top + i * (barH + gap);
+        var x1 = SX(bar.birth);
+        var x2 = SX(death);
+
+        ctx.fillStyle = dimColors[bar.dim] || '#888';
+        ctx.globalAlpha = 0.8;
+        ctx.fillRect(x1, y, Math.max(1, x2 - x1), barH);
+        ctx.globalAlpha = 1.0;
+
+        // Birth dot
+        ctx.beginPath();
+        ctx.arc(x1, y + barH / 2, 1.5, 0, Math.PI * 2);
+        ctx.fillStyle = '#fff';
+        ctx.fill();
+
+        if(isInfinite){
+            // Arrow at the end
+            ctx.strokeStyle = dimColors[bar.dim];
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(x2 - 4, y);
+            ctx.lineTo(x2, y + barH / 2);
+            ctx.lineTo(x2 - 4, y + barH);
+            ctx.stroke();
+        }
+    }
+
+    // Dimension labels on the left
+    var currentDim = -1;
+    var dimLabels = {0: 'H₀', 1: 'H₁', 2: 'H₂'};
+    for(var i = 0; i < allBars.length; i++){
+        if(allBars[i].dim !== currentDim){
+            currentDim = allBars[i].dim;
+            var y = margin.top + i * (barH + gap) + barH / 2;
+            ctx.font = 'bold 9px monospace';
+            ctx.fillStyle = dimColors[currentDim];
+            ctx.textAlign = 'right';
+            ctx.fillText(dimLabels[currentDim] || 'H' + currentDim, margin.left - 4, y + 3);
+        }
+    }
+}
+
+// ---- Persistence Landscape ----
+function drawPersistenceLandscape(ctx, diagrams, W, H, layerIdx){
+    var margin = {left: 40, right: 15, top: 20, bottom: 25};
+    var plotW = W - margin.left - margin.right;
+    var plotH = H - margin.top - margin.bottom;
+
+    var dimColors = {0: 'rgba(233,69,96,', 1: 'rgba(245,166,35,', 2: 'rgba(123,104,238,'};
+
+    // For each dimension, compute the landscape function
+    // λ_k(t) = k-th largest value of min(t - birth, death - t) over all intervals
+    var maxVal = 0;
+    var allPairs = [];
+    for(var dim in diagrams){
+        var pairs = diagrams[dim];
+        for(var i = 0; i < pairs.length; i++){
+            var d = pairs[i][1];
+            if(d === Infinity || d > 1e10) d = pairs[i][0] * 2 + 1;
+            if(d > maxVal) maxVal = d;
+            if(pairs[i][0] > maxVal) maxVal = pairs[i][0];
+            allPairs.push({birth: pairs[i][0], death: d, dim: +dim});
+        }
+    }
+    if(maxVal < 1e-8) maxVal = 1;
+    maxVal *= 1.1;
+
+    var nSamples = 200;
+    var dt = maxVal / nSamples;
+
+    // Axis
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    ctx.moveTo(margin.left, margin.top + plotH);
+    ctx.lineTo(margin.left + plotW, margin.top + plotH);
+    ctx.stroke();
+
+    ctx.font = '8px monospace';
+    ctx.fillStyle = '#666';
+    ctx.textAlign = 'center';
+    ctx.fillText('Filtration value', margin.left + plotW / 2, H - 5);
+
+    for(var dim = 0; dim <= 2; dim++){
+        var dimPairs = allPairs.filter(function(p){ return p.dim === dim; });
+        if(dimPairs.length === 0) continue;
+
+        // Compute landscape for k=1 (the envelope)
+        var maxLandscape = 0;
+        var landscapeVals = [];
+        for(var si = 0; si < nSamples; si++){
+            var t = si * dt;
+            var vals = [];
+            for(var pi = 0; pi < dimPairs.length; pi++){
+                var p = dimPairs[pi];
+                var v = Math.min(t - p.birth, p.death - t);
+                if(v > 0) vals.push(v);
+            }
+            vals.sort(function(a, b){ return b - a; });
+
+            // Store top-k landscape values
+            var topK = Math.min(3, vals.length);
+            landscapeVals.push(vals.slice(0, topK));
+            for(var ki = 0; ki < topK; ki++){
+                if(vals[ki] > maxLandscape) maxLandscape = vals[ki];
+            }
+        }
+
+        if(maxLandscape < 1e-8) continue;
+
+        // Draw filled landscape for k=1,2,3
+        for(var k = Math.min(2, landscapeVals[0] ? landscapeVals[0].length - 1 : 0); k >= 0; k--){
+            var alphaFill = 0.15 - k * 0.04;
+            var alphaLine = 0.7 - k * 0.2;
+            var baseColor = dimColors[dim] || 'rgba(150,150,150,';
+
+            // Fill
+            ctx.beginPath();
+            ctx.moveTo(margin.left, margin.top + plotH);
+            for(var si = 0; si < nSamples; si++){
+                var t = si * dt;
+                var sx = margin.left + (t / maxVal) * plotW;
+                var val = (landscapeVals[si] && landscapeVals[si][k] !== undefined) ?
+                          landscapeVals[si][k] : 0;
+                var sy = margin.top + plotH - (val / maxLandscape) * plotH;
+                ctx.lineTo(sx, sy);
+            }
+            ctx.lineTo(margin.left + plotW, margin.top + plotH);
+            ctx.closePath();
+            ctx.fillStyle = baseColor + alphaFill + ')';
+            ctx.fill();
+
+            // Line
+            ctx.beginPath();
+            for(var si = 0; si < nSamples; si++){
+                var t = si * dt;
+                var sx = margin.left + (t / maxVal) * plotW;
+                var val = (landscapeVals[si] && landscapeVals[si][k] !== undefined) ?
+                          landscapeVals[si][k] : 0;
+                var sy = margin.top + plotH - (val / maxLandscape) * plotH;
+                if(si === 0) ctx.moveTo(sx, sy);
+                else ctx.lineTo(sx, sy);
+            }
+            ctx.strokeStyle = baseColor + alphaLine + ')';
+            ctx.lineWidth = 1.5 - k * 0.3;
+            ctx.stroke();
+        }
+    }
+
+    // Legend
+    var dimLabels = {0: 'H₀', 1: 'H₁', 2: 'H₂'};
+    var legY = margin.top + 8;
+    for(var dim in dimColors){
+        if(!diagrams[dim] || diagrams[dim].length === 0) continue;
+        ctx.fillStyle = (dimColors[dim] || 'rgba(150,150,150,') + '0.8)';
+        ctx.fillRect(margin.left + 5, legY - 6, 14, 8);
+        ctx.font = '8px monospace';
+        ctx.fillStyle = '#a0a0c0';
+        ctx.textAlign = 'left';
+        ctx.fillText(dimLabels[dim] + ' landscape', margin.left + 24, legY);
+        legY += 14;
+    }
+}
+
+// ---- Betti Curve ----
+function drawBettiCurve(ctx, diagrams, W, H, layerIdx){
+    var margin = {left: 40, right: 15, top: 20, bottom: 25};
+    var plotW = W - margin.left - margin.right;
+    var plotH = H - margin.top - margin.bottom;
+
+    var dimColors = {0: '#e94560', 1: '#f5a623', 2: '#7b68ee'};
+    var dimLabels = {0: 'β₀', 1: 'β₁', 2: 'β₂'};
+
+    // Collect all pairs and find max filtration value
+    var maxVal = 0;
+    var allPairs = [];
+    for(var dim in diagrams){
+        var pairs = diagrams[dim];
+        for(var i = 0; i < pairs.length; i++){
+            var d = pairs[i][1];
+            if(d === Infinity || d > 1e10) d = pairs[i][0] * 2 + 1;
+            if(d > maxVal) maxVal = d;
+            if(pairs[i][0] > maxVal) maxVal = pairs[i][0];
+            allPairs.push({birth: pairs[i][0], death: d, dim: +dim});
+        }
+    }
+    if(maxVal < 1e-8) maxVal = 1;
+    maxVal *= 1.1;
+
+    var nSamples = 200;
+    var dt = maxVal / nSamples;
+
+    // Compute Betti numbers at each sample point
+    var bettiCurves = {};
+    var maxBetti = 0;
+    for(var dim = 0; dim <= 2; dim++){
+        bettiCurves[dim] = [];
+        var dimPairs = allPairs.filter(function(p){ return p.dim === dim; });
+        for(var si = 0; si <= nSamples; si++){
+            var t = si * dt;
+            var count = 0;
+            for(var pi = 0; pi < dimPairs.length; pi++){
+                if(dimPairs[pi].birth <= t && dimPairs[pi].death > t) count++;
+            }
+            bettiCurves[dim].push(count);
+            if(count > maxBetti) maxBetti = count;
+        }
+    }
+    if(maxBetti < 1) maxBetti = 1;
+
+    // Axes
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    ctx.moveTo(margin.left, margin.top);
+    ctx.lineTo(margin.left, margin.top + plotH);
+    ctx.lineTo(margin.left + plotW, margin.top + plotH);
+    ctx.stroke();
+
+    ctx.font = '8px monospace';
+    ctx.fillStyle = '#666';
+    ctx.textAlign = 'center';
+    ctx.fillText('Filtration value', margin.left + plotW / 2, H - 5);
+    ctx.save();
+    ctx.translate(10, margin.top + plotH / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText('Betti number', 0, 0);
+    ctx.restore();
+
+    // Y-axis ticks
+    for(var yi = 0; yi <= maxBetti; yi++){
+        var yy = margin.top + plotH - (yi / maxBetti) * plotH;
+        ctx.fillStyle = '#555';
+        ctx.font = '7px monospace';
+        ctx.textAlign = 'right';
+        ctx.fillText(yi, margin.left - 4, yy + 3);
+        ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+        ctx.beginPath();
+        ctx.moveTo(margin.left, yy);
+        ctx.lineTo(margin.left + plotW, yy);
+        ctx.stroke();
+    }
+
+    // Draw curves
+    for(var dim = 2; dim >= 0; dim--){
+        var curve = bettiCurves[dim];
+        if(!curve || curve.length === 0) continue;
+
+        var hasNonZero = false;
+        for(var ci = 0; ci < curve.length; ci++){
+            if(curve[ci] > 0){ hasNonZero = true; break; }
+        }
+        if(!hasNonZero) continue;
+
+        var color = dimColors[dim] || '#888';
+
+        // Filled area
+        ctx.beginPath();
+        ctx.moveTo(margin.left, margin.top + plotH);
+        for(var si = 0; si <= nSamples; si++){
+            var sx = margin.left + (si / nSamples) * plotW;
+            var sy = margin.top + plotH - (curve[si] / maxBetti) * plotH;
+            ctx.lineTo(sx, sy);
+        }
+        ctx.lineTo(margin.left + plotW, margin.top + plotH);
+        ctx.closePath();
+        ctx.fillStyle = color.replace(')', ',0.1)').replace('#', 'rgba(');
+        // Convert hex to rgba for fill
+        var r = parseInt(color.slice(1,3),16);
+        var g = parseInt(color.slice(3,5),16);
+        var b = parseInt(color.slice(5,7),16);
+        ctx.fillStyle = 'rgba(' + r + ',' + g + ',' + b + ',0.12)';
+        ctx.fill();
+
+        // Line
+        ctx.beginPath();
+        for(var si = 0; si <= nSamples; si++){
+            var sx = margin.left + (si / nSamples) * plotW;
+            var sy = margin.top + plotH - (curve[si] / maxBetti) * plotH;
+            if(si === 0) ctx.moveTo(sx, sy);
+            else ctx.lineTo(sx, sy);
+        }
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Label
+        ctx.font = 'bold 9px monospace';
+        ctx.fillStyle = color;
+        ctx.textAlign = 'left';
+        ctx.fillText(dimLabels[dim], margin.left + plotW - 30, margin.top + 12 + dim * 14);
+    }
+}
+
+// ---- Betti Number Evolution Across Layers ----
+function renderTDABettiEvolution(){
+    if(!tdaData) return;
+    document.getElementById('tda-betti-evolution').style.display = 'block';
+
+    var cv = document.getElementById('tda-betti-cv');
+    var ctx = cv.getContext('2d');
+    var W = cv.width, H = cv.height;
+    ctx.fillStyle = '#0a0a1a';
+    ctx.fillRect(0, 0, W, H);
+
+    var nLayers = tdaData.layer_summaries.length;
+    var margin = {left: 35, right: 60, top: 10, bottom: 20};
+    var plotW = W - margin.left - margin.right;
+    var plotH = H - margin.top - margin.bottom;
+
+    // Collect Betti numbers
+    var b0 = [], b1 = [], b2 = [];
+    var maxB = 0;
+    for(var li = 0; li < nLayers; li++){
+        var ls = tdaData.layer_summaries[li];
+        b0.push(ls.betti_0);
+        b1.push(ls.betti_1);
+        b2.push(ls.betti_2 || 0);
+        maxB = Math.max(maxB, ls.betti_0, ls.betti_1, ls.betti_2 || 0);
+    }
+    if(maxB < 1) maxB = 1;
+
+    function SX(li){ return margin.left + (li / Math.max(nLayers - 1, 1)) * plotW; }
+    function SY(v){ return margin.top + plotH - (v / maxB) * plotH; }
+
+    // Grid
+    ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+    ctx.lineWidth = 0.5;
+    for(var yi = 0; yi <= maxB; yi += Math.max(1, Math.floor(maxB / 4))){
+        var yy = SY(yi);
+        ctx.beginPath(); ctx.moveTo(margin.left, yy); ctx.lineTo(margin.left + plotW, yy); ctx.stroke();
+        ctx.font = '7px monospace'; ctx.fillStyle = '#555'; ctx.textAlign = 'right';
+        ctx.fillText(yi, margin.left - 3, yy + 3);
+    }
+
+    // Draw curves
+    var curves = [
+        {data: b0, color: '#e94560', label: 'β₀ (components)'},
+        {data: b1, color: '#f5a623', label: 'β₁ (loops)'},
+        {data: b2, color: '#7b68ee', label: 'β₂ (voids)'}
+    ];
+
+    for(var ci = 0; ci < curves.length; ci++){
+        var curve = curves[ci];
+        var hasData = false;
+        for(var i = 0; i < curve.data.length; i++){
+            if(curve.data[i] > 0){ hasData = true; break; }
+        }
+        if(!hasData && ci > 0) continue;
+
+        // Filled area
+        ctx.beginPath();
+        ctx.moveTo(SX(0), SY(0));
+        for(var li = 0; li < nLayers; li++) ctx.lineTo(SX(li), SY(curve.data[li]));
+        ctx.lineTo(SX(nLayers - 1), SY(0));
+        ctx.closePath();
+        var r = parseInt(curve.color.slice(1,3),16);
+        var g = parseInt(curve.color.slice(3,5),16);
+        var b = parseInt(curve.color.slice(5,7),16);
+        ctx.fillStyle = 'rgba(' + r + ',' + g + ',' + b + ',0.1)';
+        ctx.fill();
+
+        // Line
+        ctx.beginPath();
+        for(var li = 0; li < nLayers; li++){
+            if(li === 0) ctx.moveTo(SX(li), SY(curve.data[li]));
+            else ctx.lineTo(SX(li), SY(curve.data[li]));
+        }
+        ctx.strokeStyle = curve.color;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Dots
+        for(var li = 0; li < nLayers; li++){
+            ctx.beginPath();
+            ctx.arc(SX(li), SY(curve.data[li]), 2.5, 0, Math.PI * 2);
+            ctx.fillStyle = curve.color;
+            ctx.fill();
+        }
+
+        // Legend
+        ctx.font = '8px monospace';
+        ctx.fillStyle = curve.color;
+        ctx.textAlign = 'left';
+        ctx.fillText(curve.label, margin.left + plotW + 5, margin.top + 10 + ci * 14);
+    }
+
+    // X-axis labels
+    for(var li = 0; li < nLayers; li++){
+        if(nLayers <= 20 || li % 2 === 0){
+            ctx.font = '7px monospace';
+            ctx.fillStyle = '#555';
+            ctx.textAlign = 'center';
+            ctx.fillText(li === 0 ? 'E' : 'L' + (li - 1), SX(li), H - 4);
+        }
+    }
+}
+
+// ---- Topological Events Timeline ----
+function renderTDAEvents(){
+    if(!tdaData || !tdaData.topological_events) return;
+    var panel = document.getElementById('tda-events');
+    if(tdaData.topological_events.length === 0){
+        panel.style.display = 'none';
+        return;
+    }
+    panel.style.display = 'block';
+
+    var html = '<div style="color:#2ecc71;font-weight:bold;font-size:10px;margin-bottom:4px">Topological Events</div>';
+
+    var dimColors = {0: '#e94560', 1: '#f5a623', 2: '#7b68ee'};
+    var dimLabels = {0: 'H₀', 1: 'H₁', 2: 'H₂'};
+    var typeIcons = {'birth': '🌱', 'death': '💀', 'persistence_peak': '⭐'};
+
+    for(var i = 0; i < tdaData.topological_events.length; i++){
+        var ev = tdaData.topological_events[i];
+        var color = dimColors[ev.dim] || '#888';
+        var icon = typeIcons[ev.type] || '●';
+
+        html += '<div style="margin:2px 0;padding:3px 6px;border-left:2px solid ' + color +
+                ';font-size:9px;cursor:pointer" ' +
+                'onclick="document.getElementById(\'tda-layer-sel\').value=' + ev.layer +
+                ';renderTDALayer()" ' +
+                'onmouseover="this.style.background=\'#1a1a2e\'" ' +
+                'onmouseout="this.style.background=\'transparent\'">';
+        html += icon + ' <span style="color:' + color + '">' + dimLabels[ev.dim] + '</span> ';
+        html += '<span style="color:#a0a0c0">' + ev.type.replace(/_/g, ' ') + '</span> ';
+        html += 'at <span style="color:#53a8b6">' + (ev.layer === 0 ? 'Emb' : 'L' + (ev.layer - 1)) + '</span>';
+        if(ev.description){
+            html += ' <span style="color:#666">— ' + ev.description + '</span>';
+        }
+        html += '</div>';
+    }
+
+    panel.innerHTML = html;
+}
+
+// ---- Wasserstein Distance Heatmap ----
+function renderTDAWasserstein(){
+    if(!tdaData || !tdaData.wasserstein_distances) return;
+    document.getElementById('tda-wasserstein-wrap').style.display = 'block';
+
+    var cv = document.getElementById('tda-wasserstein-cv');
+    var ctx = cv.getContext('2d');
+    var W = cv.width, H = cv.height;
+    ctx.fillStyle = '#0a0a1a';
+    ctx.fillRect(0, 0, W, H);
+
+    var matrix = tdaData.wasserstein_distances;
+    var nLayers = matrix.length;
+    if(nLayers === 0) return;
+
+    var margin = {left: 35, right: 15, top: 15, bottom: 25};
+    var plotW = W - margin.left - margin.right;
+    var plotH = H - margin.top - margin.bottom;
+    var cellW = plotW / nLayers;
+    var cellH = plotH / nLayers;
+
+    // Find max
+    var maxDist = 0;
+    for(var i = 0; i < nLayers; i++){
+        for(var j = 0; j < nLayers; j++){
+            if(matrix[i][j] > maxDist) maxDist = matrix[i][j];
+        }
+    }
+    if(maxDist < 1e-8) maxDist = 1;
+
+    // Draw cells
+    for(var i = 0; i < nLayers; i++){
+        for(var j = 0; j < nLayers; j++){
+            var val = matrix[i][j] / maxDist;
+            // Magma-like colormap
+            var r, g, b;
+            if(val < 0.25){
+                var t = val / 0.25;
+                r = Math.floor(t * 80); g = 0; b = Math.floor(20 + t * 100);
+            } else if(val < 0.5){
+                var t = (val - 0.25) / 0.25;
+                r = 80 + Math.floor(t * 140); g = Math.floor(t * 30); b = 120 - Math.floor(t * 20);
+            } else if(val < 0.75){
+                var t = (val - 0.5) / 0.25;
+                r = 220 + Math.floor(t * 35); g = 30 + Math.floor(t * 120); b = 100 - Math.floor(t * 80);
+            } else {
+                var t = (val - 0.75) / 0.25;
+                r = 255; g = 150 + Math.floor(t * 105); b = 20 + Math.floor(t * 100);
+            }
+
+            ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
+            ctx.fillRect(margin.left + j * cellW, margin.top + i * cellH, cellW - 0.5, cellH - 0.5);
+        }
+
+        // Labels
+        ctx.font = '7px monospace';
+        ctx.fillStyle = '#666';
+        ctx.textAlign = 'right';
+        ctx.fillText(i === 0 ? 'E' : 'L' + (i - 1), margin.left - 3, margin.top + i * cellH + cellH / 2 + 3);
+        ctx.textAlign = 'center';
+        ctx.fillText(i === 0 ? 'E' : 'L' + (i - 1), margin.left + i * cellW + cellW / 2, H - 5);
+    }
+
+    // Current layer indicator
+    var currentLayer = +document.getElementById('sl-layer').value;
+    if(currentLayer < nLayers){
+        ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(margin.left, margin.top + currentLayer * cellH, plotW, cellH);
+        ctx.strokeRect(margin.left + currentLayer * cellW, margin.top, cellW, plotH);
+    }
+}
+
+// ---- Persistence Entropy ----
+function renderTDAEntropy(){
+    if(!tdaData) return;
+    document.getElementById('tda-entropy-wrap').style.display = 'block';
+
+    var cv = document.getElementById('tda-entropy-cv');
+    var ctx = cv.getContext('2d');
+    var W = cv.width, H = cv.height;
+    ctx.fillStyle = '#0a0a1a';
+    ctx.fillRect(0, 0, W, H);
+
+    var nLayers = tdaData.layer_summaries.length;
+    var margin = {left: 35, right: 15, top: 8, bottom: 15};
+    var plotW = W - margin.left - margin.right;
+    var plotH = H - margin.top - margin.bottom;
+
+    var entropies = [];
+    var maxE = 0;
+    for(var li = 0; li < nLayers; li++){
+        var e = tdaData.layer_summaries[li].entropy;
+        entropies.push(e);
+        if(e > maxE) maxE = e;
+    }
+    if(maxE < 1e-8) maxE = 1;
+
+    var barW = Math.max(3, Math.floor(plotW / nLayers) - 1);
+
+    for(var li = 0; li < nLayers; li++){
+        var h = (entropies[li] / maxE) * plotH;
+        var x = margin.left + li * (barW + 1);
+        var frac = entropies[li] / maxE;
+
+        ctx.fillStyle = 'rgb(' + Math.floor(46 + frac * 0) + ',' +
+                        Math.floor(204 - frac * 80) + ',' +
+                        Math.floor(113 - frac * 40) + ')';
+        ctx.fillRect(x, margin.top + plotH - h, barW, h);
+
+        if(nLayers <= 25 || li % 2 === 0){
+            ctx.font = '6px monospace';
+            ctx.fillStyle = '#555';
+            ctx.textAlign = 'center';
+            ctx.fillText(li === 0 ? 'E' : '' + (li - 1), x + barW / 2, H - 3);
+        }
+    }
+}

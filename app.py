@@ -3,6 +3,9 @@
 # dependencies = [
 #   "torch",
 #   "matplotlib",
+#   "ripser",
+#   "gudhi",
+#   "scikit-learn",
 #   "transformers",
 #   "tiktoken",
 #   "sentencepiece",
@@ -2755,7 +2758,95 @@ The capital of Germany is Berlin</textarea>
     <b>Mouse:</b> Scroll=Zoom | Shift+Drag=Pan | Click=Select Token | Drag=Rotate (3D)
   </div>
 </details>
+<!-- ---- Persistent Homology / TDA ---- -->
+<details>
+  <summary style="color:#00bcd4;font-size:12px;font-weight:bold;cursor:pointer;padding:4px 0;border-bottom:1px solid #0f3460">🕸️ Persistent Homology (TDA)</summary>
+  <div id="tda-panel" style="background:#0f3460;padding:8px;border-radius:4px;font-size:10px;margin-top:6px">
+    <div style="color:#888;font-size:9px;margin-bottom:6px">
+      Track topological features (connected components, loops, voids) in the
+      representation space as they appear and disappear across layers.
+    </div>
+    <div class="cr">
+      <label>Max dim:</label>
+      <select id="tda-maxdim" style="flex:1;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;padding:2px;font-size:10px">
+        <option value="1">H0 + H1 (components + loops)</option>
+        <option value="2" selected>H0 + H1 + H2 (+ voids)</option>
+      </select>
+    </div>
+    <div class="cr" style="margin-top:3px">
+      <label>PCA dims:</label>
+      <input type="range" id="tda-pca" min="3" max="64" value="16" step="1">
+      <span class="v" id="v-tda-pca">16</span>
+    </div>
+    <div class="cr" style="margin-top:3px">
+      <label>Max edge:</label>
+      <input type="range" id="tda-maxedge" min="0.5" max="50" value="10" step="0.5">
+      <span class="v" id="v-tda-maxedge">10.0</span>
+    </div>
+    <div class="cr" style="margin-top:3px">
+      <label>Collapse ε:</label>
+      <input type="range" id="tda-collapse" min="0" max="5" value="0" step="0.1">
+      <span class="v" id="v-tda-collapse">0.0</span>
+    </div>
+    <div style="display:flex;gap:4px;margin-top:6px">
+      <button id="btn-tda" onclick="runTDA()" style="flex:1;background:#00bcd4;color:#fff;border:none;padding:5px 10px;border-radius:3px;cursor:pointer;font-size:10px;font-weight:bold">
+        Compute Persistent Homology
+      </button>
+    </div>
+    <div id="tda-status" style="margin-top:6px;color:#555;font-size:9px">Run text first, then compute homology.</div>
 
+    <!-- Summary -->
+    <div id="tda-summary" style="display:none;margin-top:8px;background:#0a0a1a;padding:6px;border-radius:4px;font-size:9px;line-height:1.5;color:#a0a0c0"></div>
+
+    <!-- Layer selector for diagrams -->
+    <div id="tda-layer-controls" style="display:none;margin-top:8px">
+      <div class="cr">
+        <label>Layer:</label>
+        <select id="tda-layer-sel" onchange="renderTDALayer()" style="flex:1;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;padding:2px;font-size:10px"></select>
+      </div>
+      <div class="cr" style="margin-top:3px">
+        <label>View:</label>
+        <select id="tda-view-sel" onchange="renderTDALayer()" style="flex:1;background:#1a1a2e;color:#e0e0e0;border:1px solid #0f3460;padding:2px;font-size:10px">
+          <option value="persistence">Persistence Diagram</option>
+          <option value="barcode">Barcode</option>
+          <option value="landscape">Persistence Landscape</option>
+          <option value="betti">Betti Curve</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Main persistence diagram canvas -->
+    <div id="tda-diagram-wrap" style="display:none;margin-top:6px">
+      <canvas id="tda-diagram-cv" width="340" height="300" style="border:1px solid #0f3460;border-radius:4px;display:block;width:100%"></canvas>
+      <div id="tda-diagram-legend" style="display:flex;justify-content:space-between;font-size:8px;color:#888;margin-top:2px">
+        <span>Birth →</span>
+        <span id="tda-diagram-title">Persistence Diagram</span>
+        <span>← Death</span>
+      </div>
+    </div>
+
+    <!-- Cross-layer Betti number evolution -->
+    <div id="tda-betti-evolution" style="display:none;margin-top:8px">
+      <div style="color:#00bcd4;font-weight:bold;font-size:10px;margin-bottom:3px">Betti Numbers Across Layers</div>
+      <canvas id="tda-betti-cv" width="340" height="120" style="border:1px solid #0f3460;border-radius:4px;display:block;width:100%"></canvas>
+    </div>
+
+    <!-- Topological events timeline -->
+    <div id="tda-events" style="display:none;margin-top:8px;max-height:250px;overflow-y:auto"></div>
+
+    <!-- Wasserstein distance heatmap between layers -->
+    <div id="tda-wasserstein-wrap" style="display:none;margin-top:8px">
+      <div style="color:#f5a623;font-weight:bold;font-size:10px;margin-bottom:3px">Wasserstein Distance Between Layers</div>
+      <canvas id="tda-wasserstein-cv" width="340" height="200" style="border:1px solid #0f3460;border-radius:4px;display:block;width:100%"></canvas>
+    </div>
+
+    <!-- Persistence entropy -->
+    <div id="tda-entropy-wrap" style="display:none;margin-top:8px">
+      <div style="color:#2ecc71;font-weight:bold;font-size:10px;margin-bottom:3px">Persistence Entropy Across Layers</div>
+      <canvas id="tda-entropy-cv" width="340" height="80" style="border:1px solid #0f3460;border-radius:4px;display:block;width:100%"></canvas>
+    </div>
+  </div>
+</details>
 </div>
 
 <div id="main">
@@ -2800,6 +2891,179 @@ def handle_post_run(body_bytes):
     json_str = process_text(text, model_name, itp_method=itp_method)
     return json_str.encode("utf-8")
 
+def compute_persistent_homology(hidden_states, max_dim=2, pca_dims=16, max_edge=10.0, collapse_eps=0.0):
+    """
+    Compute persistent homology of the token representation space at each layer.
+    Uses per-layer normalization and distance-based filtration to ensure
+    each layer's topology is captured independently.
+    """
+    try:
+        from ripser import ripser
+        HAS_RIPSER = True
+    except ImportError:
+        HAS_RIPSER = False
+
+    try:
+        from gudhi import RipsComplex
+        HAS_GUDHI = True
+    except ImportError:
+        HAS_GUDHI = False
+
+    if not HAS_GUDHI and not HAS_RIPSER:
+        raise ImportError(
+            "Neither gudhi nor ripser is installed. "
+            "Install one: pip install gudhi  OR  pip install ripser"
+        )
+
+    from sklearn.decomposition import PCA
+    from scipy.spatial.distance import pdist, squareform
+
+    n_layers_plus_one = len(hidden_states)
+    seq_len = hidden_states[0].shape[1]
+
+    # Extract raw point clouds at each layer
+    point_clouds = []
+    for li in range(n_layers_plus_one):
+        pts = hidden_states[li][0].detach().cpu().float().numpy()  # (seq_len, hidden_dim)
+        point_clouds.append(pts)
+
+    print(f"[TDA] {n_layers_plus_one} layers, {seq_len} tokens, dim={point_clouds[0].shape[1]}")
+
+    persistence_diagrams = []
+    layer_summaries = []
+
+    for li in range(n_layers_plus_one):
+        pts = point_clouds[li]
+        layer_name = "Embedding" if li == 0 else f"Layer {li - 1}"
+
+        # ---- Per-layer PCA ----
+        # This is the KEY fix: each layer gets its OWN PCA projection
+        # so we capture the geometry unique to that layer
+        actual_pca_dims = min(pca_dims, pts.shape[1], pts.shape[0] - 1)
+        if actual_pca_dims < pts.shape[1]:
+            pca = PCA(n_components=actual_pca_dims)
+            pts_reduced = pca.fit_transform(pts)
+            explained = pca.explained_variance_ratio_.sum()
+        else:
+            pts_reduced = pts.copy()
+            explained = 1.0
+
+        # ---- Per-layer normalization ----
+        # Normalize distances so that max_edge is meaningful across layers
+        # (different layers can have very different scales)
+        dists = pdist(pts_reduced)
+        if len(dists) > 0 and dists.max() > 1e-12:
+            median_dist = np.median(dists)
+            # Scale so median pairwise distance = 1.0
+            pts_normalized = pts_reduced / (median_dist + 1e-12)
+        else:
+            pts_normalized = pts_reduced
+
+        if li == 0 or li == n_layers_plus_one - 1:
+            raw_dists = pdist(pts_reduced)
+            norm_dists = pdist(pts_normalized)
+            print(f"  [TDA] {layer_name}: PCA explained={explained:.3f}, "
+                  f"raw dist range=[{raw_dists.min():.3f}, {raw_dists.max():.3f}], "
+                  f"norm dist range=[{norm_dists.min():.3f}, {norm_dists.max():.3f}]")
+
+        # ---- Compute persistence ----
+        diagrams_by_dim = {}
+
+        if HAS_RIPSER:
+            try:
+                result = ripser(pts_normalized, maxdim=max_dim, thresh=max_edge)
+                for dim_idx in range(len(result['dgms'])):
+                    dgm = result['dgms'][dim_idx]
+                    pairs = []
+                    for pair in dgm:
+                        b, d = float(pair[0]), float(pair[1])
+                        if np.isinf(d):
+                            d = float('inf')
+                        pairs.append([b, d])
+                    diagrams_by_dim[dim_idx] = pairs
+            except Exception as e:
+                print(f"  [TDA] ripser failed on {layer_name}: {e}")
+                for dim_idx in range(max_dim + 1):
+                    diagrams_by_dim[dim_idx] = []
+
+        elif HAS_GUDHI:
+            try:
+                rips = RipsComplex(points=pts_normalized.tolist(), max_edge_length=max_edge)
+                simplex_tree = rips.create_simplex_tree(max_dimension=max_dim + 1)
+                if collapse_eps > 0:
+                    try:
+                        simplex_tree.collapse_edges(nb_iterations=10)
+                    except Exception:
+                        pass
+                simplex_tree.compute_persistence()
+                for dim_idx in range(max_dim + 1):
+                    intervals = simplex_tree.persistence_intervals_in_dimension(dim_idx)
+                    pairs = []
+                    for interval in intervals:
+                        b, d = float(interval[0]), float(interval[1])
+                        if np.isinf(d):
+                            d = float('inf')
+                        pairs.append([b, d])
+                    diagrams_by_dim[dim_idx] = pairs
+            except Exception as e:
+                print(f"  [TDA] GUDHI failed on {layer_name}: {e}")
+                for dim_idx in range(max_dim + 1):
+                    diagrams_by_dim[dim_idx] = []
+
+        persistence_diagrams.append(diagrams_by_dim)
+
+        # ---- Summary stats ----
+        betti_0 = len([p for p in diagrams_by_dim.get(0, []) if p[1] == float('inf')])
+        betti_1 = len([p for p in diagrams_by_dim.get(1, []) if p[1] == float('inf')])
+        betti_2 = (len([p for p in diagrams_by_dim.get(2, []) if p[1] == float('inf')])
+                   if max_dim >= 2 else 0)
+        n_features = sum(len(diagrams_by_dim.get(d, [])) for d in range(max_dim + 1))
+        entropy = compute_persistence_entropy(diagrams_by_dim, max_dim)
+
+        # Also compute total finite persistence as a measure of "topological activity"
+        total_persistence = 0.0
+        max_persistence = 0.0
+        for d in range(max_dim + 1):
+            for pair in diagrams_by_dim.get(d, []):
+                if pair[1] != float('inf'):
+                    pers = pair[1] - pair[0]
+                    total_persistence += pers
+                    max_persistence = max(max_persistence, pers)
+
+        layer_summaries.append({
+            'layer': li,
+            'name': layer_name,
+            'betti_0': betti_0,
+            'betti_1': betti_1,
+            'betti_2': betti_2,
+            'n_features': n_features,
+            'entropy': round(entropy, 6),
+            'total_persistence': round(total_persistence, 6),
+            'max_persistence': round(max_persistence, 6),
+        })
+
+        print(f"  [TDA] {layer_name}: β₀={betti_0}, β₁={betti_1}, β₂={betti_2}, "
+              f"features={n_features}, entropy={entropy:.4f}, "
+              f"total_pers={total_persistence:.4f}, max_pers={max_persistence:.4f}")
+
+    # ---- Cross-layer analysis ----
+    wasserstein_matrix = compute_wasserstein_matrix(persistence_diagrams, max_dim)
+    events = detect_topological_events(persistence_diagrams, layer_summaries, max_dim)
+    total_features = sum(ls['n_features'] for ls in layer_summaries)
+    summary = generate_tda_summary(layer_summaries, events, max_dim)
+
+    return {
+        'persistence_diagrams': persistence_diagrams,
+        'layer_summaries': layer_summaries,
+        'wasserstein_distances': wasserstein_matrix,
+        'topological_events': events,
+        'total_features': total_features,
+        'max_dim': max_dim,
+        'n_layers': n_layers_plus_one - 1,
+        'seq_len': seq_len,
+        'summary': summary,
+    }
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -2836,6 +3100,7 @@ class Handler(BaseHTTPRequestHandler):
             "/sae_info": handle_sae_info,
             "/neuron_grid": handle_neuron_grid,  # <-- ADD THIS
             "/curvature": handle_curvature_analysis,  # <-- NEW
+            "/tda": handle_tda,
         }
 
         handler = handler_map.get(path)
@@ -4666,6 +4931,239 @@ def handle_multi_run(body_bytes):
     response["sentence_data"] = full_results  # <-- ADD THIS
 
     return json.dumps(response, cls=SafeFloatEncoder).encode()
+
+def compute_persistence_entropy(diagrams_by_dim, max_dim):
+    """Compute the persistence entropy of a persistence diagram."""
+    lifetimes = []
+    for dim in range(max_dim + 1):
+        pairs = diagrams_by_dim.get(dim, [])
+        for pair in pairs:
+            b, d = pair[0], pair[1]
+            if d == float('inf'):
+                continue  # skip infinite persistence features
+            lifetime = d - b
+            if lifetime > 1e-12:
+                lifetimes.append(lifetime)
+    
+    if len(lifetimes) == 0:
+        return 0.0
+    
+    lifetimes = np.array(lifetimes)
+    total = lifetimes.sum()
+    if total < 1e-12:
+        return 0.0
+    
+    probs = lifetimes / total
+    # Shannon entropy
+    entropy = -np.sum(probs * np.log(probs + 1e-30))
+    return float(entropy)
+
+
+def compute_wasserstein_matrix(persistence_diagrams, max_dim):
+    """
+    Compute pairwise Wasserstein distances between persistence diagrams
+    at different layers.
+    
+    Returns:
+        matrix: list of lists (n_layers x n_layers) of float distances
+    """
+    n_layers = len(persistence_diagrams)
+    matrix = [[0.0] * n_layers for _ in range(n_layers)]
+    
+    for i in range(n_layers):
+        for j in range(i + 1, n_layers):
+            total_dist = 0.0
+            for dim in range(max_dim + 1):
+                pairs_i = persistence_diagrams[i].get(dim, [])
+                pairs_j = persistence_diagrams[j].get(dim, [])
+                
+                # Extract finite-persistence lifetimes for Wasserstein comparison
+                lifetimes_i = []
+                lifetimes_j = []
+                for p in pairs_i:
+                    lt = p[1] - p[0] if p[1] != float('inf') else 0.0
+                    if lt > 1e-12:
+                        lifetimes_i.append(lt)
+                for p in pairs_j:
+                    lt = p[1] - p[0] if p[1] != float('inf') else 0.0
+                    if lt > 1e-12:
+                        lifetimes_j.append(lt)
+                
+                if len(lifetimes_i) > 0 and len(lifetimes_j) > 0:
+                    try:
+                        dist = wasserstein_distance(lifetimes_i, lifetimes_j)
+                        total_dist += dist
+                    except Exception:
+                        pass
+                elif len(lifetimes_i) > 0 or len(lifetimes_j) > 0:
+                    # One is empty — distance is the total persistence of the other
+                    total_dist += sum(lifetimes_i) + sum(lifetimes_j)
+            
+            matrix[i][j] = round(total_dist, 6)
+            matrix[j][i] = round(total_dist, 6)
+    
+    return matrix
+
+
+def detect_topological_events(persistence_diagrams, layer_summaries, max_dim):
+    """
+    Detect significant topological events across layers:
+    - Birth of new persistent features
+    - Death of features
+    - Peaks in persistence
+    
+    Returns:
+        list of event dicts
+    """
+    events = []
+    n_layers = len(layer_summaries)
+    
+    for li in range(1, n_layers):
+        prev = layer_summaries[li - 1]
+        curr = layer_summaries[li]
+        
+        # Detect changes in Betti numbers
+        for dim, (betti_key, dim_label) in enumerate([
+            ('betti_0', 'H₀ (components)'),
+            ('betti_1', 'H₁ (loops)'),
+            ('betti_2', 'H₂ (voids)')
+        ]):
+            if dim > max_dim:
+                break
+            
+            prev_b = prev.get(betti_key, 0)
+            curr_b = curr.get(betti_key, 0)
+            
+            if curr_b > prev_b:
+                events.append({
+                    'layer': li,
+                    'type': 'birth',
+                    'dim': dim,
+                    'description': f'{dim_label}: β increased from {prev_b} to {curr_b}'
+                })
+            elif curr_b < prev_b:
+                events.append({
+                    'layer': li,
+                    'type': 'death',
+                    'dim': dim,
+                    'description': f'{dim_label}: β decreased from {prev_b} to {curr_b}'
+                })
+        
+        # Detect entropy peaks
+        if li >= 2:
+            prev_prev = layer_summaries[li - 2]
+            if (curr['entropy'] > prev['entropy'] and 
+                curr['entropy'] > prev_prev['entropy'] and
+                curr['entropy'] > 0.1):
+                events.append({
+                    'layer': li,
+                    'type': 'persistence_peak',
+                    'dim': -1,
+                    'description': f'Persistence entropy peak: {curr["entropy"]:.4f}'
+                })
+    
+    # Sort by layer
+    events.sort(key=lambda e: (e['layer'], e['dim']))
+    
+    return events
+
+
+def generate_tda_summary(layer_summaries, events, max_dim):
+    """Generate a human-readable summary of the TDA analysis."""
+    n_layers = len(layer_summaries)
+    
+    # Find layer with most topological complexity
+    max_features_layer = max(range(n_layers), key=lambda i: layer_summaries[i]['n_features'])
+    max_entropy_layer = max(range(n_layers), key=lambda i: layer_summaries[i]['entropy'])
+    
+    # Find layer with most loops
+    max_loops_layer = max(range(n_layers), key=lambda i: layer_summaries[i]['betti_1'])
+    
+    summary_parts = []
+    
+    summary_parts.append(
+        f"Analyzed {n_layers} layers (embedding + {n_layers - 1} transformer layers)."
+    )
+    
+    mf = layer_summaries[max_features_layer]
+    summary_parts.append(
+        f"Most topologically complex: {mf['name']} "
+        f"({mf['n_features']} features, β₀={mf['betti_0']}, β₁={mf['betti_1']})."
+    )
+    
+    me = layer_summaries[max_entropy_layer]
+    summary_parts.append(
+        f"Highest persistence entropy: {me['name']} ({me['entropy']:.4f})."
+    )
+    
+    ml = layer_summaries[max_loops_layer]
+    if ml['betti_1'] > 0:
+        summary_parts.append(
+            f"Most 1-cycles (loops): {ml['name']} (β₁={ml['betti_1']})."
+        )
+    
+    n_births = sum(1 for e in events if e['type'] == 'birth')
+    n_deaths = sum(1 for e in events if e['type'] == 'death')
+    if n_births > 0 or n_deaths > 0:
+        summary_parts.append(
+            f"Topological events: {n_births} births, {n_deaths} deaths across layers."
+        )
+    
+    return " ".join(summary_parts)
+
+
+def handle_tda(body_bytes):
+    """
+    Endpoint handler for /tda — computes persistent homology across all layers.
+    """
+    req = json.loads(body_bytes)
+    text = req.get("text", "").strip()
+    max_dim = req.get("max_dim", 2)
+    pca_dims = req.get("pca_dims", 16)
+    max_edge = req.get("max_edge", 10.0)
+    collapse_eps = req.get("collapse_eps", 0.0)
+    
+    if not text:
+        return json.dumps({"error": "Empty text"}).encode()
+    
+    # Tokenize and extract hidden states
+    input_ids, tokens = tokenize_text(TOKENIZER, text)
+    hs = extract_hidden_states(MODEL, input_ids)
+    
+    print(f"[TDA] Computing persistent homology for '{text[:50]}...' "
+          f"(max_dim={max_dim}, pca_dims={pca_dims}, max_edge={max_edge})")
+    
+    try:
+        result = compute_persistent_homology(
+            hs,
+            max_dim=max_dim,
+            pca_dims=pca_dims,
+            max_edge=max_edge,
+            collapse_eps=collapse_eps,
+        )
+    except ImportError as e:
+        return json.dumps({"error": str(e)}).encode()
+    except Exception as e:
+        traceback.print_exc()
+        return json.dumps({"error": f"TDA computation failed: {e}"}).encode()
+    
+    # Convert persistence diagrams: replace Python inf with a large number for JSON
+    json_diagrams = []
+    for layer_diags in result['persistence_diagrams']:
+        json_layer = {}
+        for dim_key, pairs in layer_diags.items():
+            json_pairs = []
+            for pair in pairs:
+                b = pair[0]
+                d = pair[1] if pair[1] != float('inf') else 1e18
+                json_pairs.append([round(b, 8), round(d, 8)])
+            json_layer[dim_key] = json_pairs
+        json_diagrams.append(json_layer)
+    
+    result['persistence_diagrams'] = json_diagrams
+    
+    return json.dumps(result, cls=SafeFloatEncoder).encode()
+
 
 if __name__ == "__main__":
     try:
