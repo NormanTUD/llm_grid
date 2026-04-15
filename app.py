@@ -5601,59 +5601,59 @@ def handle_jacobian_field_viz(body_bytes):
     Extract the pure Jacobian field — the morphing itself, stripped of all data.
     Returns a dense grid of Jacobian decompositions (stretch, rotation, eigenvalues)
     at every point in the PCA-projected space, for every layer transition.
-    
+
     This is the diffeomorphism watching itself in a mirror.
     """
     req = json.loads(body_bytes)
     text = req.get("text", "").strip()
     pca_d = req.get("pca_d", 16)
     grid_res = req.get("grid_res", 20)
-    
+
     if not text:
         return json.dumps({"error": "Empty text"}).encode()
-    
+
     input_ids, tokens = tokenize_text(TOKENIZER, text)
     hs = extract_hidden_states(MODEL, input_ids)
-    
+
     n_layers = get_n_layers(MODEL_CONFIG)
     hidden_dim = get_hidden_dim(MODEL_CONFIG)
     seq_len = input_ids.shape[1]
-    
+
     print(f"[JacobianField] Extracting pure morphing field: "
           f"{seq_len} tokens × {n_layers} layers, grid={grid_res}²")
-    
+
     # Convert hidden states to numpy
     H = np.stack([
         hs[lay][0].cpu().float().numpy() for lay in range(n_layers + 1)
     ], axis=0)  # (n_layers+1, seq_len, hidden_dim)
-    
+
     # For each layer transition, estimate the Jacobian field on a 2D grid
     # The grid lives in the top-2 PCA subspace of the token cloud
-    
+
     layer_fields = []
-    
+
     for lay in range(n_layers):
         h_cloud = H[lay]       # (seq_len, hidden_dim)
         h_next = H[lay + 1]    # (seq_len, hidden_dim)
         deltas = h_next - h_cloud  # (seq_len, hidden_dim)
-        
+
         # PCA of the token cloud at this layer
         cloud_centered = h_cloud - h_cloud.mean(axis=0)
         K = min(pca_d, hidden_dim, seq_len - 1)
-        
+
         if seq_len >= 3:
             U, S, Vt = np.linalg.svd(cloud_centered, full_matrices=False)
             principal_dirs = Vt[:K]  # (K, hidden_dim)
         else:
             principal_dirs = np.eye(hidden_dim)[:K]
-        
+
         # Project tokens into PCA space
         pos_proj = cloud_centered @ principal_dirs.T  # (seq_len, K)
         del_proj = deltas @ principal_dirs.T           # (seq_len, K)
-        
+
         # Use only the first 2 PCA dims for the visualization grid
         pos_2d = pos_proj[:, :2]  # (seq_len, 2)
-        
+
         # Compute grid bounds
         margin = 0.2
         x_min = pos_2d[:, 0].min()
@@ -5666,108 +5666,108 @@ def handle_jacobian_field_viz(body_bytes):
         x_max += margin * x_range
         y_min -= margin * y_range
         y_max += margin * y_range
-        
+
         grid_x = np.linspace(x_min, x_max, grid_res)
         grid_y = np.linspace(y_min, y_max, grid_res)
-        
+
         # At each grid point, estimate the local Jacobian via
         # weighted least-squares regression of nearby token deltas
         sigma = max(x_range, y_range) * 0.25
         s2i = 1.0 / (2 * sigma ** 2)
-        
+
         # For the full K-dimensional Jacobian estimation
         # We fit: delta_proj ≈ J @ (pos_proj - query_pos) + delta_0
         # using Gaussian-weighted least squares
-        
+
         grid_data = []  # list of dicts per grid point
-        
+
         for gy_idx in range(grid_res):
             for gx_idx in range(grid_res):
                 qx = grid_x[gx_idx]
                 qy = grid_y[gy_idx]
                 query_2d = np.array([qx, qy])
-                
+
                 # Gaussian weights based on 2D distance
                 dists_sq = np.sum((pos_2d - query_2d) ** 2, axis=1)
                 weights = np.exp(-dists_sq * s2i)
                 w_sum = weights.sum()
-                
+
                 if w_sum < 1e-15:
                     weights = np.ones(seq_len) / seq_len
                     w_sum = 1.0
-                
+
                 # Weighted mean delta (the "base flow" at this point)
                 w_norm = weights / w_sum
                 mean_delta = w_norm @ del_proj  # (K,)
-                
+
                 # Estimate 2D Jacobian via weighted linear regression
                 # delta_2d ≈ J_2x2 @ (pos_2d - query) + mean_delta_2d
                 dx_local = pos_2d - query_2d  # (seq_len, 2)
                 del_2d = del_proj[:, :2]       # (seq_len, 2)
-                
+
                 # Weighted least squares: J = (X^T W X)^{-1} X^T W Y
                 W = np.diag(weights)
                 XtWX = dx_local.T @ W @ dx_local + 1e-8 * np.eye(2)
                 XtWY = dx_local.T @ W @ del_2d
-                
+
                 try:
                     J_2d = np.linalg.solve(XtWX, XtWY).T  # (2, 2)
                 except np.linalg.LinAlgError:
                     J_2d = np.eye(2)
-                
+
                 # ============================================
                 # DECOMPOSE THE JACOBIAN — this IS the morphing
                 # ============================================
-                
+
                 # 1. Eigendecomposition
                 eigenvalues, eigenvectors = np.linalg.eig(J_2d)
                 eig_mag = np.abs(eigenvalues)
                 eig_phase = np.angle(eigenvalues)
-                
+
                 # 2. Polar decomposition: J = R @ S (rotation × stretch)
                 # Using SVD: J = U Σ V^T, then R = U V^T, S = V Σ V^T
                 U_j, sv, Vt_j = np.linalg.svd(J_2d)
                 R_mat = U_j @ Vt_j                    # rotation part
                 S_mat = Vt_j.T @ np.diag(sv) @ Vt_j   # stretch part
-                
+
                 # 3. Rotation angle
                 rotation_angle = float(np.arctan2(R_mat[1, 0], R_mat[0, 0]))
-                
+
                 # 4. Divergence = trace(J) — expansion/contraction
                 divergence = float(np.trace(J_2d))
-                
+
                 # 5. Curl = J[1,0] - J[0,1] — local rotation rate
                 curl = float(J_2d[1, 0] - J_2d[0, 1])
-                
+
                 # 6. Shear = traceless symmetric part
                 J_sym = (J_2d + J_2d.T) / 2
                 J_traceless = J_sym - np.eye(2) * np.trace(J_sym) / 2
                 shear = float(np.linalg.norm(J_traceless, 'fro'))
-                
+
                 # 7. Determinant — area change
                 det = float(np.linalg.det(J_2d))
-                
+
                 # 8. Condition number — anisotropy
                 condition = float(sv[0] / max(sv[-1], 1e-12))
-                
+
                 # 9. Mean flow vector at this point
                 flow_x = float(mean_delta[0])
                 flow_y = float(mean_delta[1])
-                
+
                 # 10. Principal stretch directions (from SVD)
                 stretch_dir1 = Vt_j[0].tolist()  # direction of max stretch
                 stretch_dir2 = Vt_j[1].tolist()  # direction of min stretch
                 stretch_mag1 = float(sv[0])
                 stretch_mag2 = float(sv[1])
-                
+
                 # 11. Eigenvector directions (may be complex for rotations)
                 evec1_real = eigenvectors[:, 0].real.tolist()
                 evec2_real = eigenvectors[:, 1].real.tolist()
-                
+
                 grid_data.append({
                     'gx': round(float(qx), 6),
                     'gy': round(float(qy), 6),
-                    
+
                     # The morphing itself
                     'flow_x': round(flow_x, 6),
                     'flow_y': round(flow_y, 6),
@@ -5777,23 +5777,23 @@ def handle_jacobian_field_viz(body_bytes):
                     'det': round(det, 6),
                     'rotation_angle': round(rotation_angle, 6),
                     'condition': round(condition, 4),
-                    
+
                     # Eigenstructure
                     'eig_mag': [round(float(m), 6) for m in eig_mag],
                     'eig_phase': [round(float(p), 6) for p in eig_phase],
                     'evec1': [round(float(v), 6) for v in evec1_real],
                     'evec2': [round(float(v), 6) for v in evec2_real],
-                    
+
                     # Stretch decomposition
                     'stretch_dir1': [round(v, 6) for v in stretch_dir1],
                     'stretch_dir2': [round(v, 6) for v in stretch_dir2],
                     'stretch_mag1': round(stretch_mag1, 6),
                     'stretch_mag2': round(stretch_mag2, 6),
-                    
+
                     # Singular values
                     'sv': [round(float(s), 6) for s in sv],
                 })
-        
+
         layer_fields.append({
             'layer': lay,
             'grid_res': grid_res,
@@ -5802,10 +5802,10 @@ def handle_jacobian_field_viz(body_bytes):
             'grid_data': grid_data,
             'token_positions_2d': pos_2d.tolist(),
         })
-    
+
     print(f"[JacobianField] Done: {n_layers} layers × {grid_res}² = "
           f"{n_layers * grid_res * grid_res} Jacobian samples")
-    
+
     return json.dumps({
         'tokens': tokens,
         'seq_len': seq_len,
