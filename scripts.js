@@ -4621,377 +4621,368 @@ window.addEventListener('mousemove', function(e) {
   }
 });
 
-function drawFibreBundle3DGrid() {
-    var cv = document.getElementById('cv');
-    var c = cv.getContext('2d');
-    var W = cv.width, H = cv.height;
-    c.clearRect(0, 0, W, H);
+// ============================================================
+// REFACTORED drawFibreBundle3DGrid — broken into composable steps
+// ============================================================
 
-    if (!D) {
-        c.font = '14px monospace';
-        c.fillStyle = '#555';
-        c.fillText('Run a prompt first', W / 2 - 80, H / 2);
-        return;
-    }
-
-    var nTokens = D.n_real;
-    var nLayers = D.n_layers;
+/**
+ * Read all fibre-3D-relevant parameters from the DOM and data model.
+ * Returns a self-contained config object.
+ */
+function getFibre3DParams() {
     var hiddenDim = D.hidden_dim;
-    var nP = D.n_points;
-
-    var dx = +document.getElementById('sl-dx').value;
-    var dy = +document.getElementById('sl-dy').value;
-    var dz = +document.getElementById('sl-dz').value;
-    var amp = +document.getElementById('sl-amp').value;
-    var t = +document.getElementById('sl-t').value;
-    var sig = +document.getElementById('sl-sig').value;
-    var currentLayer = +document.getElementById('sl-layer').value;
-    var showGrid = document.getElementById('cb-grid').checked;
-    var showHeat = document.getElementById('cb-heat').checked;
-    var showSC = document.getElementById('cb-sc').checked;
-    var mode = document.getElementById('sel-mode').value;
-
     var activeDeltas = getActiveDeltas();
     if (!activeDeltas) activeDeltas = D.deltas;
-    var isEmb = (mode === 'embedding');
 
-    dx = Math.min(dx, hiddenDim - 1);
-    dy = Math.min(dy, hiddenDim - 1);
-    dz = Math.min(dz, hiddenDim - 1);
+    return {
+        nTokens:      D.n_real,
+        nLayers:      D.n_layers,
+        hiddenDim:    hiddenDim,
+        nP:           D.n_points,
+        dx:           Math.min(+document.getElementById('sl-dx').value, hiddenDim - 1),
+        dy:           Math.min(+document.getElementById('sl-dy').value, hiddenDim - 1),
+        dz:           Math.min(+document.getElementById('sl-dz').value, hiddenDim - 1),
+        amp:          +document.getElementById('sl-amp').value,
+        t:            +document.getElementById('sl-t').value,
+        sig:          +document.getElementById('sl-sig').value,
+        gr:           +document.getElementById('sl-gr').value,
+        currentLayer: +document.getElementById('sl-layer').value,
+        showGrid:     document.getElementById('cb-grid').checked,
+        showHeat:     document.getElementById('cb-heat').checked,
+        showSC:       document.getElementById('cb-sc').checked,
+        mode:         document.getElementById('sel-mode').value,
+        isEmb:        document.getElementById('sel-mode').value === 'embedding',
+        activeDeltas: activeDeltas,
+    };
+}
 
-    // Extract base positions in all 3 dims
-    var fx = new Float64Array(nP), fy = new Float64Array(nP), fz = new Float64Array(nP);
-    for (var i = 0; i < nP; i++) {
-        fx[i] = D.fixed_pos[i][dx];
-        fy[i] = D.fixed_pos[i][dy];
-        fz[i] = D.fixed_pos[i][dz];
-    }
-
-    // Compute view bounds for all 3 axes
-    var mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity, mnz = Infinity, mxz = -Infinity;
-    for (var i = 0; i < nP; i++) {
-        if (fx[i] < mnx) mnx = fx[i]; if (fx[i] > mxx) mxx = fx[i];
-        if (fy[i] < mny) mny = fy[i]; if (fy[i] > mxy) mxy = fy[i];
-        if (fz[i] < mnz) mnz = fz[i]; if (fz[i] > mxz) mxz = fz[i];
-    }
-    var mrx = mxx - mnx || 1, mry = mxy - mny || 1, mrz = mxz - mnz || 1;
-    var mr = Math.max(mrx, mry, mrz);
-    var cx3 = (mnx + mxx) / 2, cy3 = (mny + mxy) / 2, cz3 = (mnz + mxz) / 2;
-    var pd = 0.12;
-    var vx0 = cx3 - mr * (0.5 + pd), vx1 = cx3 + mr * (0.5 + pd);
-    var vy0 = cy3 - mr * (0.5 + pd), vy1 = cy3 + mr * (0.5 + pd);
-    var vz0 = cz3 - mr * (0.5 + pd), vz1 = cz3 + mr * (0.5 + pd);
-
-    // Precompute per-layer raw deltas
-    var edxAll = [], edyAll = [], edzAll = [];
-    for (var lay = 0; lay < nLayers; lay++) {
-        var edxL = new Float64Array(nP), edyL = new Float64Array(nP), edzL = new Float64Array(nP);
-        for (var j = 0; j < nP; j++) {
-            edxL[j] = activeDeltas[lay][j][dx] * amp;
-            edyL[j] = activeDeltas[lay][j][dy] * amp;
-            edzL[j] = activeDeltas[lay][j][dz] * amp;
-        }
-        edxAll.push(edxL); edyAll.push(edyL); edzAll.push(edzL);
-    }
-
-    var s2i = 1 / (2 * sig * sig);
-
-    // 3D grid resolution — smaller than draw3D since we have many rooms
-    var N3 = Math.max(3, Math.min(8, Math.floor(+document.getElementById('sl-gr').value / 6)));
-
-    // Mode-aware cumulative deltas
-    function computeLayerDeltas(li) {
-        var edxCum = new Float64Array(nP), edyCum = new Float64Array(nP), edzCum = new Float64Array(nP);
-        if (isEmb) return { edx: edxCum, edy: edyCum, edz: edzCum };
-        if (mode === 'single') {
-            for (var j = 0; j < nP; j++) { edxCum[j] = edxAll[li][j]; edyCum[j] = edyAll[li][j]; edzCum[j] = edzAll[li][j]; }
-        } else if (mode === 'cumfwd') {
-            for (var cl = 0; cl <= li; cl++) for (var j = 0; j < nP; j++) { edxCum[j] += edxAll[cl][j]; edyCum[j] += edyAll[cl][j]; edzCum[j] += edzAll[cl][j]; }
-        } else {
-            for (var cl = li; cl < nLayers; cl++) for (var j = 0; j < nP; j++) { edxCum[j] += edxAll[cl][j]; edyCum[j] += edyAll[cl][j]; edzCum[j] += edzAll[cl][j]; }
-        }
-        return { edx: edxCum, edy: edyCum, edz: edzCum };
-    }
-
-    // *** TRUE 3D VOLUMETRIC GRID BUILDER — same approach as draw3D ***
-    function buildDeformed3DGrid(edxCum, edyCum, edzCum) {
-        var nV = (N3 + 1) * (N3 + 1) * (N3 + 1);
-        function gIdx(ix, iy, iz) { return iz * (N3 + 1) * (N3 + 1) + iy * (N3 + 1) + ix; }
-
-        var oX = new Float64Array(nV), oY = new Float64Array(nV), oZ = new Float64Array(nV);
-        var gX = new Float64Array(nV), gY = new Float64Array(nV), gZ = new Float64Array(nV);
-
-        for (var iz = 0; iz <= N3; iz++) for (var iy = 0; iy <= N3; iy++) for (var ix = 0; ix <= N3; ix++) {
-            var gi = gIdx(ix, iy, iz);
-            oX[gi] = vx0 + (ix / N3) * (vx1 - vx0);
-            oY[gi] = vy0 + (iy / N3) * (vy1 - vy0);
-            oZ[gi] = vz0 + (iz / N3) * (vz1 - vz0);
-        }
-
-        if (isEmb) {
-            for (var gi = 0; gi < nV; gi++) { gX[gi] = oX[gi]; gY[gi] = oY[gi]; gZ[gi] = oZ[gi]; }
-        } else {
-            // Full 3D RBF interpolation — same as draw3D
-            for (var gi = 0; gi < nV; gi++) {
-                var gpx = oX[gi], gpy = oY[gi], gpz = oZ[gi];
-                var vvx = 0, vvy = 0, vvz = 0, ws = 0;
-                for (var k = 0; k < nP; k++) {
-                    var eex = gpx - fx[k], eey = gpy - fy[k], eez = gpz - fz[k];
-                    var w = Math.exp(Math.max(-500, -(eex * eex + eey * eey + eez * eez) * s2i));
-                    vvx += w * edxCum[k]; vvy += w * edyCum[k]; vvz += w * edzCum[k]; ws += w;
-                }
-                if (ws > 1e-15) { vvx /= ws; vvy /= ws; vvz /= ws; }
-                gX[gi] = gpx + t * vvx;
-                gY[gi] = gpy + t * vvy;
-                gZ[gi] = gpz + t * vvz;
-            }
-        }
-
-        // Collect edges with strain — all 3 axis directions
-        var edges = [];
-        function addEdge(a, b) {
-            var od = Math.sqrt((oX[b]-oX[a])*(oX[b]-oX[a])+(oY[b]-oY[a])*(oY[b]-oY[a])+(oZ[b]-oZ[a])*(oZ[b]-oZ[a]));
-            var dd = Math.sqrt((gX[b]-gX[a])*(gX[b]-gX[a])+(gY[b]-gY[a])*(gY[b]-gY[a])+(gZ[b]-gZ[a])*(gZ[b]-gZ[a]));
-            var strain = od > 1e-12 ? dd / od : 1;
-            edges.push({ a: a, b: b, strain: strain });
-        }
-        // X-direction edges
-        for (var iz = 0; iz <= N3; iz++) for (var iy = 0; iy <= N3; iy++) for (var ix = 0; ix < N3; ix++)
-            addEdge(gIdx(ix, iy, iz), gIdx(ix + 1, iy, iz));
-        // Y-direction edges
-        for (var iz = 0; iz <= N3; iz++) for (var iy = 0; iy < N3; iy++) for (var ix = 0; ix <= N3; ix++)
-            addEdge(gIdx(ix, iy, iz), gIdx(ix, iy + 1, iz));
-        // Z-direction edges
-        for (var iz = 0; iz < N3; iz++) for (var iy = 0; iy <= N3; iy++) for (var ix = 0; ix <= N3; ix++)
-            addEdge(gIdx(ix, iy, iz), gIdx(ix, iy, iz + 1));
-
-        // Collect surface faces for heatmap (6 faces of the cube)
-        var faces = [];
-        function addFace(a, b, cc, d) {
-            var s1 = edges.length; // approximate strain from vertex positions
-            var avgS = 1.0;
-            // Compute average strain from the 4 edge strains of this face
-            var od1 = Math.sqrt((oX[b]-oX[a])*(oX[b]-oX[a])+(oY[b]-oY[a])*(oY[b]-oY[a])+(oZ[b]-oZ[a])*(oZ[b]-oZ[a]));
-            var dd1 = Math.sqrt((gX[b]-gX[a])*(gX[b]-gX[a])+(gY[b]-gY[a])*(gY[b]-gY[a])+(gZ[b]-gZ[a])*(gZ[b]-gZ[a]));
-            var od2 = Math.sqrt((oX[cc]-oX[b])*(oX[cc]-oX[b])+(oY[cc]-oY[b])*(oY[cc]-oY[b])+(oZ[cc]-oZ[b])*(oZ[cc]-oZ[b]));
-            var dd2 = Math.sqrt((gX[cc]-gX[b])*(gX[cc]-gX[b])+(gY[cc]-gY[b])*(gY[cc]-gY[b])+(gZ[cc]-gZ[b])*(gZ[cc]-gZ[b]));
-            avgS = ((od1 > 1e-12 ? dd1/od1 : 1) + (od2 > 1e-12 ? dd2/od2 : 1)) / 2;
-            faces.push({ verts: [a, b, cc, d], strain: avgS });
-        }
-        // X=0 and X=N3 faces
-        for (var iz = 0; iz < N3; iz++) for (var iy = 0; iy < N3; iy++) {
-            addFace(gIdx(0,iy,iz), gIdx(0,iy+1,iz), gIdx(0,iy+1,iz+1), gIdx(0,iy,iz+1));
-            addFace(gIdx(N3,iy,iz), gIdx(N3,iy+1,iz), gIdx(N3,iy+1,iz+1), gIdx(N3,iy,iz+1));
-        }
-        // Y=0 and Y=N3 faces
-        for (var iz = 0; iz < N3; iz++) for (var ix = 0; ix < N3; ix++) {
-            addFace(gIdx(ix,0,iz), gIdx(ix+1,0,iz), gIdx(ix+1,0,iz+1), gIdx(ix,0,iz+1));
-            addFace(gIdx(ix,N3,iz), gIdx(ix+1,N3,iz), gIdx(ix+1,N3,iz+1), gIdx(ix,N3,iz+1));
-        }
-        // Z=0 and Z=N3 faces
-        for (var iz2 = 0; iz2 < 1; iz2++) for (var iy = 0; iy < N3; iy++) for (var ix = 0; ix < N3; ix++) {
-            addFace(gIdx(ix,iy,0), gIdx(ix+1,iy,0), gIdx(ix+1,iy+1,0), gIdx(ix,iy+1,0));
-            addFace(gIdx(ix,iy,N3), gIdx(ix+1,iy,N3), gIdx(ix+1,iy+1,N3), gIdx(ix,iy+1,N3));
-        }
-
-        return { oX: oX, oY: oY, oZ: oZ, gX: gX, gY: gY, gZ: gZ, edges: edges, faces: faces, nV: nV, gIdx: gIdx };
-    }
-
-    // ---- 3D projection using fibreState rotation ----
-    var focalLen = 600;
-
-    // Room layout
+/**
+ * Compute the fibre-3D room layout: room sizes, gaps, scale factor.
+ */
+function computeFibre3DRoomLayout(nTokens, nLayers, mr) {
     var gapFracX = 0.35;
     var gapFracY = 0.45;
     var maxRoomSize = 120;
     var roomSize = Math.min(maxRoomSize, Math.max(30, Math.floor(300 / Math.max(nTokens, nLayers))));
     var gapX = Math.max(8, Math.floor(roomSize * gapFracX));
     var gapY = Math.max(12, Math.floor(roomSize * gapFracY));
-
-    // Scale factor: map world-space range to room pixel size
     var sc3 = roomSize * 0.4 / mr;
 
-    function rot3Df(x, y, z) {
+    return {
+        roomSize: roomSize,
+        gapX: gapX,
+        gapY: gapY,
+        sc3: sc3,
+    };
+}
+
+/**
+ * Create a 3D projection function using fibreState rotation, focal length,
+ * canvas dimensions, zoom, and pan.
+ */
+function makeFibre3DProjector(W, H) {
+    var focalLen = 600;
+    return function proj3Df(x, y, z) {
         var cosY = Math.cos(fibreState.rotY), sinY = Math.sin(fibreState.rotY);
         var x1 = x * cosY + z * sinY, z1 = -x * sinY + z * cosY;
         var cosX = Math.cos(fibreState.rotX), sinX = Math.sin(fibreState.rotX);
         var y1 = y * cosX - z1 * sinX, z2 = y * sinX + z1 * cosX;
-        return [x1, y1, z2];
-    }
+        // Apply zoom inside the rotation
+        x1 *= zoomLevel; y1 *= zoomLevel; z2 *= zoomLevel;
+        var scale = focalLen / (focalLen + z2);
+        return [W / 2 + panX + x1 * scale, H / 2 + panY + y1 * scale, z2, scale];
+    };
+}
 
-    function proj3Df(x, y, z) {
-        var r = rot3Df(x * zoomLevel, y * zoomLevel, z * zoomLevel);
-        var scale = focalLen / (focalLen + r[2]);
-        return [W / 2 + panX + r[0] * scale, H / 2 + panY + r[1] * scale, r[2], scale];
-    }
+/**
+ * Compute mode-aware cumulative 3D deltas for a single layer,
+ * using pre-computed per-layer raw deltas.
+ */
+function computeCumulativeDeltas3DFromRaw(edxAll, edyAll, edzAll, li, nP, nLayers, mode, isEmb) {
+    var edxCum = new Float64Array(nP);
+    var edyCum = new Float64Array(nP);
+    var edzCum = new Float64Array(nP);
+    if (isEmb) return { edx: edxCum, edy: edyCum, edz: edzCum };
 
-    // Collect all drawable elements for depth sorting
-    var allEdges = [];
-    var allQuads = [];
-    var allPoints = [];
-
-    var tc = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71',
-              '#e74c3c','#3498db','#9b59b6','#1abc9c','#e67e22'];
-
-    for (var li = 0; li < nLayers; li++) {
-        var rowIdx = nLayers - 1 - li;
-        var isCurrentLayer = (li === currentLayer);
-
-        var layerDeltas = computeLayerDeltas(li);
-        var edxCum = layerDeltas.edx, edyCum = layerDeltas.edy, edzCum = layerDeltas.edz;
-
-        var grid = buildDeformed3DGrid(edxCum, edyCum, edzCum);
-
-        for (var ti = 0; ti < nTokens; ti++) {
-            var roomCenterX = (ti - (nTokens - 1) / 2) * (roomSize + gapX);
-            var roomCenterY = (rowIdx - (nLayers - 1) / 2) * (roomSize + gapY);
-
-            // Project a grid vertex into room-local 3D space, then into screen space
-            function vertToScreen(gi) {
-                var sx = roomCenterX + (grid.gX[gi] - cx3) * sc3;
-                var sy = roomCenterY + (grid.gY[gi] - cy3) * sc3;
-                var sz = (grid.gZ[gi] - cz3) * sc3;
-                return proj3Df(sx, sy, sz);
-            }
-
-            function origVertToScreen(gi) {
-                var sx = roomCenterX + (grid.oX[gi] - cx3) * sc3;
-                var sy = roomCenterY + (grid.oY[gi] - cy3) * sc3;
-                var sz = (grid.oZ[gi] - cz3) * sc3;
-                return proj3Df(sx, sy, sz);
-            }
-
-            // ---- 3D Grid edges ----
-            if (showGrid && !isEmb) {
-                for (var ei = 0; ei < grid.edges.length; ei++) {
-                    var e = grid.edges[ei];
-                    var pa = vertToScreen(e.a);
-                    var pb = vertToScreen(e.b);
-                    allEdges.push({
-                        x1: pa[0], y1: pa[1], x2: pb[0], y2: pb[1],
-                        z: (pa[2] + pb[2]) / 2, strain: e.strain,
-                        isCurrentLayer: isCurrentLayer, type: 'grid'
-                    });
-                }
-            }
-
-            // ---- Strain heatmap faces ----
-            if (showHeat && !isEmb) {
-                for (var fi = 0; fi < grid.faces.length; fi++) {
-                    var f = grid.faces[fi];
-                    var co = s2c(f.strain);
-                    var pts3d = [];
-                    var avgZ3d = 0;
-                    for (var ci = 0; ci < 4; ci++) {
-                        var p = vertToScreen(f.verts[ci]);
-                        pts3d.push(p);
-                        avgZ3d += p[2];
-                    }
-                    avgZ3d /= 4;
-                    allQuads.push({
-                        pts: pts3d, z: avgZ3d,
-                        color: co,
-                        alpha: isCurrentLayer ? 0.25 : 0.1,
-                        isCurrentLayer: isCurrentLayer
-                    });
-                }
-            }
-
-            // ---- Room border (wireframe box) ----
-            var borderAlpha = isCurrentLayer ? 0.6 : 0.2;
-            var halfR = roomSize * 0.5;
-            var bCorners3D = [
-                [-halfR, -halfR, -halfR], [halfR, -halfR, -halfR],
-                [halfR, halfR, -halfR], [-halfR, halfR, -halfR],
-                [-halfR, -halfR, halfR], [halfR, -halfR, halfR],
-                [halfR, halfR, halfR], [-halfR, halfR, halfR]
-            ];
-            var bEdges = [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
-            for (var bi = 0; bi < bEdges.length; bi++) {
-                var be = bEdges[bi];
-                var c0 = bCorners3D[be[0]], c1 = bCorners3D[be[1]];
-                var pa = proj3Df(roomCenterX + c0[0] * 0.5, roomCenterY + c0[1] * 0.5, c0[2] * 0.5);
-                var pb = proj3Df(roomCenterX + c1[0] * 0.5, roomCenterY + c1[1] * 0.5, c1[2] * 0.5);
-                allEdges.push({
-                    x1: pa[0], y1: pa[1], x2: pb[0], y2: pb[1],
-                    z: (pa[2] + pb[2]) / 2, strain: 1.0,
-                    isCurrentLayer: isCurrentLayer, type: 'border',
-                    borderAlpha: borderAlpha
-                });
-            }
-
-            // ---- Token dot ----
-            var tokWX = fx[ti] + (isEmb ? 0 : t * edxCum[ti]);
-            var tokWY = fy[ti] + (isEmb ? 0 : t * edyCum[ti]);
-            var tokWZ = fz[ti] + (isEmb ? 0 : t * edzCum[ti]);
-
-            var tokSX = roomCenterX + (tokWX - cx3) * sc3;
-            var tokSY = roomCenterY + (tokWY - cy3) * sc3;
-            var tokSZ = (tokWZ - cz3) * sc3;
-
-            var tp = proj3Df(tokSX, tokSY, tokSZ);
-
-            allPoints.push({
-                x: tp[0], y: tp[1], z: tp[2], scale: tp[3],
-                tokenIdx: ti, layerIdx: li,
-                isCurrentLayer: isCurrentLayer,
-                color: tc[ti % tc.length]
-            });
-
-            // ---- Token label at bottom layer ----
-            if (li === 0) {
-                var labelP = proj3Df(roomCenterX, roomCenterY + roomSize * 0.6, 0);
-                allPoints.push({
-                    x: labelP[0], y: labelP[1], z: labelP[2], scale: labelP[3],
-                    tokenIdx: ti, layerIdx: -1,
-                    isCurrentLayer: false, isTokenLabel: true,
-                    color: tc[ti % tc.length],
-                    labelText: '[' + ti + '] ' + D.tokens[ti]
-                });
+    if (mode === 'single') {
+        for (var j = 0; j < nP; j++) {
+            edxCum[j] = edxAll[li][j];
+            edyCum[j] = edyAll[li][j];
+            edzCum[j] = edzAll[li][j];
+        }
+    } else if (mode === 'cumfwd') {
+        for (var cl = 0; cl <= li; cl++) {
+            for (var j = 0; j < nP; j++) {
+                edxCum[j] += edxAll[cl][j];
+                edyCum[j] += edyAll[cl][j];
+                edzCum[j] += edzAll[cl][j];
             }
         }
+    } else { // cumbwd
+        for (var cl = li; cl < nLayers; cl++) {
+            for (var j = 0; j < nP; j++) {
+                edxCum[j] += edxAll[cl][j];
+                edyCum[j] += edyAll[cl][j];
+                edzCum[j] += edzAll[cl][j];
+            }
+        }
+    }
+    return { edx: edxCum, edy: edyCum, edz: edzCum };
+}
 
-        // ---- Layer label ----
-        var layerLabelX = -(nTokens / 2) * (roomSize + gapX) - 30;
-        var layerLabelY = (rowIdx - (nLayers - 1) / 2) * (roomSize + gapY);
-        var llp = proj3Df(layerLabelX, layerLabelY, 0);
-        allPoints.push({
-            x: llp[0], y: llp[1], z: llp[2], scale: llp[3],
-            tokenIdx: -1, layerIdx: li,
-            isCurrentLayer: isCurrentLayer, isLabel: true,
-            labelText: 'L' + li
+/**
+ * Build a 3D deformed grid with edges and surface faces for one room.
+ * Reuses interpolateGridPoint3D for the deformation.
+ */
+function buildFibre3DRoomGrid(vx0, vy0, vz0, vx1, vy1, vz1, N,
+    fx, fy, fz, edxCum, edyCum, edzCum, nP, sig, t, isEmb) {
+
+    function gIdx(ix, iy, iz) { return iz * (N + 1) * (N + 1) + iy * (N + 1) + ix; }
+    var nV = (N + 1) * (N + 1) * (N + 1);
+    var oX = new Float64Array(nV), oY = new Float64Array(nV), oZ = new Float64Array(nV);
+    var gX = new Float64Array(nV), gY = new Float64Array(nV), gZ = new Float64Array(nV);
+
+    for (var iz = 0; iz <= N; iz++)
+        for (var iy = 0; iy <= N; iy++)
+            for (var ix = 0; ix <= N; ix++) {
+                var gi = gIdx(ix, iy, iz);
+                oX[gi] = vx0 + (ix / N) * (vx1 - vx0);
+                oY[gi] = vy0 + (iy / N) * (vy1 - vy0);
+                oZ[gi] = vz0 + (iz / N) * (vz1 - vz0);
+            }
+
+    var s2i = 1 / (2 * sig * sig);
+
+    if (isEmb) {
+        for (var gi = 0; gi < nV; gi++) { gX[gi] = oX[gi]; gY[gi] = oY[gi]; gZ[gi] = oZ[gi]; }
+    } else {
+        for (var gi = 0; gi < nV; gi++) {
+            var gpx = oX[gi], gpy = oY[gi], gpz = oZ[gi];
+            var vvx = 0, vvy = 0, vvz = 0, ws = 0;
+            for (var k = 0; k < nP; k++) {
+                var eex = gpx - fx[k], eey = gpy - fy[k], eez = gpz - fz[k];
+                var w = Math.exp(Math.max(-500, -(eex * eex + eey * eey + eez * eez) * s2i));
+                vvx += w * edxCum[k]; vvy += w * edyCum[k]; vvz += w * edzCum[k]; ws += w;
+            }
+            if (ws > 1e-15) { vvx /= ws; vvy /= ws; vvz /= ws; }
+            gX[gi] = gpx + t * vvx;
+            gY[gi] = gpy + t * vvy;
+            gZ[gi] = gpz + t * vvz;
+        }
+    }
+
+    // Collect edges with strain
+    var edges = [];
+    function addEdge(a, b) {
+        var od = Math.sqrt((oX[b]-oX[a])*(oX[b]-oX[a])+(oY[b]-oY[a])*(oY[b]-oY[a])+(oZ[b]-oZ[a])*(oZ[b]-oZ[a]));
+        var dd = Math.sqrt((gX[b]-gX[a])*(gX[b]-gX[a])+(gY[b]-gY[a])*(gY[b]-gY[a])+(gZ[b]-gZ[a])*(gZ[b]-gZ[a]));
+        var strain = od > 1e-12 ? dd / od : 1;
+        edges.push({ a: a, b: b, strain: strain });
+    }
+    for (var iz = 0; iz <= N; iz++) for (var iy = 0; iy <= N; iy++) for (var ix = 0; ix < N; ix++)
+        addEdge(gIdx(ix, iy, iz), gIdx(ix + 1, iy, iz));
+    for (var iz = 0; iz <= N; iz++) for (var iy = 0; iy < N; iy++) for (var ix = 0; ix <= N; ix++)
+        addEdge(gIdx(ix, iy, iz), gIdx(ix, iy + 1, iz));
+    for (var iz = 0; iz < N; iz++) for (var iy = 0; iy <= N; iy++) for (var ix = 0; ix <= N; ix++)
+        addEdge(gIdx(ix, iy, iz), gIdx(ix, iy, iz + 1));
+
+    // Collect surface faces for heatmap
+    var faces = [];
+    function addFace(a, b, cc, d) {
+        var od1 = Math.sqrt((oX[b]-oX[a])*(oX[b]-oX[a])+(oY[b]-oY[a])*(oY[b]-oY[a])+(oZ[b]-oZ[a])*(oZ[b]-oZ[a]));
+        var dd1 = Math.sqrt((gX[b]-gX[a])*(gX[b]-gX[a])+(gY[b]-gY[a])*(gY[b]-gY[a])+(gZ[b]-gZ[a])*(gZ[b]-gZ[a]));
+        var od2 = Math.sqrt((oX[cc]-oX[b])*(oX[cc]-oX[b])+(oY[cc]-oY[b])*(oY[cc]-oY[b])+(oZ[cc]-oZ[b])*(oZ[cc]-oZ[b]));
+        var dd2 = Math.sqrt((gX[cc]-gX[b])*(gX[cc]-gX[b])+(gY[cc]-gY[b])*(gY[cc]-gY[b])+(gZ[cc]-gZ[b])*(gZ[cc]-gZ[b]));
+        var avgS = ((od1 > 1e-12 ? dd1/od1 : 1) + (od2 > 1e-12 ? dd2/od2 : 1)) / 2;
+        faces.push({ verts: [a, b, cc, d], strain: avgS });
+    }
+    for (var iz = 0; iz < N; iz++) for (var iy = 0; iy < N; iy++) {
+        addFace(gIdx(0,iy,iz), gIdx(0,iy+1,iz), gIdx(0,iy+1,iz+1), gIdx(0,iy,iz+1));
+        addFace(gIdx(N,iy,iz), gIdx(N,iy+1,iz), gIdx(N,iy+1,iz+1), gIdx(N,iy,iz+1));
+    }
+    for (var iz = 0; iz < N; iz++) for (var ix = 0; ix < N; ix++) {
+        addFace(gIdx(ix,0,iz), gIdx(ix+1,0,iz), gIdx(ix+1,0,iz+1), gIdx(ix,0,iz+1));
+        addFace(gIdx(ix,N,iz), gIdx(ix+1,N,iz), gIdx(ix+1,N,iz+1), gIdx(ix,N,iz+1));
+    }
+    for (var iy = 0; iy < N; iy++) for (var ix = 0; ix < N; ix++) {
+        addFace(gIdx(ix,iy,0), gIdx(ix+1,iy,0), gIdx(ix+1,iy+1,0), gIdx(ix,iy+1,0));
+        addFace(gIdx(ix,iy,N), gIdx(ix+1,iy,N), gIdx(ix+1,iy+1,N), gIdx(ix,iy+1,N));
+    }
+
+    return { oX: oX, oY: oY, oZ: oZ, gX: gX, gY: gY, gZ: gZ,
+             edges: edges, faces: faces, nV: nV, gIdx: gIdx };
+}
+
+/**
+ * Project a grid vertex from world-space into a room-local 3D position,
+ * then into screen space.
+ */
+function projectRoomVertex(grid, gi, roomCenterX, roomCenterY, cx3, cy3, cz3, sc3, proj3Df, deformed) {
+    var x = deformed ? grid.gX[gi] : grid.oX[gi];
+    var y = deformed ? grid.gY[gi] : grid.oY[gi];
+    var z = deformed ? grid.gZ[gi] : grid.oZ[gi];
+    var sx = roomCenterX + (x - cx3) * sc3;
+    var sy = roomCenterY + (y - cy3) * sc3;
+    var sz = (z - cz3) * sc3;
+    return proj3Df(sx, sy, sz);
+}
+
+/**
+ * Collect all projected grid edges for one room into the allEdges array.
+ */
+function collectRoomGridEdges(allEdges, grid, roomCenterX, roomCenterY,
+    cx3, cy3, cz3, sc3, proj3Df, isCurrentLayer, showGrid, isEmb) {
+
+    if (!showGrid || isEmb) return;
+
+    for (var ei = 0; ei < grid.edges.length; ei++) {
+        var e = grid.edges[ei];
+        var pa = projectRoomVertex(grid, e.a, roomCenterX, roomCenterY, cx3, cy3, cz3, sc3, proj3Df, true);
+        var pb = projectRoomVertex(grid, e.b, roomCenterX, roomCenterY, cx3, cy3, cz3, sc3, proj3Df, true);
+        allEdges.push({
+            x1: pa[0], y1: pa[1], x2: pb[0], y2: pb[1],
+            z: (pa[2] + pb[2]) / 2, strain: e.strain,
+            isCurrentLayer: isCurrentLayer, type: 'grid'
         });
-
-        // ---- Inter-layer connections ----
-        if (li > 0 && fibreState.showConnections) {
-            var prevRowIdx = nLayers - li;
-            for (var ti = 0; ti < nTokens; ti++) {
-                var prevRoomCY = (prevRowIdx - (nLayers - 1) / 2) * (roomSize + gapY);
-                var currRoomCY = (rowIdx - (nLayers - 1) / 2) * (roomSize + gapY);
-                var roomCX = (ti - (nTokens - 1) / 2) * (roomSize + gapX);
-
-                var py3 = prevRoomCY + roomSize * 0.5;
-                var cy3b = currRoomCY - roomSize * 0.5;
-
-                var pp = proj3Df(roomCX, py3, 0);
-                var cp = proj3Df(roomCX, cy3b, 0);
-
-                allEdges.push({
-                    x1: pp[0], y1: pp[1], x2: cp[0], y2: cp[1],
-                    z: (pp[2] + cp[2]) / 2, strain: 1.0,
-                    isCurrentLayer: isCurrentLayer, type: 'pathline',
-                    color: tc[ti % tc.length]
-                });
-            }
-        }
     }
+}
 
-    // ---- Depth sort everything ----
+/**
+ * Collect all projected heatmap face quads for one room into the allQuads array.
+ */
+function collectRoomHeatmapFaces(allQuads, grid, roomCenterX, roomCenterY,
+    cx3, cy3, cz3, sc3, proj3Df, isCurrentLayer, showHeat, isEmb) {
+
+    if (!showHeat || isEmb) return;
+
+    for (var fi = 0; fi < grid.faces.length; fi++) {
+        var f = grid.faces[fi];
+        var co = s2c(f.strain);
+        var pts3d = [];
+        var avgZ3d = 0;
+        for (var ci = 0; ci < 4; ci++) {
+            var p = projectRoomVertex(grid, f.verts[ci], roomCenterX, roomCenterY, cx3, cy3, cz3, sc3, proj3Df, true);
+            pts3d.push(p);
+            avgZ3d += p[2];
+        }
+        avgZ3d /= 4;
+        allQuads.push({
+            pts: pts3d, z: avgZ3d,
+            color: co,
+            alpha: isCurrentLayer ? 0.25 : 0.1,
+            isCurrentLayer: isCurrentLayer
+        });
+    }
+}
+
+/**
+ * Collect the 12 wireframe border edges of a room bounding box.
+ */
+function collectRoomBorderEdges(allEdges, roomCenterX, roomCenterY, roomSize, proj3Df, isCurrentLayer) {
+    var borderAlpha = isCurrentLayer ? 0.6 : 0.2;
+    var halfR = roomSize * 0.5;
+    var bCorners3D = [
+        [-halfR, -halfR, -halfR], [halfR, -halfR, -halfR],
+        [halfR, halfR, -halfR], [-halfR, halfR, -halfR],
+        [-halfR, -halfR, halfR], [halfR, -halfR, halfR],
+        [halfR, halfR, halfR], [-halfR, halfR, halfR]
+    ];
+    var bEdgeIndices = [[0,1],[1,2],[2,3],[3,0],[4,5],[5,6],[6,7],[7,4],[0,4],[1,5],[2,6],[3,7]];
+    for (var bi = 0; bi < bEdgeIndices.length; bi++) {
+        var be = bEdgeIndices[bi];
+        var c0 = bCorners3D[be[0]], c1 = bCorners3D[be[1]];
+        var pa = proj3Df(roomCenterX + c0[0] * 0.5, roomCenterY + c0[1] * 0.5, c0[2] * 0.5);
+        var pb = proj3Df(roomCenterX + c1[0] * 0.5, roomCenterY + c1[1] * 0.5, c1[2] * 0.5);
+        allEdges.push({
+            x1: pa[0], y1: pa[1], x2: pb[0], y2: pb[1],
+            z: (pa[2] + pb[2]) / 2, strain: 1.0,
+            isCurrentLayer: isCurrentLayer, type: 'border',
+            borderAlpha: borderAlpha
+        });
+    }
+}
+
+/**
+ * Collect a token dot point for one room.
+ */
+function collectRoomTokenPoint(allPoints, fx, fy, fz, ti, edxCum, edyCum, edzCum,
+    t, isEmb, roomCenterX, roomCenterY, cx3, cy3, cz3, sc3, proj3Df,
+    li, isCurrentLayer, color) {
+
+    var tokWX = fx[ti] + (isEmb ? 0 : t * edxCum[ti]);
+    var tokWY = fy[ti] + (isEmb ? 0 : t * edyCum[ti]);
+    var tokWZ = fz[ti] + (isEmb ? 0 : t * edzCum[ti]);
+
+    var tokSX = roomCenterX + (tokWX - cx3) * sc3;
+    var tokSY = roomCenterY + (tokWY - cy3) * sc3;
+    var tokSZ = (tokWZ - cz3) * sc3;
+
+    var tp = proj3Df(tokSX, tokSY, tokSZ);
+
+    allPoints.push({
+        x: tp[0], y: tp[1], z: tp[2], scale: tp[3],
+        tokenIdx: ti, layerIdx: li,
+        isCurrentLayer: isCurrentLayer,
+        color: color
+    });
+}
+
+/**
+ * Collect a token label point (shown at the bottom layer).
+ */
+function collectRoomTokenLabel(allPoints, ti, roomCenterX, roomCenterY, roomSize, proj3Df, color, labelText) {
+    var labelP = proj3Df(roomCenterX, roomCenterY + roomSize * 0.6, 0);
+    allPoints.push({
+        x: labelP[0], y: labelP[1], z: labelP[2], scale: labelP[3],
+        tokenIdx: ti, layerIdx: -1,
+        isCurrentLayer: false, isTokenLabel: true,
+        color: color,
+        labelText: labelText
+    });
+}
+
+/**
+ * Collect a layer label point.
+ */
+function collectLayerLabel(allPoints, li, labelX, labelY, proj3Df, isCurrentLayer) {
+    var llp = proj3Df(labelX, labelY, 0);
+    allPoints.push({
+        x: llp[0], y: llp[1], z: llp[2], scale: llp[3],
+        tokenIdx: -1, layerIdx: li,
+        isCurrentLayer: isCurrentLayer, isLabel: true,
+        labelText: 'L' + li
+    });
+}
+
+/**
+ * Collect inter-layer pathline edges connecting rooms vertically.
+ */
+function collectInterLayerPathlines(allEdges, ti, prevRowIdx, rowIdx, nLayers,
+    roomSize, gapY, gapX, nTokens, proj3Df, isCurrentLayer, color) {
+
+    var prevRoomCY = (prevRowIdx - (nLayers - 1) / 2) * (roomSize + gapY);
+    var currRoomCY = (rowIdx - (nLayers - 1) / 2) * (roomSize + gapY);
+    var roomCX = (ti - (nTokens - 1) / 2) * (roomSize + gapX);
+
+    var py3 = prevRoomCY + roomSize * 0.5;
+    var cy3b = currRoomCY - roomSize * 0.5;
+
+    var pp = proj3Df(roomCX, py3, 0);
+    var cp = proj3Df(roomCX, cy3b, 0);
+
+    allEdges.push({
+        x1: pp[0], y1: pp[1], x2: cp[0], y2: cp[1],
+        z: (pp[2] + cp[2]) / 2, strain: 1.0,
+        isCurrentLayer: isCurrentLayer, type: 'pathline',
+        color: color
+    });
+}
+
+/**
+ * Render all depth-sorted quads (heatmap faces).
+ */
+function renderFibre3DQuads(c, allQuads) {
     allQuads.sort(function(a, b) { return b.z - a.z; });
-    allEdges.sort(function(a, b) { return b.z - a.z; });
-    allPoints.sort(function(a, b) { return b.z - a.z; });
-
-    // ---- Draw quads (heatmap) ----
     for (var qi = 0; qi < allQuads.length; qi++) {
         var q = allQuads[qi];
         c.beginPath();
@@ -5001,8 +4992,13 @@ function drawFibreBundle3DGrid() {
         c.fillStyle = 'rgba(' + q.color[0] + ',' + q.color[1] + ',' + q.color[2] + ',' + q.alpha.toFixed(2) + ')';
         c.fill();
     }
+}
 
-    // ---- Draw edges ----
+/**
+ * Render all depth-sorted edges (grid lines, borders, pathlines).
+ */
+function renderFibre3DEdges(c, allEdges, showSC) {
+    allEdges.sort(function(a, b) { return b.z - a.z; });
     for (var ei = 0; ei < allEdges.length; ei++) {
         var e = allEdges[ei];
         var depthAlpha = Math.max(0.15, Math.min(0.95, 0.7 - e.z * 0.0002));
@@ -5036,8 +5032,14 @@ function drawFibreBundle3DGrid() {
         c.lineTo(e.x2, e.y2);
         c.stroke();
     }
+}
 
-    // ---- Draw points and labels ----
+/**
+ * Render all depth-sorted points (token dots, labels, layer labels).
+ */
+function renderFibre3DPoints(c, allPoints) {
+    allPoints.sort(function(a, b) { return b.z - a.z; });
+
     for (var pi = 0; pi < allPoints.length; pi++) {
         var pt = allPoints[pi];
         var depthAlpha = Math.max(0.4, Math.min(1.0, 0.9 - pt.z * 0.0002));
@@ -5085,8 +5087,12 @@ function drawFibreBundle3DGrid() {
         c.stroke();
         c.globalAlpha = 1.0;
     }
+}
 
-    // 3D axes
+/**
+ * Draw the 3D axes overlay for the fibre 3D view.
+ */
+function drawFibre3DAxes(c, roomSize, mr, proj3Df, dx, dy, dz) {
     var axLen = Math.max(roomSize, mr * 0.3) * zoomLevel;
     var axes = [
         { v: [1, 0, 0], label: 'Dim ' + dx, color: '#e94560' },
@@ -5110,20 +5116,157 @@ function drawFibreBundle3DGrid() {
         c.textAlign = 'left';
         c.fillText(ax.label, e3[0] + 4, e3[1] - 4);
     }
+}
 
-    // HUD
+/**
+ * Top-level: the refactored drawFibreBundle3DGrid.
+ * Orchestrates all passes using the helpers above.
+ */
+function drawFibreBundle3DGrid() {
+    var cv = document.getElementById('cv');
+    var c = cv.getContext('2d');
+    var W = cv.width, H = cv.height;
+    c.clearRect(0, 0, W, H);
+
+    if (!D) {
+        c.font = '14px monospace';
+        c.fillStyle = '#555';
+        c.fillText('Run a prompt first', W / 2 - 80, H / 2);
+        return;
+    }
+
+    // ---- Gather parameters ----
+    var params = getFibre3DParams();
+
+    // ---- Extract base positions in all 3 dims ----
+    var pos3 = extractPositions3D(D, params.nP, params.dx, params.dy, params.dz);
+    var fx = pos3.fx, fy = pos3.fy, fz = pos3.fz;
+
+    // ---- Compute view bounds ----
+    var bounds = computeViewBounds3D(fx, fy, fz, params.nP, 0.12);
+    var cx3 = bounds.cx, cy3 = bounds.cy, cz3 = bounds.cz;
+    var mr = bounds.mr;
+
+    // ---- Room layout ----
+    var roomLayout = computeFibre3DRoomLayout(params.nTokens, params.nLayers, mr);
+
+    // ---- 3D projector ----
+    var proj3Df = makeFibre3DProjector(W, H);
+
+    // ---- Precompute per-layer raw deltas (3D) ----
+    var edxAll = [], edyAll = [], edzAll = [];
+    for (var lay = 0; lay < params.nLayers; lay++) {
+        var edxL = new Float64Array(params.nP);
+        var edyL = new Float64Array(params.nP);
+        var edzL = new Float64Array(params.nP);
+        for (var j = 0; j < params.nP; j++) {
+            edxL[j] = params.activeDeltas[lay][j][params.dx] * params.amp;
+            edyL[j] = params.activeDeltas[lay][j][params.dy] * params.amp;
+            edzL[j] = params.activeDeltas[lay][j][params.dz] * params.amp;
+        }
+        edxAll.push(edxL); edyAll.push(edyL); edzAll.push(edzL);
+    }
+
+    // ---- 3D grid resolution ----
+    var N3 = Math.max(3, Math.min(8, Math.floor(params.gr / 6)));
+
+    // ---- Collect all drawable elements for depth sorting ----
+    var allEdges = [];
+    var allQuads = [];
+    var allPoints = [];
+
+    var tc = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71',
+              '#e74c3c','#3498db','#9b59b6','#1abc9c','#e67e22'];
+
+    for (var li = 0; li < params.nLayers; li++) {
+        var rowIdx = params.nLayers - 1 - li;
+        var isCurrentLayer = (li === params.currentLayer);
+
+        // Compute cumulative deltas for this layer
+        var layerDeltas = computeCumulativeDeltas3DFromRaw(
+            edxAll, edyAll, edzAll, li, params.nP, params.nLayers,
+            params.mode, params.isEmb
+        );
+
+        // Build the 3D deformed grid
+        var grid = buildFibre3DRoomGrid(
+            bounds.vx0, bounds.vy0, bounds.vz0,
+            bounds.vx1, bounds.vy1, bounds.vz1,
+            N3, fx, fy, fz,
+            layerDeltas.edx, layerDeltas.edy, layerDeltas.edz,
+            params.nP, params.sig, params.t, params.isEmb
+        );
+
+        for (var ti = 0; ti < params.nTokens; ti++) {
+            var roomCenterX = (ti - (params.nTokens - 1) / 2) * (roomLayout.roomSize + roomLayout.gapX);
+            var roomCenterY = (rowIdx - (params.nLayers - 1) / 2) * (roomLayout.roomSize + roomLayout.gapY);
+
+            // ---- 3D Grid edges ----
+            collectRoomGridEdges(allEdges, grid, roomCenterX, roomCenterY,
+                cx3, cy3, cz3, roomLayout.sc3, proj3Df,
+                isCurrentLayer, params.showGrid, params.isEmb);
+
+            // ---- Strain heatmap faces ----
+            collectRoomHeatmapFaces(allQuads, grid, roomCenterX, roomCenterY,
+                cx3, cy3, cz3, roomLayout.sc3, proj3Df,
+                isCurrentLayer, params.showHeat, params.isEmb);
+
+            // ---- Room border (wireframe box) ----
+            collectRoomBorderEdges(allEdges, roomCenterX, roomCenterY,
+                roomLayout.roomSize, proj3Df, isCurrentLayer);
+
+            // ---- Token dot ----
+            collectRoomTokenPoint(allPoints, fx, fy, fz, ti,
+                layerDeltas.edx, layerDeltas.edy, layerDeltas.edz,
+                params.t, params.isEmb,
+                roomCenterX, roomCenterY, cx3, cy3, cz3, roomLayout.sc3, proj3Df,
+                li, isCurrentLayer, tc[ti % tc.length]);
+
+            // ---- Token label at bottom layer ----
+            if (li === 0) {
+                collectRoomTokenLabel(allPoints, ti, roomCenterX, roomCenterY,
+                    roomLayout.roomSize, proj3Df, tc[ti % tc.length],
+                    '[' + ti + '] ' + D.tokens[ti]);
+            }
+        }
+
+        // ---- Layer label ----
+        var layerLabelX = -(params.nTokens / 2) * (roomLayout.roomSize + roomLayout.gapX) - 30;
+        var layerLabelY = (rowIdx - (params.nLayers - 1) / 2) * (roomLayout.roomSize + roomLayout.gapY);
+        collectLayerLabel(allPoints, li, layerLabelX, layerLabelY, proj3Df, isCurrentLayer);
+
+        // ---- Inter-layer connections ----
+        if (li > 0 && fibreState.showConnections) {
+            var prevRowIdx = params.nLayers - li;
+            for (var ti2 = 0; ti2 < params.nTokens; ti2++) {
+                collectInterLayerPathlines(allEdges, ti2, prevRowIdx, rowIdx,
+                    params.nLayers, roomLayout.roomSize, roomLayout.gapY, roomLayout.gapX,
+                    params.nTokens, proj3Df, isCurrentLayer, tc[ti2 % tc.length]);
+            }
+        }
+    }
+
+    // ---- Render all depth-sorted elements ----
+    renderFibre3DQuads(c, allQuads);
+    renderFibre3DEdges(c, allEdges, params.showSC);
+    renderFibre3DPoints(c, allPoints);
+
+    // ---- 3D axes ----
+    drawFibre3DAxes(c, roomLayout.roomSize, mr, proj3Df, params.dx, params.dy, params.dz);
+
+    // ---- HUD ----
     var decompLabel = getDecompLabel();
     c.font = '11px monospace';
     c.fillStyle = 'rgba(255,255,255,0.45)';
     c.textAlign = 'left';
-    if (isEmb) {
-        c.fillText('FIBRE BUNDLE 3D  EMBEDDING  Dims:' + dx + ',' + dy + ',' + dz +
-                   '  Layers:' + nLayers + '  Tokens:' + nTokens + '  Drag to rotate', 12, 16);
+    if (params.isEmb) {
+        c.fillText('FIBRE BUNDLE 3D  EMBEDDING  Dims:' + params.dx + ',' + params.dy + ',' + params.dz +
+                   '  Layers:' + params.nLayers + '  Tokens:' + params.nTokens + '  Drag to rotate', 12, 16);
     } else {
-        c.fillText('FIBRE BUNDLE 3D  Layer ' + currentLayer + '/' + (nLayers - 1) +
-                   '  t=' + t.toFixed(2) + '  amp=' + amp.toFixed(1) +
-                   '  Dims:' + dx + ',' + dy + ',' + dz +
-                   '  Mode:' + mode + '  Decomp:' + decompLabel +
+        c.fillText('FIBRE BUNDLE 3D  Layer ' + params.currentLayer + '/' + (params.nLayers - 1) +
+                   '  t=' + params.t.toFixed(2) + '  amp=' + params.amp.toFixed(1) +
+                   '  Dims:' + params.dx + ',' + params.dy + ',' + params.dz +
+                   '  Mode:' + params.mode + '  Decomp:' + decompLabel +
                    '  Drag to rotate', 12, 16);
     }
     c.font = '9px monospace';
