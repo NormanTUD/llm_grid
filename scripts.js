@@ -8324,6 +8324,202 @@ function computeMiniFibreLayout(W, H, nTokens, nLayers) {
     };
 }
 
+function drawFibreBundle3DGrid() {
+    var cv = document.getElementById('cv');
+    var c = cv.getContext('2d');
+    var W = cv.width, H = cv.height;
+    c.clearRect(0, 0, W, H);
+
+    if (!D) {
+        c.font = '14px monospace';
+        c.fillStyle = '#555';
+        c.fillText('Run a prompt first', W / 2 - 80, H / 2);
+        return;
+    }
+
+    // ---- Gather parameters ----
+    var fp = getFibre3DParams();
+
+    // ---- Extract 3D positions ----
+    var pos3 = extractPositions3D(D, fp.nP, fp.dx, fp.dy, fp.dz);
+    var fx = pos3.fx, fy = pos3.fy, fz = pos3.fz;
+
+    // ---- Compute view bounds ----
+    var bounds3 = computeViewBounds3D(fx, fy, fz, fp.nP, 0.15);
+    var cx3 = bounds3.cx, cy3 = bounds3.cy, cz3 = bounds3.cz;
+    var mr = bounds3.mr;
+
+    // ---- Room layout ----
+    var roomLayout = computeFibre3DRoomLayout(fp.nTokens, fp.nLayers, mr);
+    var roomSize = roomLayout.roomSize;
+    var gapX = roomLayout.gapX;
+    var gapY = roomLayout.gapY;
+    var sc3 = roomLayout.sc3;
+
+    // ---- 3D projector ----
+    var proj3Df = makeFibre3DProjector(W, H);
+
+    // ---- Per-layer raw deltas (3D) ----
+    var edxAll = [], edyAll = [], edzAll = [];
+    for (var lay = 0; lay < fp.nLayers; lay++) {
+        var edxL = new Float64Array(fp.nP);
+        var edyL = new Float64Array(fp.nP);
+        var edzL = new Float64Array(fp.nP);
+        for (var j = 0; j < fp.nP; j++) {
+            edxL[j] = fp.activeDeltas[lay][j][fp.dx] * fp.amp;
+            edyL[j] = fp.activeDeltas[lay][j][fp.dy] * fp.amp;
+            edzL[j] = fp.activeDeltas[lay][j][fp.dz] * fp.amp;
+        }
+        edxAll.push(edxL);
+        edyAll.push(edyL);
+        edzAll.push(edzL);
+    }
+
+    // ---- Grid resolution ----
+    var N = Math.max(3, Math.min(8, Math.floor(roomSize / 15)));
+
+    // ---- Token colors ----
+    var tc = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71',
+              '#e74c3c','#3498db','#9b59b6','#1abc9c','#e67e22'];
+
+    // ---- Collect all renderable primitives for depth sorting ----
+    var allEdges = [];
+    var allQuads = [];
+    var allPoints = [];
+
+    for (var li = 0; li < fp.nLayers; li++) {
+        var rowIdx = fp.nLayers - 1 - li;
+        var isCurrentLayer = (li === fp.currentLayer);
+
+        // Compute cumulative deltas for this layer
+        var layerDeltas = computeCumulativeDeltas3DFromRaw(
+            edxAll, edyAll, edzAll, li, fp.nP, fp.nLayers, fp.mode, fp.isEmb
+        );
+
+        // Layer label position
+        var labelX = (-(fp.nTokens - 1) / 2 - 1.5) * (roomSize + gapX);
+        var labelY = (rowIdx - (fp.nLayers - 1) / 2) * (roomSize + gapY);
+        collectLayerLabel(allPoints, li, labelX, labelY, proj3Df, isCurrentLayer);
+
+        for (var ti = 0; ti < fp.nTokens; ti++) {
+            // Room center in 3D space
+            var roomCenterX = (ti - (fp.nTokens - 1) / 2) * (roomSize + gapX);
+            var roomCenterY = (rowIdx - (fp.nLayers - 1) / 2) * (roomSize + gapY);
+
+            // Build the 3D deformed grid for this room
+            var pd = 0.12;
+            var vx0 = cx3 - mr * (0.5 + pd), vx1 = cx3 + mr * (0.5 + pd);
+            var vy0 = cy3 - mr * (0.5 + pd), vy1 = cy3 + mr * (0.5 + pd);
+            var vz0 = cz3 - mr * (0.5 + pd), vz1 = cz3 + mr * (0.5 + pd);
+
+            var grid = buildFibre3DRoomGrid(
+                vx0, vy0, vz0, vx1, vy1, vz1, N,
+                fx, fy, fz,
+                layerDeltas.edx, layerDeltas.edy, layerDeltas.edz,
+                fp.nP, fp.sig, fp.t, fp.isEmb
+            );
+
+            // Collect grid edges
+            collectRoomGridEdges(
+                allEdges, grid, roomCenterX, roomCenterY,
+                cx3, cy3, cz3, sc3, proj3Df,
+                isCurrentLayer, fp.showGrid, fp.isEmb
+            );
+
+            // Collect heatmap faces
+            collectRoomHeatmapFaces(
+                allQuads, grid, roomCenterX, roomCenterY,
+                cx3, cy3, cz3, sc3, proj3Df,
+                isCurrentLayer, fp.showHeat, fp.isEmb
+            );
+
+            // Collect room border wireframe
+            collectRoomBorderEdges(
+                allEdges, roomCenterX, roomCenterY, roomSize,
+                proj3Df, isCurrentLayer
+            );
+
+            // Collect token dot
+            collectRoomTokenPoint(
+                allPoints, fx, fy, fz, ti,
+                layerDeltas.edx, layerDeltas.edy, layerDeltas.edz,
+                fp.t, fp.isEmb,
+                roomCenterX, roomCenterY,
+                cx3, cy3, cz3, sc3, proj3Df,
+                li, isCurrentLayer, tc[ti % tc.length]
+            );
+
+            // Token label at bottom layer
+            if (li === 0) {
+                collectRoomTokenLabel(
+                    allPoints, ti,
+                    roomCenterX, roomCenterY, roomSize,
+                    proj3Df, tc[ti % tc.length],
+                    '[' + ti + '] ' + D.tokens[ti]
+                );
+            }
+
+            // Inter-layer pathlines
+            if (li > 0) {
+                var prevRowIdx = fp.nLayers - li;
+                collectInterLayerPathlines(
+                    allEdges, ti, prevRowIdx, rowIdx, fp.nLayers,
+                    roomSize, gapY, gapX, fp.nTokens,
+                    proj3Df, isCurrentLayer, tc[ti % tc.length]
+                );
+            }
+        }
+    }
+
+    // ---- Render all primitives in depth order ----
+
+    // Pass 1: Heatmap faces (back to front)
+    renderFibre3DQuads(c, allQuads);
+
+    // Pass 2: Edges — grid lines, borders, pathlines (back to front)
+    renderFibre3DEdges(c, allEdges, fp.showSC);
+
+    // Pass 3: Points — token dots, labels, layer labels (back to front)
+    renderFibre3DPoints(c, allPoints);
+
+    // Pass 4: 3D axes overlay
+    drawFibre3DAxes(c, roomSize, mr, proj3Df, fp.dx, fp.dy, fp.dz);
+
+    // ---- HUD ----
+    var decompLabel = getDecompLabel();
+    c.font = '11px monospace';
+    c.fillStyle = 'rgba(255,255,255,0.45)';
+    c.textAlign = 'left';
+    if (fp.isEmb) {
+        c.fillText(
+            'FIBRE BUNDLE 3D [EMBEDDING]  Tokens:' + fp.nTokens +
+            '  Layers:' + fp.nLayers +
+            '  Dims:' + fp.dx + ',' + fp.dy + ',' + fp.dz +
+            '  Drag to rotate',
+            12, 16
+        );
+    } else {
+        c.fillText(
+            'FIBRE BUNDLE 3D  Layer:' + fp.currentLayer + '/' + (fp.nLayers - 1) +
+            '  t=' + fp.t.toFixed(2) +
+            '  amp=' + fp.amp.toFixed(1) +
+            '  Dims:' + fp.dx + ',' + fp.dy + ',' + fp.dz +
+            '  Mode:' + fp.mode +
+            '  Decomp:' + decompLabel +
+            '  Drag to rotate',
+            12, 16
+        );
+    }
+
+    c.font = '9px monospace';
+    c.fillStyle = 'rgba(255,255,255,0.3)';
+    c.fillText(
+        'Zoom: ' + zoomLevel.toFixed(2) + 'x  |  ' +
+        '\u2190\u2192 Dim X | \u2191\u2193 Dim Y | Shift+Arrow Dim Z | [/] Layer | A/Z Amp | ;/\' t | 0=Reset',
+        12, H - 8
+    );
+}
+
 /**
  * Helper: compute mode-aware cumulative deltas for a given layer
  * using a specific sentence's data (not the global D).
