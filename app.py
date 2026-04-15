@@ -2160,7 +2160,7 @@ def process_text(text, model_name=None, itp_method='rbf'):
     n_after_predicted = len(all_layer0)
     print(f"[Model] {n_real} real + {n_predicted} predicted = {n_after_predicted} source points for interpolation")
 
-    n_total = len(all_layer0)
+    len(all_layer0)
 
     # Compute neighbors among real tokens only
     real_embeddings = np.stack(all_layer0[:n_real], axis=0)
@@ -5346,7 +5346,7 @@ def extract_pure_jacobian_field(hidden_states, n_layers, pca_d=16):
     results = []
     for lay in range(n_layers):
         h_cloud = hidden_states[lay][0].cpu().float().numpy()
-        h_next = hidden_states[lay + 1][0].cpu().float().numpy()
+        hidden_states[lay + 1][0].cpu().float().numpy()
 
         # The Jacobian IS the morphing
         K, principal_dirs = _compute_principal_directions(h_cloud, h_cloud.shape[0], h_cloud.shape[1])
@@ -5398,7 +5398,7 @@ def extract_eigenvalue_flow(hidden_states, n_layers):
     flow = []
     for lay in range(n_layers):
         h = hidden_states[lay][0].cpu().float().numpy()
-        h_next = hidden_states[lay + 1][0].cpu().float().numpy()
+        hidden_states[lay + 1][0].cpu().float().numpy()
 
         # Compute the map's spectrum
         K, dirs = _compute_principal_directions(h, h.shape[0], h.shape[1])
@@ -5728,7 +5728,7 @@ def handle_jacobian_field_viz(body_bytes):
                 # Using SVD: J = U Σ V^T, then R = U V^T, S = V Σ V^T
                 U_j, sv, Vt_j = np.linalg.svd(J_2d)
                 R_mat = U_j @ Vt_j                    # rotation part
-                S_mat = Vt_j.T @ np.diag(sv) @ Vt_j   # stretch part
+                Vt_j.T @ np.diag(sv) @ Vt_j   # stretch part
 
                 # 3. Rotation angle
                 rotation_angle = float(np.arctan2(R_mat[1, 0], R_mat[0, 0]))
