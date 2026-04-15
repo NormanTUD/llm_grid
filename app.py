@@ -5369,7 +5369,7 @@ def extract_pure_jacobian_field(hidden_states, n_layers, pca_d=16):
         })
     return results
 
-def compute_holonomy_loop(procrustes_rotations, token_i, token_j, layer_start, layer_end):
+def compute_holonomy_loop(procrustes_rotations, token_i, token_j, layer_start, layer_end, d):
     """
     Transport a frame: token_i@layer_start -> token_i@layer_end ->
     token_j@layer_end -> token_j@layer_start -> token_i@layer_start
