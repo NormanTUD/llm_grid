@@ -10578,14 +10578,18 @@ function renderTDAEvents(){
 
     var html = '<div style="color:#2ecc71;font-weight:bold;font-size:10px;margin-bottom:4px">Topological Events</div>';
 
-    var dimColors = {0: '#e94560', 1: '#f5a623', 2: '#7b68ee'};
-    var dimLabels = {0: 'H₀', 1: 'H₁', 2: 'H₂'};
+    var dimColors = {'-1': '#2ecc71', '0': '#e94560', '1': '#f5a623', '2': '#7b68ee'};
+    var dimLabels = {'-1': 'Global', '0': 'H₀', '1': 'H₁', '2': 'H₂'};
     var typeIcons = {'birth': '🌱', 'death': '💀', 'persistence_peak': '⭐'};
+    var typeLabels = {'birth': 'birth', 'death': 'death', 'persistence_peak': 'entropy peak'};
 
     for(var i = 0; i < tdaData.topological_events.length; i++){
         var ev = tdaData.topological_events[i];
-        var color = dimColors[ev.dim] || '#888';
+        var dimKey = String(ev.dim);
+        var color = dimColors[dimKey] || '#888';
+        var label = dimLabels[dimKey] || ('H' + ev.dim);
         var icon = typeIcons[ev.type] || '●';
+        var typeName = typeLabels[ev.type] || ev.type.replace(/_/g, ' ');
 
         html += '<div style="margin:2px 0;padding:3px 6px;border-left:2px solid ' + color +
                 ';font-size:9px;cursor:pointer" ' +
@@ -10593,8 +10597,8 @@ function renderTDAEvents(){
                 ';renderTDALayer()" ' +
                 'onmouseover="this.style.background=\'#1a1a2e\'" ' +
                 'onmouseout="this.style.background=\'transparent\'">';
-        html += icon + ' <span style="color:' + color + '">' + dimLabels[ev.dim] + '</span> ';
-        html += '<span style="color:#a0a0c0">' + ev.type.replace(/_/g, ' ') + '</span> ';
+        html += icon + ' <span style="color:' + color + '">' + label + '</span> ';
+        html += '<span style="color:#a0a0c0">' + typeName + '</span> ';
         html += 'at <span style="color:#53a8b6">' + (ev.layer === 0 ? 'Emb' : 'L' + (ev.layer - 1)) + '</span>';
         if(ev.description){
             html += ' <span style="color:#666">— ' + ev.description + '</span>';
