@@ -5344,8 +5344,9 @@ def extract_eigenvalue_flow(hidden_states, n_layers):
             'eigenvalue_magnitudes': np.abs(eigs).tolist(),
             'eigenvalue_phases': np.angle(eigs).tolist(),
             'singular_values': sv.tolist(),
-            'log_det': float(np.sum(np.log(np.abs(eigs) + 1e-30))),
-            'spectral_gap': float(sv[0] / max(sv[-1], 1e-12)),
+            'divergence': float(np.real(np.trace(J))),          # <-- MUST be present
+            'log_det': float(np.sum(np.log(np.abs(eigs) + 1e-30))),  # <-- MUST be present
+            'spectral_gap': float(sv[0] / max(sv[-1], 1e-12)),  # <-- MUST be present
         })
     return flow
 

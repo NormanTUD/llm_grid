@@ -10996,10 +10996,14 @@ function renderEigenList(flow, currentLayer, eigColors){
     var html = '<div style="color:#fd79a8;font-weight:bold;font-size:9px;margin-bottom:3px">' +
                'Layer ' + currentLayer + ' Spectrum</div>';
 
+    var fDiv = (f.divergence !== undefined && f.divergence !== null) ? f.divergence : 0;
+    var fLogDet = (f.log_det !== undefined && f.log_det !== null) ? f.log_det : 0;
+    var fGap = (f.spectral_gap !== undefined && f.spectral_gap !== null) ? f.spectral_gap : 0;
+
     html += '<div style="display:flex;gap:8px;margin-bottom:4px;font-size:9px">';
-    html += '<span style="color:#e94560">div=' + f.divergence.toFixed(4) + '</span>';
-    html += '<span style="color:#f5a623">logdet=' + f.log_det.toFixed(4) + '</span>';
-    html += '<span style="color:#53a8b6">gap=' + f.spectral_gap.toFixed(2) + '</span>';
+    html += '<span style="color:#e94560">div=' + fDiv.toFixed(4) + '</span>';
+    html += '<span style="color:#f5a623">logdet=' + fLogDet.toFixed(4) + '</span>';
+    html += '<span style="color:#53a8b6">gap=' + fGap.toFixed(2) + '</span>';
     html += '</div>';
 
     html += '<table style="width:100%;border-collapse:collapse;font-size:8px">';
@@ -11571,11 +11575,13 @@ function renderSVWaterfall(){
     var panel = document.getElementById('morph-eigen-list');
     if(currentLayer < nLayers){
         var f = flow[currentLayer];
+        var fGap = (f.spectral_gap != null) ? f.spectral_gap : 0;
+        var fLogDet = (f.log_det != null) ? f.log_det : 0;
         var html = '<div style="color:#fd79a8;font-weight:bold;font-size:9px;margin-bottom:3px">' +
                    'Layer ' + currentLayer + ' — Singular Values</div>';
         html += '<div style="display:flex;gap:8px;margin-bottom:4px;font-size:9px">';
-        html += '<span style="color:#f5a623">gap=' + f.spectral_gap.toFixed(2) + '</span>';
-        html += '<span style="color:#e94560">logdet=' + f.log_det.toFixed(4) + '</span>';
+        html += '<span style="color:#f5a623">gap=' + fGap.toFixed(2) + '</span>';
+        html += '<span style="color:#e94560">logdet=' + fLogDet.toFixed(4) + '</span>';
         html += '</div>';
 
         html += '<div style="display:flex;flex-wrap:wrap;gap:3px;font-size:8px">';
@@ -11812,55 +11818,59 @@ var _drawWithMorphOverlay = function(){
 // ============================================================
 
 (function(){
-    var morphCv = document.getElementById('morph-canvas');
-    if(!morphCv) return;
+	var morphCv = document.getElementById('morph-canvas');
+	if(!morphCv) return;
 
-    morphCv.addEventListener('mousemove', function(e){
-        if(!morphingData) return;
-        var rect = morphCv.getBoundingClientRect();
-        var mx = (e.clientX - rect.left) * (morphCv.width / rect.width);
-        var my = (e.clientY - rect.top) * (morphCv.height / rect.height);
+	morphCv.addEventListener('mousemove', function(e){
+		if(!morphingData) return;
+		var rect = morphCv.getBoundingClientRect();
+		var mx = (e.clientX - rect.left) * (morphCv.width / rect.width);
+		var my = (e.clientY - rect.top) * (morphCv.height / rect.height);
 
-        // Show tooltip with eigenvalue info on hover
-        if(morphingTab === 'eigenflow' && morphingData.eigenvalue_flow){
-            var flow = morphingData.eigenvalue_flow;
-            var currentLayer = +document.getElementById('sl-layer').value;
-            if(currentLayer < flow.length){
-                var f = flow[currentLayer];
-                morphCv.title = 'Layer ' + currentLayer +
-                    ' | div=' + f.divergence.toFixed(4) +
-                    ' | gap=' + f.spectral_gap.toFixed(2) +
-                    ' | logdet=' + f.log_det.toFixed(4);
-            }
-        } else if(morphingTab === 'connection' && morphingData.connection_field){
-            morphCv.title = 'Connection 1-form heatmap — brighter = stronger frame rotation';
-        } else if(morphingTab === 'svwaterfall'){
-            morphCv.title = 'Singular value waterfall — x=SV index, y=layer, color=magnitude';
-        }
-    });
+		// Show tooltip with eigenvalue info on hover
+		if(morphingTab === 'eigenflow' && morphingData.eigenvalue_flow){
+			var flow = morphingData.eigenvalue_flow;
+			var currentLayer = +document.getElementById('sl-layer').value;
+			if(currentLayer < flow.length){
+				var f = flow[currentLayer];
+				var fDiv = (f.divergence != null) ? f.divergence : 0;
+				var fGap = (f.spectral_gap != null) ? f.spectral_gap : 0;
+				var fLogDet = (f.log_det != null) ? f.log_det : 0;
+				morphCv.title = 'Layer ' + currentLayer +
+					' | div=' + fDiv.toFixed(4) +
+					' | gap=' + fGap.toFixed(2) +
+					' | logdet=' + fLogDet.toFixed(4);
+			}
 
-    morphCv.addEventListener('click', function(e){
-        if(!morphingData) return;
-        var rect = morphCv.getBoundingClientRect();
-        var mx = (e.clientX - rect.left) * (morphCv.width / rect.width);
-        var my = (e.clientY - rect.top) * (morphCv.height / rect.height);
+		} else if(morphingTab === 'connection' && morphingData.connection_field){
+			morphCv.title = 'Connection 1-form heatmap — brighter = stronger frame rotation';
+		} else if(morphingTab === 'svwaterfall'){
+			morphCv.title = 'Singular value waterfall — x=SV index, y=layer, color=magnitude';
+		}
+	});
 
-        // Click on connection heatmap or SV waterfall to jump to that layer
-        if(morphingTab === 'connection' || morphingTab === 'svwaterfall'){
-            var margin = {left: 50, top: 25, bottom: 30};
-            var plotH = morphCv.height - margin.top - margin.bottom;
-            var nLayers = morphingData.connection_field ?
-                morphingData.connection_field.length :
-                (morphingData.eigenvalue_flow ? morphingData.eigenvalue_flow.length : 0);
+	morphCv.addEventListener('click', function(e){
+		if(!morphingData) return;
+		var rect = morphCv.getBoundingClientRect();
+		var mx = (e.clientX - rect.left) * (morphCv.width / rect.width);
+		var my = (e.clientY - rect.top) * (morphCv.height / rect.height);
 
-            if(nLayers > 0 && my >= margin.top && my <= margin.top + plotH){
-                var clickedLayer = Math.floor(((my - margin.top) / plotH) * nLayers);
-                clickedLayer = Math.max(0, Math.min(nLayers - 1, clickedLayer));
-                var sl = document.getElementById('sl-layer');
-                sl.value = clickedLayer;
-                sl.dispatchEvent(new Event('input'));
-                renderMorphTab();
-            }
-        }
-    });
+		// Click on connection heatmap or SV waterfall to jump to that layer
+		if(morphingTab === 'connection' || morphingTab === 'svwaterfall'){
+			var margin = {left: 50, top: 25, bottom: 30};
+			var plotH = morphCv.height - margin.top - margin.bottom;
+			var nLayers = morphingData.connection_field ?
+				morphingData.connection_field.length :
+				(morphingData.eigenvalue_flow ? morphingData.eigenvalue_flow.length : 0);
+
+			if(nLayers > 0 && my >= margin.top && my <= margin.top + plotH){
+				var clickedLayer = Math.floor(((my - margin.top) / plotH) * nLayers);
+				clickedLayer = Math.max(0, Math.min(nLayers - 1, clickedLayer));
+				var sl = document.getElementById('sl-layer');
+				sl.value = clickedLayer;
+				sl.dispatchEvent(new Event('input'));
+				renderMorphTab();
+			}
+		}
+	});
 })();
