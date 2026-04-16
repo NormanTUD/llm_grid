@@ -5234,7 +5234,7 @@ def detect_topological_events(persistence_diagrams, layer_summaries, max_dim):
         # Detect entropy peaks
         if li >= 2:
             prev_prev = layer_summaries[li - 2]
-            if (curr['entropy'] > prev['entropy'] and 
+            if (curr['entropy'] > prev['entropy'] and
                 curr['entropy'] > prev_prev['entropy'] and
                 curr['entropy'] > 0.1):
                 events.append({
