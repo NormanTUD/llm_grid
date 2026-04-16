@@ -492,6 +492,356 @@ function rsz() {
 
 rsz();
 
+function renderJacobianFieldRawDims(){
+    if(!D) {
+	    console.error("No D found in renderJacobianFieldRawDims")
+	    return;
+    }
+    var dimX = +document.getElementById('sl-dx').value;
+    var dimY = +document.getElementById('sl-dy').value;
+    var layer = +document.getElementById('sl-layer').value;
+    var amp   = +document.getElementById('sl-amp').value;
+    var sig   = +document.getElementById('sl-sig').value;
+    var t     = +document.getElementById('sl-t').value;
+    var mode  = document.getElementById('sel-mode').value;
+    var decomp= document.getElementById('sel-decomp').value;
+    var renderMode = document.getElementById('jf-render').value;
+    var itpMethod  = document.getElementById('sel-itp').value;
+    var gridRes    = +document.getElementById('jf-res').value;
+
+    console.log('renderJacobianFieldRawDims CALLED', 
+        'dimX=', +document.getElementById('sl-dx').value,
+        'dimY=', +document.getElementById('sl-dy').value,
+        'nR=', D.n_real,
+        'fixed_pos[0][dimX]=', D.fixed_pos[0][+document.getElementById('sl-dx').value],
+        'fixed_pos[0][dimY]=', D.fixed_pos[0][+document.getElementById('sl-dy').value],
+        'deltas[0][0][dimX]=', D.deltas[0][0][+document.getElementById('sl-dx').value],
+        'deltas[0][0][dimY]=', D.deltas[0][0][+document.getElementById('sl-dy').value]
+    );
+
+	console.log('RENDERED jf-canvas', 
+		'minVal=', minVal, 'maxVal=', maxVal,
+		'canvas=', canvas.width, canvas.height,
+		'gridData[0].val=', gridData[0].val,
+		'gridData[200].val=', gridData.length > 200 ? gridData[200].val : 'N/A'
+	);
+
+    
+    var nP = D.n_points;
+    var nR = D.n_real;
+    var nLayers = D.n_layers;
+
+    var activeDeltas = getActiveDeltas();
+    if(!activeDeltas) activeDeltas = D.deltas;
+
+    // ---- BASE POSITIONS: use raw hidden-dim values ----
+    var fx = new Float64Array(nR);
+    var fy = new Float64Array(nR);
+    for (var i = 0; i < nR; i++) {
+        fx[i] = D.fixed_pos[i][dimX];
+        fy[i] = D.fixed_pos[i][dimY];
+    }
+
+    // ---- DELTAS in the selected dimensions (real tokens only) ----
+    var edx = new Float64Array(nR);
+    var edy = new Float64Array(nR);
+    var isEmb = (mode === 'embedding');
+    if(!isEmb){
+        for(var j = 0; j < nR; j++){
+            var sx = 0, sy = 0;
+            if(mode === 'single'){
+                sx = activeDeltas[layer][j][dimX];
+                sy = activeDeltas[layer][j][dimY];
+            } else if(mode === 'cumfwd'){
+                for(var l = 0; l <= layer; l++){
+                    sx += activeDeltas[l][j][dimX];
+                    sy += activeDeltas[l][j][dimY];
+                }
+            } else {
+                for(var l = layer; l < nLayers; l++){
+                    sx += activeDeltas[l][j][dimX];
+                    sy += activeDeltas[l][j][dimY];
+                }
+            }
+            edx[j] = sx * amp;
+            edy[j] = sy * amp;
+        }
+    }
+
+    // ---- Compute view bounds from REAL tokens only ----
+    var mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
+    for (var i = 0; i < nR; i++) {
+        if (fx[i] < mnx) mnx = fx[i]; if (fx[i] > mxx) mxx = fx[i];
+        if (fy[i] < mny) mny = fy[i]; if (fy[i] > mxy) mxy = fy[i];
+    }
+    if (mnx === mxx) { mnx -= 0.5; mxx += 0.5; }
+    if (mny === mxy) { mny -= 0.5; mxy += 0.5; }
+
+    var mr = Math.max(mxx - mnx, mxy - mny) || 1;
+    var cxv = (mnx + mxx) / 2, cyv = (mny + mxy) / 2;
+    var pd = 0.15;
+    var vx0 = cxv - mr * (0.5 + pd), vy0 = cyv - mr * (0.5 + pd);
+    var vw = mr * (1 + 2 * pd);
+    var vh = vw;
+
+    // ---- Compute LOCAL sigma from the actual data range ----
+    // Use average nearest-neighbor distance for better bandwidth estimation
+    var dists = [];
+    for (var i = 0; i < nR; i++) {
+        var bestD = Infinity;
+        for (var j = 0; j < nR; j++) {
+            if (i === j) continue;
+            var dd = Math.hypot(fx[i] - fx[j], fy[i] - fy[j]);
+            if (dd < bestD) bestD = dd;
+        }
+        if (bestD < Infinity) dists.push(bestD);
+    }
+    var localSig;
+    if (dists.length > 0) {
+        dists.sort(function(a, b) { return a - b; });
+        var medianDist = dists[Math.floor(dists.length / 2)];
+        localSig = medianDist * 2.0;  // 2x median NN distance
+        if (localSig < 1e-8) localSig = mr * 0.3;
+    } else {
+        localSig = mr * 0.3;
+    }
+    sig = localSig;
+
+    // ---- Build the grid ----
+    var N = gridRes;
+    var canvas = document.getElementById('jf-canvas');
+    if(!canvas) return;
+    var ctx = canvas.getContext('2d');
+    var cW = canvas.width, cH = canvas.height;
+
+    var gridData = [];
+    var minVal = Infinity, maxVal = -Infinity;
+
+    var eps = vw / N * 0.5;
+
+    for(var gy = 0; gy < N; gy++){
+        for(var gx = 0; gx < N; gx++){
+            var qx = vx0 + (gx + 0.5) / N * vw;
+            var qy = vy0 + (gy + 0.5) / N * vh;
+
+            var field  = interpolateGridPoint(qx, qy, fx, fy, edx, edy, nR, sig, itpMethod);
+            var fieldR = interpolateGridPoint(qx + eps, qy, fx, fy, edx, edy, nR, sig, itpMethod);
+            var fieldU = interpolateGridPoint(qx, qy + eps, fx, fy, edx, edy, nR, sig, itpMethod);
+
+            var flow_x = field[0] * t;
+            var flow_y = field[1] * t;
+
+            var J00 = (fieldR[0] - field[0]) / eps * t;
+            var J01 = (fieldU[0] - field[0]) / eps * t;
+            var J10 = (fieldR[1] - field[1]) / eps * t;
+            var J11 = (fieldU[1] - field[1]) / eps * t;
+
+            var divergence = J00 + J11;
+            var curl = J10 - J01;
+            var shear = Math.sqrt((J00 - J11) * (J00 - J11) + (J01 + J10) * (J01 + J10));
+            var det = (1 + J00) * (1 + J11) - J01 * J10;
+            var rotation = Math.atan2(J10 - J01, 2 + J00 + J11);
+            var sv1 = Math.sqrt(Math.max(0, ((J00+1)*(J00+1) + J10*J10 + J01*J01 + (J11+1)*(J11+1)) / 2));
+            var condition = sv1 > 1e-12 ? sv1 / Math.max(1e-12, Math.abs(det) / sv1) : 1;
+
+            var val = 0;
+            if(renderMode === 'divergence') val = divergence;
+            else if(renderMode === 'curl') val = curl;
+            else if(renderMode === 'shear') val = shear;
+            else if(renderMode === 'det') val = det;
+            else if(renderMode === 'rotation') val = rotation;
+            else if(renderMode === 'condition') val = Math.log(Math.max(1, condition));
+            else if(renderMode === 'flow') val = Math.sqrt(flow_x * flow_x + flow_y * flow_y);
+            else if(renderMode === 'stretch') val = sv1;
+            else if(renderMode === 'eigphase') val = Math.atan2(J10 - J01, J00 + J11);
+            else if(renderMode === 'composite') val = divergence;
+            else val = divergence;
+
+            if(val < minVal) minVal = val;
+            if(val > maxVal) maxVal = val;
+
+            gridData.push({
+                val: val,
+                flow_x: flow_x,
+                flow_y: flow_y,
+                divergence: divergence,
+                curl: curl,
+                shear: shear,
+                det: det,
+                J00: J00, J01: J01, J10: J10, J11: J11
+            });
+        }
+    }
+
+    // ---- Render heatmap ----
+    var range = maxVal - minVal;
+    if(range < 1e-12) range = 1;
+
+    ctx.clearRect(0, 0, cW, cH);
+    ctx.fillStyle = '#050510';
+    ctx.fillRect(0, 0, cW, cH);
+
+    var cellW = cW / N;
+    var cellH = cH / N;
+
+    for(var gy = 0; gy < N; gy++){
+        for(var gx = 0; gx < N; gx++){
+            var idx = gy * N + gx;
+            var d = gridData[idx];
+            var norm = (d.val - minVal) / range;
+
+            var r, g, b;
+            if(renderMode === 'shear' || renderMode === 'condition' || renderMode === 'flow' || renderMode === 'stretch'){
+                r = Math.floor(norm * 255);
+                g = Math.floor(norm * norm * 180);
+                b = Math.floor(norm * norm * norm * 100);
+            } else {
+                var center = (0 - minVal) / range;
+                if(isNaN(center)) center = 0.5;
+                center = Math.max(0, Math.min(1, center));
+                if(norm < center){
+                    var t2 = (center - norm) / Math.max(center, 1e-8);
+                    r = 0;
+                    g = Math.floor(t2 * 100);
+                    b = Math.floor(t2 * 220);
+                } else {
+                    var t2 = (norm - center) / Math.max(1 - center, 1e-8);
+                    r = Math.floor(t2 * 233);
+                    g = Math.floor(t2 * 60);
+                    b = 0;
+                }
+            }
+
+            ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
+            ctx.fillRect(gx * cellW, gy * cellH, cellW + 1, cellH + 1);
+        }
+    }
+
+    // ---- Ghost token positions ----
+    if(document.getElementById('jf-ghost-tokens').checked){
+        for(var i = 0; i < nR; i++){
+            var sx = ((fx[i] - vx0) / vw) * cW;
+            var sy = ((fy[i] - vy0) / vh) * cH;
+            ctx.beginPath();
+            ctx.arc(sx, sy, 3, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255,255,255,0.15)';
+            ctx.fill();
+            ctx.font = '8px monospace';
+            ctx.fillStyle = 'rgba(255,255,255,0.2)';
+            ctx.fillText(D.tokens[i], sx + 5, sy - 3);
+        }
+    }
+
+    // ---- Flow arrows ----
+    if(document.getElementById('jf-animate').checked || renderMode === 'flow'){
+        var step = Math.max(1, Math.floor(N / 15));
+        for(var gy = 0; gy < N; gy += step){
+            for(var gx = 0; gx < N; gx += step){
+                var idx = gy * N + gx;
+                var d2 = gridData[idx];
+                var sx = (gx + 0.5) * cellW;
+                var sy = (gy + 0.5) * cellH;
+                var scale = cellW * step * 0.4 / (mr * amp + 1e-12);
+                var ax = d2.flow_x * scale;
+                var ay = d2.flow_y * scale;
+                var al = Math.hypot(ax, ay);
+                if(al < 1) continue;
+                if(al > cellW * step * 0.8){
+                    ax *= cellW * step * 0.8 / al;
+                    ay *= cellW * step * 0.8 / al;
+                }
+                ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+                ctx.lineWidth = 0.8;
+                ctx.beginPath();
+                ctx.moveTo(sx, sy);
+                ctx.lineTo(sx + ax, sy + ay);
+                ctx.stroke();
+                var aa = Math.atan2(ay, ax);
+                var hl = Math.min(4, al * 0.3);
+                ctx.fillStyle = 'rgba(255,255,255,0.4)';
+                ctx.beginPath();
+                ctx.moveTo(sx + ax, sy + ay);
+                ctx.lineTo(sx + ax - hl * Math.cos(aa - 0.4), sy + ay - hl * Math.sin(aa - 0.4));
+                ctx.lineTo(sx + ax - hl * Math.cos(aa + 0.4), sy + ay - hl * Math.sin(aa + 0.4));
+                ctx.closePath();
+                ctx.fill();
+            }
+        }
+    }
+
+    // ---- Stretch ellipses ----
+    if(document.getElementById('jf-stretch-ellipses').checked){
+        var eStep = Math.max(1, Math.floor(N / 10));
+        for(var gy = 0; gy < N; gy += eStep){
+            for(var gx = 0; gx < N; gx += eStep){
+                var idx = gy * N + gx;
+                var d3 = gridData[idx];
+                var sx = (gx + 0.5) * cellW;
+                var sy = (gy + 0.5) * cellH;
+                var eSize = cellW * eStep * 0.3;
+                var a11 = 1 + d3.J00, a12 = d3.J01, a21 = d3.J10, a22 = 1 + d3.J11;
+                var angle = 0.5 * Math.atan2(2 * (a11 * a21 + a12 * a22), a11*a11 + a12*a12 - a21*a21 - a22*a22);
+                var sv1e = Math.sqrt(Math.max(0.01, (a11*a11 + a21*a21)));
+                var sv2e = Math.sqrt(Math.max(0.01, (a12*a12 + a22*a22)));
+                ctx.save();
+                ctx.translate(sx, sy);
+                ctx.rotate(angle);
+                ctx.beginPath();
+                ctx.ellipse(0, 0, Math.min(eSize, sv1e * eSize * 0.5), Math.min(eSize, sv2e * eSize * 0.5), 0, 0, Math.PI * 2);
+                ctx.strokeStyle = 'rgba(255,200,100,0.25)';
+                ctx.lineWidth = 0.6;
+                ctx.stroke();
+                ctx.restore();
+            }
+        }
+    }
+
+    // ---- Eigenvector directions ----
+    if(document.getElementById('jf-eigvecs').checked){
+        var evStep = Math.max(1, Math.floor(N / 10));
+        for(var gy = 0; gy < N; gy += evStep){
+            for(var gx = 0; gx < N; gx += evStep){
+                var idx = gy * N + gx;
+                var d4 = gridData[idx];
+                var sx = (gx + 0.5) * cellW;
+                var sy = (gy + 0.5) * cellH;
+                var evLen = cellW * evStep * 0.35;
+                var a11 = 1 + d4.J00, a22 = 1 + d4.J11;
+                var tr = a11 + a22;
+                var det2 = a11 * a22 - d4.J01 * d4.J10;
+                var disc = tr * tr / 4 - det2;
+                if(disc >= 0){
+                    var ang = Math.atan2(d4.J10, a11 - (tr/2 - Math.sqrt(disc)));
+                    ctx.strokeStyle = 'rgba(100,255,200,0.3)';
+                    ctx.lineWidth = 0.7;
+                    ctx.beginPath();
+                    ctx.moveTo(sx - Math.cos(ang) * evLen, sy - Math.sin(ang) * evLen);
+                    ctx.lineTo(sx + Math.cos(ang) * evLen, sy + Math.sin(ang) * evLen);
+                    ctx.stroke();
+                }
+            }
+        }
+    }
+
+    // ---- HUD ----
+    document.getElementById('jf-legend-min').textContent = minVal.toFixed(3);
+    document.getElementById('jf-legend-max').textContent = maxVal.toFixed(3);
+    document.getElementById('jf-legend-title').textContent =
+        renderMode.charAt(0).toUpperCase() + renderMode.slice(1) + ' (\u2207\u00b7F)';
+
+    document.getElementById('jf-canvas-wrap').style.display = 'block';
+
+    document.getElementById('jf-status').textContent =
+        'Raw dims ' + dimX + '\u00d7' + dimY +
+        ' | Layer ' + layer +
+        ' | ' + N + '\u00b2 grid' +
+        ' | Mode: ' + renderMode +
+        ' | Decomp: ' + getDecompLabel() +
+        ' | ITP: ' + itpMethod +
+        ' | sig: ' + sig.toFixed(3) +
+        ' | range: [' + mnx.toFixed(2) + ',' + mxx.toFixed(2) + '] x [' + mny.toFixed(2) + ',' + mxy.toFixed(2) + ']';
+}
+
 var SLS=[
     ['sl-layer','v-layer',0],['sl-t','v-t',2],['sl-amp','v-amp',1],
     ['sl-dx','v-dx',0],['sl-dy','v-dy',0],['sl-dz','v-dz',0],
@@ -11948,8 +12298,8 @@ document.getElementById('jf-render').addEventListener('change', function(){
     var el = document.getElementById(id);
     if(!el) return;
     el.addEventListener('change', function(){
-        var rawCb = document.getElementById('jf-raw-dims');
-        if(rawCb && rawCb.checked && D) renderJacobianFieldRawDims();
+	    var rawCb = document.getElementById('jf-raw-dims');
+	    if(rawCb && rawCb.checked && D) renderJacobianFieldRawDims();
     });
 });
 
@@ -12449,356 +12799,6 @@ function renderJacobianField(){
 // ============================================================
 // JACOBIAN FIELD — RAW DIMS (client-side, no PCA)
 // ============================================================
-
-function renderJacobianFieldRawDims(){
-    if(!D) {
-	    console.error("No D found in renderJacobianFieldRawDims")
-	    return;
-    }
-    var dimX = +document.getElementById('sl-dx').value;
-    var dimY = +document.getElementById('sl-dy').value;
-    var layer = +document.getElementById('sl-layer').value;
-    var amp   = +document.getElementById('sl-amp').value;
-    var sig   = +document.getElementById('sl-sig').value;
-    var t     = +document.getElementById('sl-t').value;
-    var mode  = document.getElementById('sel-mode').value;
-    var decomp= document.getElementById('sel-decomp').value;
-    var renderMode = document.getElementById('jf-render').value;
-    var itpMethod  = document.getElementById('sel-itp').value;
-    var gridRes    = +document.getElementById('jf-res').value;
-
-    console.log('renderJacobianFieldRawDims CALLED', 
-        'dimX=', +document.getElementById('sl-dx').value,
-        'dimY=', +document.getElementById('sl-dy').value,
-        'nR=', D.n_real,
-        'fixed_pos[0][dimX]=', D.fixed_pos[0][+document.getElementById('sl-dx').value],
-        'fixed_pos[0][dimY]=', D.fixed_pos[0][+document.getElementById('sl-dy').value],
-        'deltas[0][0][dimX]=', D.deltas[0][0][+document.getElementById('sl-dx').value],
-        'deltas[0][0][dimY]=', D.deltas[0][0][+document.getElementById('sl-dy').value]
-    );
-
-	console.log('RENDERED jf-canvas', 
-		'minVal=', minVal, 'maxVal=', maxVal,
-		'canvas=', canvas.width, canvas.height,
-		'gridData[0].val=', gridData[0].val,
-		'gridData[200].val=', gridData.length > 200 ? gridData[200].val : 'N/A'
-	);
-
-    
-    var nP = D.n_points;
-    var nR = D.n_real;
-    var nLayers = D.n_layers;
-
-    var activeDeltas = getActiveDeltas();
-    if(!activeDeltas) activeDeltas = D.deltas;
-
-    // ---- BASE POSITIONS: use raw hidden-dim values ----
-    var fx = new Float64Array(nR);
-    var fy = new Float64Array(nR);
-    for (var i = 0; i < nR; i++) {
-        fx[i] = D.fixed_pos[i][dimX];
-        fy[i] = D.fixed_pos[i][dimY];
-    }
-
-    // ---- DELTAS in the selected dimensions (real tokens only) ----
-    var edx = new Float64Array(nR);
-    var edy = new Float64Array(nR);
-    var isEmb = (mode === 'embedding');
-    if(!isEmb){
-        for(var j = 0; j < nR; j++){
-            var sx = 0, sy = 0;
-            if(mode === 'single'){
-                sx = activeDeltas[layer][j][dimX];
-                sy = activeDeltas[layer][j][dimY];
-            } else if(mode === 'cumfwd'){
-                for(var l = 0; l <= layer; l++){
-                    sx += activeDeltas[l][j][dimX];
-                    sy += activeDeltas[l][j][dimY];
-                }
-            } else {
-                for(var l = layer; l < nLayers; l++){
-                    sx += activeDeltas[l][j][dimX];
-                    sy += activeDeltas[l][j][dimY];
-                }
-            }
-            edx[j] = sx * amp;
-            edy[j] = sy * amp;
-        }
-    }
-
-    // ---- Compute view bounds from REAL tokens only ----
-    var mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
-    for (var i = 0; i < nR; i++) {
-        if (fx[i] < mnx) mnx = fx[i]; if (fx[i] > mxx) mxx = fx[i];
-        if (fy[i] < mny) mny = fy[i]; if (fy[i] > mxy) mxy = fy[i];
-    }
-    if (mnx === mxx) { mnx -= 0.5; mxx += 0.5; }
-    if (mny === mxy) { mny -= 0.5; mxy += 0.5; }
-
-    var mr = Math.max(mxx - mnx, mxy - mny) || 1;
-    var cxv = (mnx + mxx) / 2, cyv = (mny + mxy) / 2;
-    var pd = 0.15;
-    var vx0 = cxv - mr * (0.5 + pd), vy0 = cyv - mr * (0.5 + pd);
-    var vw = mr * (1 + 2 * pd);
-    var vh = vw;
-
-    // ---- Compute LOCAL sigma from the actual data range ----
-    // Use average nearest-neighbor distance for better bandwidth estimation
-    var dists = [];
-    for (var i = 0; i < nR; i++) {
-        var bestD = Infinity;
-        for (var j = 0; j < nR; j++) {
-            if (i === j) continue;
-            var dd = Math.hypot(fx[i] - fx[j], fy[i] - fy[j]);
-            if (dd < bestD) bestD = dd;
-        }
-        if (bestD < Infinity) dists.push(bestD);
-    }
-    var localSig;
-    if (dists.length > 0) {
-        dists.sort(function(a, b) { return a - b; });
-        var medianDist = dists[Math.floor(dists.length / 2)];
-        localSig = medianDist * 2.0;  // 2x median NN distance
-        if (localSig < 1e-8) localSig = mr * 0.3;
-    } else {
-        localSig = mr * 0.3;
-    }
-    sig = localSig;
-
-    // ---- Build the grid ----
-    var N = gridRes;
-    var canvas = document.getElementById('jf-canvas');
-    if(!canvas) return;
-    var ctx = canvas.getContext('2d');
-    var cW = canvas.width, cH = canvas.height;
-
-    var gridData = [];
-    var minVal = Infinity, maxVal = -Infinity;
-
-    var eps = vw / N * 0.5;
-
-    for(var gy = 0; gy < N; gy++){
-        for(var gx = 0; gx < N; gx++){
-            var qx = vx0 + (gx + 0.5) / N * vw;
-            var qy = vy0 + (gy + 0.5) / N * vh;
-
-            var field  = interpolateGridPoint(qx, qy, fx, fy, edx, edy, nR, sig, itpMethod);
-            var fieldR = interpolateGridPoint(qx + eps, qy, fx, fy, edx, edy, nR, sig, itpMethod);
-            var fieldU = interpolateGridPoint(qx, qy + eps, fx, fy, edx, edy, nR, sig, itpMethod);
-
-            var flow_x = field[0] * t;
-            var flow_y = field[1] * t;
-
-            var J00 = (fieldR[0] - field[0]) / eps * t;
-            var J01 = (fieldU[0] - field[0]) / eps * t;
-            var J10 = (fieldR[1] - field[1]) / eps * t;
-            var J11 = (fieldU[1] - field[1]) / eps * t;
-
-            var divergence = J00 + J11;
-            var curl = J10 - J01;
-            var shear = Math.sqrt((J00 - J11) * (J00 - J11) + (J01 + J10) * (J01 + J10));
-            var det = (1 + J00) * (1 + J11) - J01 * J10;
-            var rotation = Math.atan2(J10 - J01, 2 + J00 + J11);
-            var sv1 = Math.sqrt(Math.max(0, ((J00+1)*(J00+1) + J10*J10 + J01*J01 + (J11+1)*(J11+1)) / 2));
-            var condition = sv1 > 1e-12 ? sv1 / Math.max(1e-12, Math.abs(det) / sv1) : 1;
-
-            var val = 0;
-            if(renderMode === 'divergence') val = divergence;
-            else if(renderMode === 'curl') val = curl;
-            else if(renderMode === 'shear') val = shear;
-            else if(renderMode === 'det') val = det;
-            else if(renderMode === 'rotation') val = rotation;
-            else if(renderMode === 'condition') val = Math.log(Math.max(1, condition));
-            else if(renderMode === 'flow') val = Math.sqrt(flow_x * flow_x + flow_y * flow_y);
-            else if(renderMode === 'stretch') val = sv1;
-            else if(renderMode === 'eigphase') val = Math.atan2(J10 - J01, J00 + J11);
-            else if(renderMode === 'composite') val = divergence;
-            else val = divergence;
-
-            if(val < minVal) minVal = val;
-            if(val > maxVal) maxVal = val;
-
-            gridData.push({
-                val: val,
-                flow_x: flow_x,
-                flow_y: flow_y,
-                divergence: divergence,
-                curl: curl,
-                shear: shear,
-                det: det,
-                J00: J00, J01: J01, J10: J10, J11: J11
-            });
-        }
-    }
-
-    // ---- Render heatmap ----
-    var range = maxVal - minVal;
-    if(range < 1e-12) range = 1;
-
-    ctx.clearRect(0, 0, cW, cH);
-    ctx.fillStyle = '#050510';
-    ctx.fillRect(0, 0, cW, cH);
-
-    var cellW = cW / N;
-    var cellH = cH / N;
-
-    for(var gy = 0; gy < N; gy++){
-        for(var gx = 0; gx < N; gx++){
-            var idx = gy * N + gx;
-            var d = gridData[idx];
-            var norm = (d.val - minVal) / range;
-
-            var r, g, b;
-            if(renderMode === 'shear' || renderMode === 'condition' || renderMode === 'flow' || renderMode === 'stretch'){
-                r = Math.floor(norm * 255);
-                g = Math.floor(norm * norm * 180);
-                b = Math.floor(norm * norm * norm * 100);
-            } else {
-                var center = (0 - minVal) / range;
-                if(isNaN(center)) center = 0.5;
-                center = Math.max(0, Math.min(1, center));
-                if(norm < center){
-                    var t2 = (center - norm) / Math.max(center, 1e-8);
-                    r = 0;
-                    g = Math.floor(t2 * 100);
-                    b = Math.floor(t2 * 220);
-                } else {
-                    var t2 = (norm - center) / Math.max(1 - center, 1e-8);
-                    r = Math.floor(t2 * 233);
-                    g = Math.floor(t2 * 60);
-                    b = 0;
-                }
-            }
-
-            ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
-            ctx.fillRect(gx * cellW, gy * cellH, cellW + 1, cellH + 1);
-        }
-    }
-
-    // ---- Ghost token positions ----
-    if(document.getElementById('jf-ghost-tokens').checked){
-        for(var i = 0; i < nR; i++){
-            var sx = ((fx[i] - vx0) / vw) * cW;
-            var sy = ((fy[i] - vy0) / vh) * cH;
-            ctx.beginPath();
-            ctx.arc(sx, sy, 3, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(255,255,255,0.15)';
-            ctx.fill();
-            ctx.font = '8px monospace';
-            ctx.fillStyle = 'rgba(255,255,255,0.2)';
-            ctx.fillText(D.tokens[i], sx + 5, sy - 3);
-        }
-    }
-
-    // ---- Flow arrows ----
-    if(document.getElementById('jf-animate').checked || renderMode === 'flow'){
-        var step = Math.max(1, Math.floor(N / 15));
-        for(var gy = 0; gy < N; gy += step){
-            for(var gx = 0; gx < N; gx += step){
-                var idx = gy * N + gx;
-                var d2 = gridData[idx];
-                var sx = (gx + 0.5) * cellW;
-                var sy = (gy + 0.5) * cellH;
-                var scale = cellW * step * 0.4 / (mr * amp + 1e-12);
-                var ax = d2.flow_x * scale;
-                var ay = d2.flow_y * scale;
-                var al = Math.hypot(ax, ay);
-                if(al < 1) continue;
-                if(al > cellW * step * 0.8){
-                    ax *= cellW * step * 0.8 / al;
-                    ay *= cellW * step * 0.8 / al;
-                }
-                ctx.strokeStyle = 'rgba(255,255,255,0.4)';
-                ctx.lineWidth = 0.8;
-                ctx.beginPath();
-                ctx.moveTo(sx, sy);
-                ctx.lineTo(sx + ax, sy + ay);
-                ctx.stroke();
-                var aa = Math.atan2(ay, ax);
-                var hl = Math.min(4, al * 0.3);
-                ctx.fillStyle = 'rgba(255,255,255,0.4)';
-                ctx.beginPath();
-                ctx.moveTo(sx + ax, sy + ay);
-                ctx.lineTo(sx + ax - hl * Math.cos(aa - 0.4), sy + ay - hl * Math.sin(aa - 0.4));
-                ctx.lineTo(sx + ax - hl * Math.cos(aa + 0.4), sy + ay - hl * Math.sin(aa + 0.4));
-                ctx.closePath();
-                ctx.fill();
-            }
-        }
-    }
-
-    // ---- Stretch ellipses ----
-    if(document.getElementById('jf-stretch-ellipses').checked){
-        var eStep = Math.max(1, Math.floor(N / 10));
-        for(var gy = 0; gy < N; gy += eStep){
-            for(var gx = 0; gx < N; gx += eStep){
-                var idx = gy * N + gx;
-                var d3 = gridData[idx];
-                var sx = (gx + 0.5) * cellW;
-                var sy = (gy + 0.5) * cellH;
-                var eSize = cellW * eStep * 0.3;
-                var a11 = 1 + d3.J00, a12 = d3.J01, a21 = d3.J10, a22 = 1 + d3.J11;
-                var angle = 0.5 * Math.atan2(2 * (a11 * a21 + a12 * a22), a11*a11 + a12*a12 - a21*a21 - a22*a22);
-                var sv1e = Math.sqrt(Math.max(0.01, (a11*a11 + a21*a21)));
-                var sv2e = Math.sqrt(Math.max(0.01, (a12*a12 + a22*a22)));
-                ctx.save();
-                ctx.translate(sx, sy);
-                ctx.rotate(angle);
-                ctx.beginPath();
-                ctx.ellipse(0, 0, Math.min(eSize, sv1e * eSize * 0.5), Math.min(eSize, sv2e * eSize * 0.5), 0, 0, Math.PI * 2);
-                ctx.strokeStyle = 'rgba(255,200,100,0.25)';
-                ctx.lineWidth = 0.6;
-                ctx.stroke();
-                ctx.restore();
-            }
-        }
-    }
-
-    // ---- Eigenvector directions ----
-    if(document.getElementById('jf-eigvecs').checked){
-        var evStep = Math.max(1, Math.floor(N / 10));
-        for(var gy = 0; gy < N; gy += evStep){
-            for(var gx = 0; gx < N; gx += evStep){
-                var idx = gy * N + gx;
-                var d4 = gridData[idx];
-                var sx = (gx + 0.5) * cellW;
-                var sy = (gy + 0.5) * cellH;
-                var evLen = cellW * evStep * 0.35;
-                var a11 = 1 + d4.J00, a22 = 1 + d4.J11;
-                var tr = a11 + a22;
-                var det2 = a11 * a22 - d4.J01 * d4.J10;
-                var disc = tr * tr / 4 - det2;
-                if(disc >= 0){
-                    var ang = Math.atan2(d4.J10, a11 - (tr/2 - Math.sqrt(disc)));
-                    ctx.strokeStyle = 'rgba(100,255,200,0.3)';
-                    ctx.lineWidth = 0.7;
-                    ctx.beginPath();
-                    ctx.moveTo(sx - Math.cos(ang) * evLen, sy - Math.sin(ang) * evLen);
-                    ctx.lineTo(sx + Math.cos(ang) * evLen, sy + Math.sin(ang) * evLen);
-                    ctx.stroke();
-                }
-            }
-        }
-    }
-
-    // ---- HUD ----
-    document.getElementById('jf-legend-min').textContent = minVal.toFixed(3);
-    document.getElementById('jf-legend-max').textContent = maxVal.toFixed(3);
-    document.getElementById('jf-legend-title').textContent =
-        renderMode.charAt(0).toUpperCase() + renderMode.slice(1) + ' (\u2207\u00b7F)';
-
-    document.getElementById('jf-canvas-wrap').style.display = 'block';
-
-    document.getElementById('jf-status').textContent =
-        'Raw dims ' + dimX + '\u00d7' + dimY +
-        ' | Layer ' + layer +
-        ' | ' + N + '\u00b2 grid' +
-        ' | Mode: ' + renderMode +
-        ' | Decomp: ' + getDecompLabel() +
-        ' | ITP: ' + itpMethod +
-        ' | sig: ' + sig.toFixed(3) +
-        ' | range: [' + mnx.toFixed(2) + ',' + mxx.toFixed(2) + '] x [' + mny.toFixed(2) + ',' + mxy.toFixed(2) + ']';
-}
 
 document.addEventListener('DOMContentLoaded', function() {
 	const rawDimsCheckbox = document.getElementById('jf-raw-dims');
