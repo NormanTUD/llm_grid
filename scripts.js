@@ -519,14 +519,6 @@ function renderJacobianFieldRawDims(){
         'deltas[0][0][dimY]=', D.deltas[0][0][+document.getElementById('sl-dy').value]
     );
 
-	console.log('RENDERED jf-canvas', 
-		'minVal=', minVal, 'maxVal=', maxVal,
-		'canvas=', canvas.width, canvas.height,
-		'gridData[0].val=', gridData[0].val,
-		'gridData[200].val=', gridData.length > 200 ? gridData[200].val : 'N/A'
-	);
-
-    
     var nP = D.n_points;
     var nR = D.n_real;
     var nLayers = D.n_layers;
