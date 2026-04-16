@@ -1984,10 +1984,9 @@ def get_interpolation_fn(method_name):
 # ============================================================
 
 def build_fixed_pos(all_layer0):
-    """Convert list of numpy arrays to list of lists for JSON, sanitizing NaN/Inf."""
     result = []
     for v in all_layer0:
-        v_safe = np.nan_to_num(np.array(v, dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0)
+        v_safe = np.nan_to_num(np.array(v, dtype=np.float64), ...)
         result.append(v_safe.tolist())
     return result
 
@@ -2231,6 +2230,13 @@ def process_text(text, model_name=None, itp_method='rbf'):
         attn_deltas_json = build_deltas_array(all_attn_deltas, n_layers, n_total_final)
         mlp_deltas_json = build_deltas_array(all_mlp_deltas, n_layers, n_total_final)
 
+    data_raw_activations = []
+
+    for i in range(n_total_final):
+        vec = np.array(all_layer0[i], dtype=np.float64)
+        vec = np.nan_to_num(vec, nan=0.0, posinf=0.0, neginf=0.0)
+        data_raw_activations.append(vec.tolist())
+
     data = build_output_data(
         all_labels, all_is_real, n_layers, n_total_final, n_real,
         hidden_dim, fixed_pos, deltas, MODEL_NAME, text, neighbors,
@@ -2240,6 +2246,8 @@ def process_text(text, model_name=None, itp_method='rbf'):
         mlp_deltas=mlp_deltas_json,
         strain_stats=strain_stats,
     )
+
+    data["raw_activations"] = data_raw_activations
 
     # Include metadata about predicted points
     data["itp_method"] = itp_method
