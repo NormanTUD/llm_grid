@@ -2964,7 +2964,7 @@ The capital of Germany is Berlin</textarea>
     </div>
 
     <label style="color:#a0a0c0;font-size:9px;display:block;margin-top:4px">
-      <input type="checkbox" id="jf-raw-dims"> Use selected Dim X,Y (no PCA)
+      <input type="checkbox" id="jf-raw-dims" checked> Use selected Dim X,Y (no PCA)
     </label>
 
     <div class="cr"><label>Grid res:</label>
