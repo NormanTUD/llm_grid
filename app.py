@@ -2195,6 +2195,7 @@ def process_text(text, model_name=None, itp_method='rbf'):
 # ============================================================
 
 script_js_file_content = Path("scripts.js").read_text(encoding="utf-8")
+script_js_file_content += Path("fibre_bundle_views.js").read_text(encoding="utf-8")
 
 with open("html_sample.html", "r", encoding="utf-8") as f:
     HTML_PAGE = f.read() + r"<script>"
