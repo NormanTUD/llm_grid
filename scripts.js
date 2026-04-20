@@ -10844,6 +10844,91 @@ function jfCyclicColor(angle){
 // MAIN RENDER FUNCTION
 // ============================================================
 
+/**
+ * Theme-aware diverging colormap.
+ * In dark mode: black center, colored extremes.
+ * In light mode: light/white center, colored extremes.
+ */
+function jfDivergingColorThemed(val, vmin, vmax){
+    var range = Math.max(Math.abs(vmin), Math.abs(vmax), 0.001);
+    var norm = val / range;
+    norm = Math.max(-1, Math.min(1, norm));
+
+    var con = T.strainContract;  // e.g. [0,119,182] or [41,128,185]
+    var exp = T.strainExpand;    // e.g. [233,69,96] or [192,57,43]
+
+    // In light mode, the "zero" should be the canvas background color (white-ish)
+    // In dark mode, the "zero" should be dark/black
+    var isLight = (currentThemeName === 'light');
+
+    if(norm < 0){
+        var t = -norm;
+        if(isLight){
+            // Blend from white (center) to contract color
+            return [
+                Math.floor(255 - t * (255 - con[0])),
+                Math.floor(255 - t * (255 - con[1])),
+                Math.floor(255 - t * (255 - con[2]))
+            ];
+        } else {
+            // Blend from black (center) to contract color
+            return [Math.floor(t * con[0]), Math.floor(t * con[1]), Math.floor(t * con[2])];
+        }
+    } else {
+        var t = norm;
+        if(isLight){
+            // Blend from white (center) to expand color
+            return [
+                Math.floor(255 - t * (255 - exp[0])),
+                Math.floor(255 - t * (255 - exp[1])),
+                Math.floor(255 - t * (255 - exp[2]))
+            ];
+        } else {
+            // Blend from black (center) to expand color
+            return [Math.floor(t * exp[0]), Math.floor(t * exp[1]), Math.floor(t * exp[2])];
+        }
+    }
+}
+
+/**
+ * Theme-aware magnitude colormap (for non-diverging quantities).
+ * In dark mode: black → colored (magma-like).
+ * In light mode: white → colored.
+ */
+function jfMagmaColorThemed(val, vmin, vmax){
+    var range = vmax - vmin || 1;
+    var t = Math.max(0, Math.min(1, (val - vmin) / range));
+
+    var exp = T.strainExpand; // use expand color as the "hot" end
+    var isLight = (currentThemeName === 'light');
+
+    if(isLight){
+        // White → accent color (light mode)
+        // Low values = white, high values = saturated color
+        var r = Math.floor(255 - t * (255 - exp[0]));
+        var g = Math.floor(255 - t * (255 - exp[1]));
+        var b = Math.floor(255 - t * (255 - exp[2]));
+        return [r, g, b];
+    } else {
+        // Black → magma (dark mode) — keep original magma behavior
+        var r, g, b;
+        if(t < 0.25){
+            var f = t / 0.25;
+            r = Math.floor(f * 80); g = 0; b = Math.floor(20 + f * 100);
+        } else if(t < 0.5){
+            var f = (t - 0.25) / 0.25;
+            r = Math.floor(80 + f * 120); g = Math.floor(f * 30); b = Math.floor(120 + f * 40);
+        } else if(t < 0.75){
+            var f = (t - 0.5) / 0.25;
+            r = Math.floor(200 + f * 55); g = Math.floor(30 + f * 100); b = Math.floor(160 - f * 80);
+        } else {
+            var f = (t - 0.75) / 0.25;
+            r = 255; g = Math.floor(130 + f * 125); b = Math.floor(80 + f * 100);
+        }
+        return [r, g, b];
+    }
+}
+
 function renderJacobianField(){
     if(!jfData) return;
 
@@ -10911,7 +10996,7 @@ function renderJacobianField(){
                        renderMode === 'rotation' || renderMode === 'det');
     var isCyclic = (renderMode === 'eigphase');
 
-    // ---- PASS 1: Heatmap cells ----
+    // ---- PASS 1: Heatmap cells (theme-aware colormap) ----
     for(var gy = 0; gy < N; gy++){
         for(var gx = 0; gx < N; gx++){
             var idx = gy * N + gx;
@@ -10926,11 +11011,9 @@ function renderJacobianField(){
             if(isCyclic){
                 rgb = jfCyclicColor(v);
             } else if(isDiverging){
-                var res = jfDivergingColor(v, vmin, vmax);
-                rgb = [res[0], res[1], res[2]];
+                rgb = jfDivergingColorThemed(v, vmin, vmax);
             } else {
-                var res = jfMagmaColor(v, vmin, vmax);
-                rgb = [res[0], res[1], res[2]];
+                rgb = jfMagmaColorThemed(v, vmin, vmax);
             }
 
             c.fillStyle = 'rgb(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ')';
@@ -10938,17 +11021,25 @@ function renderJacobianField(){
         }
     }
 
-    // ---- PASS 2: Stretch ellipses ----
+    // ---- PASS 2: Divergence arrows (replaces ellipses) ----
     if(showEllipses){
-        // Parse accent3 for ellipse color
-        var a3 = T.accent3;
-        var a3r = parseInt(a3.slice(1,3),16);
-        var a3g = parseInt(a3.slice(3,5),16);
-        var a3b = parseInt(a3.slice(5,7),16);
+        var arrowStep = Math.max(1, Math.floor(N / 12));
+        var maxArrowLen = Math.min(cellW, cellH) * arrowStep * 0.45;
 
-        var ellipseStep = Math.max(1, Math.floor(N / 12));
-        for(var gy = 0; gy < N; gy += ellipseStep){
-            for(var gx = 0; gx < N; gx += ellipseStep){
+        // Find max flow magnitude for normalization
+        var maxDiv = 0;
+        for(var i = 0; i < data.length; i++){
+            var mag = Math.sqrt(data[i].flow_x * data[i].flow_x + data[i].flow_y * data[i].flow_y);
+            if(mag > maxDiv) maxDiv = mag;
+        }
+        if(maxDiv < 1e-8) maxDiv = 1;
+
+        // Parse theme colors for arrows
+        var expandRGB = T.strainExpand;
+        var contractRGB = T.strainContract;
+
+        for(var gy = 0; gy < N; gy += arrowStep){
+            for(var gx = 0; gx < N; gx += arrowStep){
                 var idx = gy * N + gx;
                 if(idx >= data.length) continue;
                 var d = data[idx];
@@ -10956,51 +11047,69 @@ function renderJacobianField(){
                 var cx = SX(d.gx);
                 var cy = SY(d.gy);
 
-                var maxR = Math.min(cellW, cellH) * ellipseStep * 0.4;
-                var rx = Math.min(maxR, d.stretch_mag1 * maxR * 0.5);
-                var ry = Math.min(maxR, d.stretch_mag2 * maxR * 0.5);
+                // Compute arrow from flow direction
+                var fx = d.flow_x;
+                var fy = d.flow_y;
+                var flowMag = Math.sqrt(fx * fx + fy * fy);
+                if(flowMag < 1e-8) continue;
 
-                var angle = Math.atan2(d.stretch_dir1[1], d.stretch_dir1[0]);
+                // Normalize and scale by magnitude relative to max
+                var normMag = flowMag / maxDiv;
+                var arrowLen = normMag * maxArrowLen;
 
-                var pulse = animate ? 1.0 + 0.1 * Math.sin(jfTime * 2 + idx * 0.3) : 1.0;
-                rx *= pulse;
-                ry *= pulse;
+                // Apply animation pulse
+                var pulse = animate ? 0.8 + 0.2 * Math.sin(jfTime * 2.5 + idx * 0.2) : 1.0;
+                arrowLen *= pulse;
 
-                c.save();
-                c.translate(cx, cy);
-                c.rotate(-angle);
+                if(arrowLen < 1.5) continue;
 
-                var anisotropy = d.condition;
-                var alpha = Math.min(0.7, 0.15 + anisotropy * 0.05);
+                // Direction in pixel space
+                var dirX = (fx / flowMag) * arrowLen;
+                var dirY = -(fy / flowMag) * arrowLen; // flip Y for screen coords
 
-                // Theme-aware ellipse stroke
-                var tsHex = T.tokenStroke;
-                var tsR = parseInt(tsHex.slice(1,3),16) || 255;
-                var tsG = parseInt(tsHex.slice(3,5),16) || 255;
-                var tsB = parseInt(tsHex.slice(5,7),16) || 255;
-                c.strokeStyle = 'rgba(' + tsR + ',' + tsG + ',' + tsB + ',' + alpha.toFixed(2) + ')';
-                c.lineWidth = 0.8;
+                // Color based on divergence: expanding = red, contracting = blue
+                var div = d.divergence;
+                var divSign = div >= 0 ? 1 : -1;
+                var divIntensity = Math.min(1, Math.abs(div) / (Math.max(Math.abs(vmin), Math.abs(vmax)) || 1));
+                var arrowR, arrowG, arrowB;
+                if(divSign >= 0){
+                    arrowR = Math.floor(expandRGB[0] * (0.3 + 0.7 * divIntensity));
+                    arrowG = Math.floor(expandRGB[1] * (0.3 + 0.7 * divIntensity));
+                    arrowB = Math.floor(expandRGB[2] * (0.3 + 0.7 * divIntensity));
+                } else {
+                    arrowR = Math.floor(contractRGB[0] * (0.3 + 0.7 * divIntensity));
+                    arrowG = Math.floor(contractRGB[1] * (0.3 + 0.7 * divIntensity));
+                    arrowB = Math.floor(contractRGB[2] * (0.3 + 0.7 * divIntensity));
+                }
+
+                var arrowAlpha = Math.min(0.9, 0.3 + normMag * 0.6);
+                var arrowColor = 'rgba(' + arrowR + ',' + arrowG + ',' + arrowB + ',' + arrowAlpha.toFixed(2) + ')';
+
+                // Draw arrow shaft
+                c.strokeStyle = arrowColor;
+                c.lineWidth = Math.max(0.8, Math.min(2.5, normMag * 3));
                 c.beginPath();
-                c.ellipse(0, 0, Math.max(1, rx), Math.max(1, ry), 0, 0, Math.PI * 2);
+                c.moveTo(cx, cy);
+                c.lineTo(cx + dirX, cy + dirY);
                 c.stroke();
 
-                // Theme-aware fill based on area change
-                var expandRGB = T.strainExpand;
-                var contractRGB = T.strainContract;
-                var detColor = d.det > 1 ?
-                    'rgba(' + expandRGB[0] + ',' + expandRGB[1] + ',' + expandRGB[2] + ',0.08)' :
-                    'rgba(' + contractRGB[0] + ',' + contractRGB[1] + ',' + contractRGB[2] + ',0.08)';
-                c.fillStyle = detColor;
+                // Draw arrowhead
+                var aa = Math.atan2(dirY, dirX);
+                var hl = Math.min(6, arrowLen * 0.35);
+                c.fillStyle = arrowColor;
+                c.beginPath();
+                c.moveTo(cx + dirX, cy + dirY);
+                c.lineTo(cx + dirX - hl * Math.cos(aa - 0.45), cy + dirY - hl * Math.sin(aa - 0.45));
+                c.lineTo(cx + dirX - hl * Math.cos(aa + 0.45), cy + dirY - hl * Math.sin(aa + 0.45));
+                c.closePath();
                 c.fill();
-
-                c.restore();
             }
         }
     }
 
+
     // ---- PASS 3: Eigenvector directions ----
     if(showEigvecs){
-        // Parse theme colors for eigenvectors
         var a7 = T.accent7;
         var a7r = parseInt(a7.slice(1,3),16), a7g = parseInt(a7.slice(3,5),16), a7b = parseInt(a7.slice(5,7),16);
         var a6 = T.accent6;
@@ -11018,7 +11127,7 @@ function renderJacobianField(){
 
                 var evecLen = Math.min(cellW, cellH) * evecStep * 0.35;
 
-                // Eigenvector 1 (theme accent7 / cyan)
+                // Eigenvector 1
                 var ev1x = d.evec1[0] * evecLen * d.eig_mag[0];
                 var ev1y = d.evec1[1] * evecLen * d.eig_mag[0];
                 var ev1L = Math.sqrt(ev1x * ev1x + ev1y * ev1y);
@@ -11031,7 +11140,7 @@ function renderJacobianField(){
                 c.lineTo(cx + ev1x, cy - ev1y);
                 c.stroke();
 
-                // Eigenvector 2 (theme accent6 / magenta)
+                // Eigenvector 2
                 var ev2x = d.evec2[0] * evecLen * d.eig_mag[1];
                 var ev2y = d.evec2[1] * evecLen * d.eig_mag[1];
                 var ev2L = Math.sqrt(ev2x * ev2x + ev2y * ev2y);
@@ -11047,14 +11156,13 @@ function renderJacobianField(){
         }
     }
 
-    // ---- PASS 4: Flow field (animated streamlines) ----
+    // ---- PASS 4: Flow field (only when in 'flow' or 'composite' mode) ----
     if(renderMode === 'flow' || renderMode === 'composite'){
-        // Parse theme vectorArrow color
         var vaMatch = T.vectorArrow.match(/[\d.]+/g);
         var vaR = vaMatch[0], vaG = vaMatch[1], vaB = vaMatch[2];
 
         var flowStep = Math.max(1, Math.floor(N / 14));
-        var maxArrowLen = Math.min(cellW, cellH) * flowStep * 0.6;
+        var maxFlowArrowLen = Math.min(cellW, cellH) * flowStep * 0.6;
 
         for(var gy = 0; gy < N; gy += flowStep){
             for(var gx = 0; gx < N; gx += flowStep){
@@ -11075,10 +11183,10 @@ function renderJacobianField(){
                 var arrowY = -d.flow_y * pixPerWorldY * 0.3;
 
                 var arrowLen = Math.sqrt(arrowX * arrowX + arrowY * arrowY);
-                if(arrowLen > maxArrowLen){
-                    arrowX *= maxArrowLen / arrowLen;
-                    arrowY *= maxArrowLen / arrowLen;
-                    arrowLen = maxArrowLen;
+                if(arrowLen > maxFlowArrowLen){
+                    arrowX *= maxFlowArrowLen / arrowLen;
+                    arrowY *= maxFlowArrowLen / arrowLen;
+                    arrowLen = maxFlowArrowLen;
                 }
 
                 if(arrowLen < 1.5) continue;
@@ -11092,13 +11200,11 @@ function renderJacobianField(){
                 c.fillStyle = 'rgba(' + vaR + ',' + vaG + ',' + vaB + ',' + flowAlpha.toFixed(2) + ')';
                 c.lineWidth = Math.max(0.5, Math.min(1.5, arrowLen / 15));
 
-                // Shaft
                 c.beginPath();
                 c.moveTo(cx, cy);
                 c.lineTo(cx + arrowX, cy + arrowY);
                 c.stroke();
 
-                // Arrowhead
                 var aa = Math.atan2(arrowY, arrowX);
                 var hl = Math.min(5, arrowLen * 0.3);
                 c.beginPath();
@@ -11120,7 +11226,6 @@ function renderJacobianField(){
             var tx = SX(tokPos[ti][0]);
             var ty = SY(tokPos[ti][1]);
 
-            // Theme-aware glow
             var grad = c.createRadialGradient(tx, ty, 0, tx, ty, 8);
             grad.addColorStop(0, T.probeColor);
             grad.addColorStop(1, 'rgba(0,0,0,0)');
@@ -11129,7 +11234,6 @@ function renderJacobianField(){
             c.fillStyle = grad;
             c.fill();
 
-            // Tiny dot
             c.beginPath();
             c.arc(tx, ty, 2, 0, Math.PI * 2);
             c.fillStyle = tc[ti % tc.length];
@@ -11137,7 +11241,6 @@ function renderJacobianField(){
             c.fill();
             c.globalAlpha = 1.0;
 
-            // Token label
             if(jfData.tokens && ti < jfData.tokens.length){
                 c.font = '7px monospace';
                 c.fillStyle = T.hudTextDim;
@@ -11149,7 +11252,6 @@ function renderJacobianField(){
 
     // ---- PASS 6: Animated particle advection ----
     if(animate && (renderMode === 'flow' || renderMode === 'composite')){
-        // Parse accent3 for particle color
         var a3p = T.accent3;
         var a3pr = parseInt(a3p.slice(1,3),16);
         var a3pg = parseInt(a3p.slice(3,5),16);
@@ -11177,7 +11279,6 @@ function renderJacobianField(){
 
             if(nearIdx < data.length){
                 var particleAlpha = 0.3 + 0.3 * Math.sin(jfTime * 2 + pi * 0.8);
-
                 c.beginPath();
                 c.arc(sx, sy, 1.5, 0, Math.PI * 2);
                 c.fillStyle = 'rgba(' + a3pr + ',' + a3pg + ',' + a3pb + ',' + particleAlpha.toFixed(2) + ')';
@@ -11223,6 +11324,7 @@ function renderJacobianField(){
     document.getElementById('jf-legend-min').textContent = vmin.toFixed(3);
     document.getElementById('jf-legend-max').textContent = vmax.toFixed(3);
 }
+
 
 // ============================================================
 // JACOBIAN FIELD — RAW DIM X,Y (No PCA)
