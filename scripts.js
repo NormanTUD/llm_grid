@@ -189,10 +189,22 @@ function setTheme(name) {
     T = THEMES[name];
     applyThemeToCSS();
     draw();
-    // If curvature/TDA data exists, re-render those panels too
     if (curvatureData) {
         renderCurvatureHeatmap();
         renderCurvatureSurprisalChart();
+    }
+    // ADD THESE:
+    var rawCb = document.getElementById('jf-raw-dims');
+    if (rawCb && rawCb.checked && D) {
+        renderJacobianFieldRawDims();
+    } else if (jfData) {
+        renderJacobianField();
+    }
+    if (tdaData) {
+        renderTDAWasserstein();
+        renderTDABettiEvolution();
+        renderTDAEntropy();
+        renderTDALayer();
     }
 }
 
@@ -10769,17 +10781,19 @@ function startJFAnimation(){
 // ============================================================
 
 function jfDivergingColor(val, vmin, vmax){
-    // Blue (negative) → Black (zero) → Red (positive)
     var range = Math.max(Math.abs(vmin), Math.abs(vmax), 0.001);
-    var norm = val / range; // -1..1
+    var norm = val / range;
     norm = Math.max(-1, Math.min(1, norm));
+
+    var con = T.strainContract;  // [0,119,182] or [41,128,185]
+    var exp = T.strainExpand;    // [233,69,96] or [192,57,43]
 
     if(norm < 0){
         var t = -norm;
-        return [Math.floor(t * 40), Math.floor(t * 80), Math.floor(t * 220), t];
+        return [Math.floor(t * con[0]), Math.floor(t * con[1]), Math.floor(t * con[2]), t];
     } else {
         var t = norm;
-        return [Math.floor(t * 233), Math.floor(t * 50), Math.floor(t * 40), t];
+        return [Math.floor(t * exp[0]), Math.floor(t * exp[1]), Math.floor(t * exp[2]), t];
     }
 }
 
