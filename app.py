@@ -66,6 +66,67 @@ _SAE_N_LAYERS = 0
 _SAE_LOAD_ATTEMPTED = set()  # track layers we already tried to load
 default_k = 1
 
+def visualize_curvature_landscape(curvature_data, tokens, save_path=None, theme='dark'):
+    """
+    Render the Curvature Landscape across the model's depth with theme support.
+    """
+    orc = curvature_data['ollivier_ricci']
+    scalar = curvature_data['scalar_curvature']
+    log_det = curvature_data['metric_log_det']
+    procrustes = curvature_data['procrustes_deviation']
+    sectional = curvature_data['sectional_curvature']
+
+    n_layers, seq_len = scalar.shape
+    mt = MPL_THEMES.get(theme, MPL_THEMES['dark'])
+
+    fig, axes = plt.subplots(3, 2, figsize=(18, 14))
+    fig.suptitle('Holographic Curvature Landscape', fontsize=16, fontweight='bold', color=mt['text_color'])
+    fig.patch.set_facecolor(mt['fig_face'])
+
+    for ax_row in axes:
+        for ax in ax_row:
+            ax.set_facecolor(mt['ax_face'])
+            ax.tick_params(colors=mt['tick_color'], labelsize=8)
+            for spine in ax.spines.values():
+                spine.set_color(mt['spine_color'])
+
+    token_labels = [f'[{i}] {t}' for i, t in enumerate(tokens)]
+
+    # Helper for centered normalization
+    def get_norm(data):
+        dmin, dmax = np.nanmin(data), np.nanmax(data)
+        if dmin < 0 < dmax:
+            return plt.cm.colors.TwoSlopeNorm(vmin=dmin, vcenter=0.0, vmax=dmax)
+        return plt.cm.colors.Normalize(vmin=dmin, vmax=dmax)
+
+    # Plotting panels using mt (Metric Theme) colors
+    plots = [
+        (orc, get_norm(orc), plt.cm.RdBu_r, 'Ollivier-Ricci Curvature', mt['title_orc']),
+        (scalar, get_norm(scalar), plt.cm.coolwarm, 'Scalar Curvature', mt['title_scalar']),
+        (procrustes, None, plt.cm.magma, 'Procrustes Deviation', mt['title_procrustes']),
+        (sectional, None, plt.cm.inferno, 'Sectional Curvature', mt['title_sectional']),
+        (log_det, None, plt.cm.viridis, 'log det(g)', mt['title_logdet']),
+    ]
+
+    for i, (data, norm, cmap, title, t_color) in enumerate(plots):
+        ax = axes[i // 2, i % 2]
+        im = ax.imshow(data, aspect='auto', cmap=cmap, norm=norm, interpolation='nearest')
+        ax.set_title(title, color=t_color, fontsize=11, fontweight='bold')
+        ax.set_xticks(range(seq_len))
+        ax.set_xticklabels(token_labels, rotation=45, ha='right', fontsize=7)
+        fig.colorbar(im, ax=ax, shrink=0.8)
+
+    # Panel 6: Singularity Detection
+    ax = axes[2, 1]
+    combined = np.abs(orc[-n_layers:]) + sectional
+    ax.imshow(combined, aspect='auto', cmap='hot')
+    ax.set_title('Curvature Singularities', color=mt['title_singularity'], fontsize=11, fontweight='bold')
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    if save_path:
+        fig.savefig(save_path, dpi=150, facecolor=fig.get_facecolor())
+    return fig
+
 def visualize_metric_surprisal_correlation(correlation_data, tokens, save_path=None, theme='dark'):
     """
     Visualize the correlation between log det(g) and token surprisal.
