@@ -760,8 +760,8 @@ rsz();
 
 function renderJacobianFieldRawDims(){
     if(!D) {
-	    console.error("No D found in renderJacobianFieldRawDims")
-	    return;
+        console.error("No D found in renderJacobianFieldRawDims");
+        return;
     }
     var dimX = +document.getElementById('sl-dx').value;
     var dimY = +document.getElementById('sl-dy').value;
@@ -775,16 +775,6 @@ function renderJacobianFieldRawDims(){
     var itpMethod  = document.getElementById('sel-itp').value;
     var gridRes    = +document.getElementById('jf-res').value;
 
-    console.log('renderJacobianFieldRawDims CALLED', 
-        'dimX=', +document.getElementById('sl-dx').value,
-        'dimY=', +document.getElementById('sl-dy').value,
-        'nR=', D.n_real,
-        'fixed_pos[0][dimX]=', D.fixed_pos[0][+document.getElementById('sl-dx').value],
-        'fixed_pos[0][dimY]=', D.fixed_pos[0][+document.getElementById('sl-dy').value],
-        'deltas[0][0][dimX]=', D.deltas[0][0][+document.getElementById('sl-dx').value],
-        'deltas[0][0][dimY]=', D.deltas[0][0][+document.getElementById('sl-dy').value]
-    );
-
     var nP = D.n_points;
     var nR = D.n_real;
     var nLayers = D.n_layers;
@@ -792,7 +782,6 @@ function renderJacobianFieldRawDims(){
     var activeDeltas = getActiveDeltas();
     if(!activeDeltas) activeDeltas = D.deltas;
 
-    // ---- BASE POSITIONS: use raw hidden-dim values ----
     var fx = new Float64Array(nR);
     var fy = new Float64Array(nR);
     for (var i = 0; i < nR; i++) {
@@ -800,7 +789,6 @@ function renderJacobianFieldRawDims(){
         fy[i] = D.fixed_pos[i][dimY];
     }
 
-    // ---- DELTAS in the selected dimensions (real tokens only) ----
     var edx = new Float64Array(nR);
     var edy = new Float64Array(nR);
     var isEmb = (mode === 'embedding');
@@ -826,7 +814,6 @@ function renderJacobianFieldRawDims(){
         }
     }
 
-    // ---- Compute view bounds from REAL tokens only ----
     var mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity;
     for (var i = 0; i < nR; i++) {
         if (fx[i] < mnx) mnx = fx[i]; if (fx[i] > mxx) mxx = fx[i];
@@ -842,8 +829,7 @@ function renderJacobianFieldRawDims(){
     var vw = mr * (1 + 2 * pd);
     var vh = vw;
 
-    // ---- Compute LOCAL sigma from the actual data range ----
-    // Use average nearest-neighbor distance for better bandwidth estimation
+    // Compute local sigma
     var dists = [];
     for (var i = 0; i < nR; i++) {
         var bestD = Infinity;
@@ -858,14 +844,13 @@ function renderJacobianFieldRawDims(){
     if (dists.length > 0) {
         dists.sort(function(a, b) { return a - b; });
         var medianDist = dists[Math.floor(dists.length / 2)];
-        localSig = medianDist * 2.0;  // 2x median NN distance
+        localSig = medianDist * 2.0;
         if (localSig < 1e-8) localSig = mr * 0.3;
     } else {
         localSig = mr * 0.3;
     }
     sig = localSig;
 
-    // ---- Build the grid ----
     var N = gridRes;
     var canvas = document.getElementById('jf-canvas');
     if(!canvas) return;
@@ -874,7 +859,6 @@ function renderJacobianFieldRawDims(){
 
     var gridData = [];
     var minVal = Infinity, maxVal = -Infinity;
-
     var eps = vw / N * 0.5;
 
     for(var gy = 0; gy < N; gy++){
@@ -936,11 +920,15 @@ function renderJacobianFieldRawDims(){
     if(range < 1e-12) range = 1;
 
     ctx.clearRect(0, 0, cW, cH);
-    ctx.fillStyle = '#050510';
+    ctx.fillStyle = T.canvasBg;   // was '#050510'
     ctx.fillRect(0, 0, cW, cH);
 
     var cellW = cW / N;
     var cellH = cH / N;
+
+    // Extract theme strain colors for the diverging colormap
+    var expandRGB = T.strainExpand;    // e.g. [233, 69, 96] dark or [192, 57, 43] light
+    var contractRGB = T.strainContract; // e.g. [0, 119, 182] dark or [41, 128, 185] light
 
     for(var gy = 0; gy < N; gy++){
         for(var gx = 0; gx < N; gx++){
@@ -950,23 +938,25 @@ function renderJacobianFieldRawDims(){
 
             var r, g, b;
             if(renderMode === 'shear' || renderMode === 'condition' || renderMode === 'flow' || renderMode === 'stretch'){
-                r = Math.floor(norm * 255);
-                g = Math.floor(norm * norm * 180);
-                b = Math.floor(norm * norm * norm * 100);
+                // Magnitude-only: use theme expand color scaled by intensity
+                r = Math.floor(norm * expandRGB[0]);
+                g = Math.floor(norm * norm * expandRGB[1]);
+                b = Math.floor(norm * norm * norm * Math.max(expandRGB[2] * 0.5, 50));
             } else {
+                // Diverging: use theme contract (negative) and expand (positive) colors
                 var center = (0 - minVal) / range;
                 if(isNaN(center)) center = 0.5;
                 center = Math.max(0, Math.min(1, center));
                 if(norm < center){
                     var t2 = (center - norm) / Math.max(center, 1e-8);
-                    r = 0;
-                    g = Math.floor(t2 * 100);
-                    b = Math.floor(t2 * 220);
+                    r = Math.floor(t2 * contractRGB[0]);
+                    g = Math.floor(t2 * contractRGB[1]);
+                    b = Math.floor(t2 * contractRGB[2]);
                 } else {
                     var t2 = (norm - center) / Math.max(1 - center, 1e-8);
-                    r = Math.floor(t2 * 233);
-                    g = Math.floor(t2 * 60);
-                    b = 0;
+                    r = Math.floor(t2 * expandRGB[0]);
+                    g = Math.floor(t2 * expandRGB[1]);
+                    b = Math.floor(t2 * expandRGB[2] * 0.3);
                 }
             }
 
@@ -982,10 +972,11 @@ function renderJacobianFieldRawDims(){
             var sy = ((fy[i] - vy0) / vh) * cH;
             ctx.beginPath();
             ctx.arc(sx, sy, 3, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(255,255,255,0.15)';
+            // Use theme probe color instead of hardcoded white
+            ctx.fillStyle = T.probeColor;   // was 'rgba(255,255,255,0.15)'
             ctx.fill();
             ctx.font = '8px monospace';
-            ctx.fillStyle = 'rgba(255,255,255,0.2)';
+            ctx.fillStyle = T.hudTextDim;   // was 'rgba(255,255,255,0.2)'
             ctx.fillText(D.tokens[i], sx + 5, sy - 3);
         }
     }
@@ -1008,7 +999,8 @@ function renderJacobianFieldRawDims(){
                     ax *= cellW * step * 0.8 / al;
                     ay *= cellW * step * 0.8 / al;
                 }
-                ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+                // Use theme vector arrow color
+                ctx.strokeStyle = T.vectorArrow;  // was 'rgba(255,255,255,0.4)'
                 ctx.lineWidth = 0.8;
                 ctx.beginPath();
                 ctx.moveTo(sx, sy);
@@ -1016,7 +1008,7 @@ function renderJacobianFieldRawDims(){
                 ctx.stroke();
                 var aa = Math.atan2(ay, ax);
                 var hl = Math.min(4, al * 0.3);
-                ctx.fillStyle = 'rgba(255,255,255,0.4)';
+                ctx.fillStyle = T.arrowHead;      // was 'rgba(255,255,255,0.4)'
                 ctx.beginPath();
                 ctx.moveTo(sx + ax, sy + ay);
                 ctx.lineTo(sx + ax - hl * Math.cos(aa - 0.4), sy + ay - hl * Math.sin(aa - 0.4));
@@ -1046,7 +1038,14 @@ function renderJacobianFieldRawDims(){
                 ctx.rotate(angle);
                 ctx.beginPath();
                 ctx.ellipse(0, 0, Math.min(eSize, sv1e * eSize * 0.5), Math.min(eSize, sv2e * eSize * 0.5), 0, 0, Math.PI * 2);
-                ctx.strokeStyle = 'rgba(255,200,100,0.25)';
+                // Use theme accent3 (orange/warning) with low alpha
+                ctx.strokeStyle = T.accent3 + '40';  // was 'rgba(255,200,100,0.25)'
+                // Fallback if accent3 is hex:
+                var a3 = T.accent3;
+                var a3r = parseInt(a3.slice(1,3),16);
+                var a3g = parseInt(a3.slice(3,5),16);
+                var a3b = parseInt(a3.slice(5,7),16);
+                ctx.strokeStyle = 'rgba(' + a3r + ',' + a3g + ',' + a3b + ',0.25)';
                 ctx.lineWidth = 0.6;
                 ctx.stroke();
                 ctx.restore();
@@ -1070,7 +1069,12 @@ function renderJacobianFieldRawDims(){
                 var disc = tr * tr / 4 - det2;
                 if(disc >= 0){
                     var ang = Math.atan2(d4.J10, a11 - (tr/2 - Math.sqrt(disc)));
-                    ctx.strokeStyle = 'rgba(100,255,200,0.3)';
+                    // Use theme accent5 (green/success) with low alpha
+                    var a5 = T.accent5;
+                    var a5r = parseInt(a5.slice(1,3),16);
+                    var a5g = parseInt(a5.slice(3,5),16);
+                    var a5b = parseInt(a5.slice(5,7),16);
+                    ctx.strokeStyle = 'rgba(' + a5r + ',' + a5g + ',' + a5b + ',0.3)';
                     ctx.lineWidth = 0.7;
                     ctx.beginPath();
                     ctx.moveTo(sx - Math.cos(ang) * evLen, sy - Math.sin(ang) * evLen);
@@ -9374,7 +9378,7 @@ function renderTDAWasserstein(){
     var cv = document.getElementById('tda-wasserstein-cv');
     var ctx = cv.getContext('2d');
     var W = cv.width, H = cv.height;
-    ctx.fillStyle = '#0a0a1a';
+    ctx.fillStyle = T.canvasBg;          // was '#0a0a1a'
     ctx.fillRect(0, 0, W, H);
 
     var matrix = tdaData.wasserstein_distances;
@@ -9387,7 +9391,6 @@ function renderTDAWasserstein(){
     var cellW = plotW / nLayers;
     var cellH = plotH / nLayers;
 
-    // Find max
     var maxDist = 0;
     for(var i = 0; i < nLayers; i++){
         for(var j = 0; j < nLayers; j++){
@@ -9396,33 +9399,33 @@ function renderTDAWasserstein(){
     }
     if(maxDist < 1e-8) maxDist = 1;
 
-    // Draw cells
+    // Draw cells — the magma-like colormap can stay as-is since it's
+    // a data-encoding colormap, not a UI chrome color. But you could
+    // also theme it if desired.
     for(var i = 0; i < nLayers; i++){
         for(var j = 0; j < nLayers; j++){
             var val = matrix[i][j] / maxDist;
-            // Magma-like colormap
             var r, g, b;
             if(val < 0.25){
-                var t = val / 0.25;
-                r = Math.floor(t * 80); g = 0; b = Math.floor(20 + t * 100);
+                var t2 = val / 0.25;
+                r = Math.floor(t2 * 80); g = 0; b = Math.floor(20 + t2 * 100);
             } else if(val < 0.5){
-                var t = (val - 0.25) / 0.25;
-                r = 80 + Math.floor(t * 140); g = Math.floor(t * 30); b = 120 - Math.floor(t * 20);
+                var t2 = (val - 0.25) / 0.25;
+                r = 80 + Math.floor(t2 * 140); g = Math.floor(t2 * 30); b = 120 - Math.floor(t2 * 20);
             } else if(val < 0.75){
-                var t = (val - 0.5) / 0.25;
-                r = 220 + Math.floor(t * 35); g = 30 + Math.floor(t * 120); b = 100 - Math.floor(t * 80);
+                var t2 = (val - 0.5) / 0.25;
+                r = 220 + Math.floor(t2 * 35); g = 30 + Math.floor(t2 * 120); b = 100 - Math.floor(t2 * 80);
             } else {
-                var t = (val - 0.75) / 0.25;
-                r = 255; g = 150 + Math.floor(t * 105); b = 20 + Math.floor(t * 100);
+                var t2 = (val - 0.75) / 0.25;
+                r = 255; g = 150 + Math.floor(t2 * 105); b = 20 + Math.floor(t2 * 100);
             }
-
             ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
             ctx.fillRect(margin.left + j * cellW, margin.top + i * cellH, cellW - 0.5, cellH - 0.5);
         }
 
         // Labels
         ctx.font = '7px monospace';
-        ctx.fillStyle = '#666';
+        ctx.fillStyle = T.textDim;       // was '#666'
         ctx.textAlign = 'right';
         ctx.fillText(i === 0 ? 'E' : 'L' + (i - 1), margin.left - 3, margin.top + i * cellH + cellH / 2 + 3);
         ctx.textAlign = 'center';
@@ -9432,10 +9435,13 @@ function renderTDAWasserstein(){
     // Current layer indicator
     var currentLayer = +document.getElementById('sl-layer').value;
     if(currentLayer < nLayers){
-        ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+        ctx.strokeStyle = T.tokenStroke;  // was 'rgba(255,255,255,0.6)'
+        // Make it semi-transparent using the token stroke color
+        ctx.globalAlpha = 0.6;
         ctx.lineWidth = 1.5;
         ctx.strokeRect(margin.left, margin.top + currentLayer * cellH, plotW, cellH);
         ctx.strokeRect(margin.left + currentLayer * cellW, margin.top, cellW, plotH);
+        ctx.globalAlpha = 1.0;
     }
 }
 
