@@ -31,7 +31,6 @@ from urllib.parse import urlparse
 from datetime import datetime, timedelta, UTC
 from scipy.stats import pearsonr, spearmanr
 import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
 
 MPL_THEMES = {
     'dark': {
@@ -464,115 +463,6 @@ def decode_curvature_singularities(curvature_data, tokens, surprisal=None, top_k
         })
 
     return singularities
-
-
-
-def visualize_metric_surprisal_correlation(correlation_data, tokens, save_path=None):
-    """
-    Visualize the correlation between log det(g) and token surprisal.
-
-    Args:
-        correlation_data: dict from correlate_metric_with_surprisal().
-        tokens: list of token strings.
-        save_path: optional path to save figure.
-
-    Returns:
-        matplotlib Figure object.
-    """
-    surprisal = correlation_data['surprisal']
-    log_det = correlation_data['log_det_g_per_layer']
-    correlations = correlation_data['correlations']
-    best_layer = correlation_data['best_layer']
-    seq_len = len(surprisal)
-
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle('Holographic Decoding: Metric Determinant vs. Information Content',
-                 fontsize=14, fontweight='bold', color='white')
-    fig.patch.set_facecolor('#1a1a2e')
-
-    for ax_row in axes:
-        for ax in ax_row:
-            ax.set_facecolor('#0d1117')
-            ax.tick_params(colors='#a0a0c0', labelsize=8)
-            for spine in ax.spines.values():
-                spine.set_color('#0f3460')
-
-    token_labels = [f'[{i}] {t}' for i, t in enumerate(tokens)]
-
-    # ---- Panel 1: Scatter plot at best layer ----
-    ax = axes[0, 0]
-    ld_best = log_det[best_layer]
-    valid = np.isfinite(ld_best) & np.isfinite(surprisal)
-
-    colors_scatter = plt.cm.viridis(np.linspace(0, 1, seq_len))
-    for i in range(seq_len):
-        if valid[i]:
-            ax.scatter(ld_best[i], surprisal[i], c=[colors_scatter[i]],
-                       s=60, zorder=5, edgecolors='white', linewidths=0.5)
-            ax.annotate(tokens[i], (ld_best[i], surprisal[i]),
-                        fontsize=7, color='#a0a0c0',
-                        textcoords="offset points", xytext=(5, 3))
-
-    # Fit line
-    if valid.sum() >= 2:
-        z = np.polyfit(ld_best[valid], surprisal[valid], 1)
-        p = np.poly1d(z)
-        x_line = np.linspace(ld_best[valid].min(), ld_best[valid].max(), 100)
-        ax.plot(x_line, p(x_line), '--', color='#e94560', linewidth=1.5, alpha=0.7)
-
-    best_corr = correlations[best_layer]
-    ax.set_title(f'Best Layer {best_layer}: r={best_corr["pearson_r"]:.3f}, '
-                 f'ρ={best_corr["spearman_rho"]:.3f}',
-                 color='#e94560', fontsize=10, fontweight='bold')
-    ax.set_xlabel('log det(g)', color='#a0a0c0')
-    ax.set_ylabel('Surprisal (bits)', color='#a0a0c0')
-
-    # ---- Panel 2: Correlation strength across layers ----
-    ax = axes[0, 1]
-    layer_indices = [c['layer'] for c in correlations]
-    pearson_vals = [c['pearson_r'] for c in correlations]
-    spearman_vals = [c['spearman_rho'] for c in correlations]
-
-    ax.bar(np.array(layer_indices) - 0.15, pearson_vals, width=0.3,
-           color='#e94560', alpha=0.8, label='Pearson r')
-    ax.bar(np.array(layer_indices) + 0.15, spearman_vals, width=0.3,
-           color='#53a8b6', alpha=0.8, label='Spearman ρ')
-    ax.axhline(y=0, color='#555', linewidth=0.5)
-    ax.axvline(x=best_layer, color='#f5a623', linewidth=2, linestyle='--',
-               alpha=0.7, label=f'Best layer ({best_layer})')
-    ax.set_title('Correlation Strength Across Layers',
-                 color='#53a8b6', fontsize=10, fontweight='bold')
-    ax.set_xlabel('Layer', color='#a0a0c0')
-    ax.set_ylabel('Correlation', color='#a0a0c0')
-    ax.legend(fontsize=8, facecolor='#0d1117', edgecolor='#0f3460',
-              labelcolor='#a0a0c0')
-
-    # ---- Panel 3: Surprisal profile ----
-    ax = axes[1, 0]
-    ax.bar(range(seq_len), surprisal, color='#7b68ee', alpha=0.8)
-    ax.set_xticks(range(seq_len))
-    ax.set_xticklabels(token_labels, rotation=45, ha='right', fontsize=7)
-    ax.set_title('Token Surprisal Profile', color='#7b68ee',
-                 fontsize=10, fontweight='bold')
-    ax.set_ylabel('Surprisal (bits)', color='#a0a0c0')
-
-    # ---- Panel 4: log det(g) at best layer ----
-    ax = axes[1, 1]
-    ax.bar(range(seq_len), ld_best, color='#2ecc71', alpha=0.8)
-    ax.set_xticks(range(seq_len))
-    ax.set_xticklabels(token_labels, rotation=45, ha='right', fontsize=7)
-    ax.set_title(f'log det(g) at Layer {best_layer}', color='#2ecc71',
-                 fontsize=10, fontweight='bold')
-    ax.set_ylabel('log det(g)', color='#a0a0c0')
-
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
-
-    if save_path:
-        fig.savefig(save_path, dpi=150, bbox_inches='tight',
-                    facecolor=fig.get_facecolor())
-        print(f"[Curvature] Saved correlation plot to {save_path}")
-
-    return fig
 
 def handle_curvature_analysis(body_bytes):
     """
