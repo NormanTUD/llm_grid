@@ -6282,7 +6282,7 @@ function renderContrastiveResults() {
             var ctx = cv.getContext('2d');
             var cw = cv.width, ch = cv.height;
 
-            ctx.fillStyle = '#0a0a1a';
+		ctx.fillStyle = T.panelBgDeep;
             ctx.fillRect(0, 0, cw, ch);
 
             var nBins = ec.pos_histogram.length;
@@ -6623,7 +6623,7 @@ function renderCurvatureSurprisalChart(){
     cv.width = 340;
     cv.height = 140;
     var ctx = cv.getContext('2d');
-    ctx.fillStyle = '#0a0a1a';
+	ctx.fillStyle = T.panelBgDeep;
     ctx.fillRect(0, 0, 340, 140);
 
     // Find ranges
@@ -6904,7 +6904,7 @@ function renderMultiLayer() {
   cv.height = chartH;
   var ctx = cv.getContext('2d');
   var W = cv.width, H = cv.height;
-  ctx.fillStyle = '#0a0a1a';
+	ctx.fillStyle = T.panelBgDeep;
   ctx.fillRect(0, 0, W, H);
 
   var nSent = multiData.n_sentences;
@@ -7044,7 +7044,7 @@ function renderMultiLayerProfile() {
   var cv = document.getElementById('multi-layerprof-cv');
   var ctx = cv.getContext('2d');
   var W = cv.width, H = cv.height;
-  ctx.fillStyle = '#0a0a1a';
+	ctx.fillStyle = T.panelBgDeep;
   ctx.fillRect(0, 0, W, H);
 
   var variances = multiData.summary.layer_total_variances;
@@ -8687,7 +8687,7 @@ function renderTDALayer(){
     var cv = document.getElementById('tda-diagram-cv');
     var ctx = cv.getContext('2d');
     var W = cv.width, H = cv.height;
-    ctx.fillStyle = '#0a0a1a';
+	ctx.fillStyle = T.panelBgDeep;
     ctx.fillRect(0, 0, W, H);
 
     var diagrams = tdaData.persistence_diagrams[layerIdx]; // {dim: [[birth, death], ...]}
@@ -9243,7 +9243,7 @@ function renderTDABettiEvolution(){
     var cv = document.getElementById('tda-betti-cv');
     var ctx = cv.getContext('2d');
     var W = cv.width, H = cv.height;
-    ctx.fillStyle = '#0a0a1a';
+    ctx.fillStyle = T.panelBgDeep;
     ctx.fillRect(0, 0, W, H);
 
     var nLayers = tdaData.layer_summaries.length;
@@ -9251,7 +9251,6 @@ function renderTDABettiEvolution(){
     var plotW = W - margin.left - margin.right;
     var plotH = H - margin.top - margin.bottom;
 
-    // Collect Betti numbers
     var b0 = [], b1 = [], b2 = [];
     var maxB = 0;
     for(var li = 0; li < nLayers; li++){
@@ -9267,20 +9266,20 @@ function renderTDABettiEvolution(){
     function SY(v){ return margin.top + plotH - (v / maxB) * plotH; }
 
     // Grid
-    ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+    ctx.strokeStyle = T.gridRef;
     ctx.lineWidth = 0.5;
     for(var yi = 0; yi <= maxB; yi += Math.max(1, Math.floor(maxB / 4))){
         var yy = SY(yi);
         ctx.beginPath(); ctx.moveTo(margin.left, yy); ctx.lineTo(margin.left + plotW, yy); ctx.stroke();
-        ctx.font = '7px monospace'; ctx.fillStyle = '#555'; ctx.textAlign = 'right';
+        ctx.font = '7px monospace'; ctx.fillStyle = T.textMuted; ctx.textAlign = 'right';
         ctx.fillText(yi, margin.left - 3, yy + 3);
     }
 
     // Draw curves
     var curves = [
-        {data: b0, color: '#e94560', label: 'β₀ (components)'},
-        {data: b1, color: '#f5a623', label: 'β₁ (loops)'},
-        {data: b2, color: '#7b68ee', label: 'β₂ (voids)'}
+        {data: b0, color: T.accent1, label: '\u03b2\u2080 (components)'},
+        {data: b1, color: T.accent3, label: '\u03b2\u2081 (loops)'},
+        {data: b2, color: T.accent4, label: '\u03b2\u2082 (voids)'}
     ];
 
     for(var ci = 0; ci < curves.length; ci++){
@@ -9332,7 +9331,7 @@ function renderTDABettiEvolution(){
     for(var li = 0; li < nLayers; li++){
         if(nLayers <= 20 || li % 2 === 0){
             ctx.font = '7px monospace';
-            ctx.fillStyle = '#555';
+            ctx.fillStyle = T.textMuted;
             ctx.textAlign = 'center';
             ctx.fillText(li === 0 ? 'E' : 'L' + (li - 1), SX(li), H - 4);
         }
@@ -9465,7 +9464,7 @@ function renderTDAEntropy(){
     var cv = document.getElementById('tda-entropy-cv');
     var ctx = cv.getContext('2d');
     var W = cv.width, H = cv.height;
-    ctx.fillStyle = '#0a0a1a';
+    ctx.fillStyle = T.panelBgDeep;
     ctx.fillRect(0, 0, W, H);
 
     var nLayers = tdaData.layer_summaries.length;
@@ -9484,19 +9483,28 @@ function renderTDAEntropy(){
 
     var barW = Math.max(3, Math.floor(plotW / nLayers) - 1);
 
+    // Parse accent5 for the entropy bars
+    var a5 = T.accent5;
+    var a5r = parseInt(a5.slice(1,3),16);
+    var a5g = parseInt(a5.slice(3,5),16);
+    var a5b = parseInt(a5.slice(5,7),16);
+
     for(var li = 0; li < nLayers; li++){
         var h = (entropies[li] / maxE) * plotH;
         var x = margin.left + li * (barW + 1);
         var frac = entropies[li] / maxE;
 
-        ctx.fillStyle = 'rgb(' + Math.floor(46 + frac * 0) + ',' +
-                        Math.floor(204 - frac * 80) + ',' +
-                        Math.floor(113 - frac * 40) + ')';
+        // Interpolate from accent5 at full to dimmed version
+        var r = Math.floor(a5r * (0.2 + frac * 0.8));
+        var g = Math.floor(a5g * (0.2 + frac * 0.8));
+        var b = Math.floor(a5b * (0.2 + frac * 0.8));
+
+        ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
         ctx.fillRect(x, margin.top + plotH - h, barW, h);
 
         if(nLayers <= 25 || li % 2 === 0){
             ctx.font = '6px monospace';
-            ctx.fillStyle = '#555';
+            ctx.fillStyle = T.textMuted;
             ctx.textAlign = 'center';
             ctx.fillText(li === 0 ? 'E' : '' + (li - 1), x + barW / 2, H - 3);
         }
@@ -9629,7 +9637,7 @@ function renderEigenflow(){
     var cv = document.getElementById('morph-canvas');
     var ctx = cv.getContext('2d');
     var W = cv.width, H = cv.height;
-    ctx.fillStyle = '#0a0a1a';
+	ctx.fillStyle = T.panelBgDeep;
     ctx.fillRect(0, 0, W, H);
 
     if(!morphingData || !morphingData.eigenvalue_flow) return;
@@ -9814,7 +9822,7 @@ function renderJacobianDecomp(){
     var cv = document.getElementById('morph-canvas');
     var ctx = cv.getContext('2d');
     var W = cv.width, H = cv.height;
-    ctx.fillStyle = '#0a0a1a';
+	ctx.fillStyle = T.panelBgDeep;
     ctx.fillRect(0, 0, W, H);
 
     if(!morphingData || !morphingData.jacobian_field) return;
@@ -9939,7 +9947,7 @@ function renderHolonomy(){
     var cv = document.getElementById('morph-canvas');
     var ctx = cv.getContext('2d');
     var W = cv.width, H = cv.height;
-    ctx.fillStyle = '#0a0a1a';
+	ctx.fillStyle = T.panelBgDeep;
     ctx.fillRect(0, 0, W, H);
 
     if(!morphingData || !morphingData.holonomy_loops) return;
@@ -10064,7 +10072,7 @@ function renderConnection(){
     var cv = document.getElementById('morph-canvas');
     var ctx = cv.getContext('2d');
     var W = cv.width, H = cv.height;
-    ctx.fillStyle = '#0a0a1a';
+	ctx.fillStyle = T.panelBgDeep;
     ctx.fillRect(0, 0, W, H);
 
     if(!morphingData || !morphingData.connection_field) return;
@@ -10210,7 +10218,7 @@ function renderSVWaterfall(){
     var cv = document.getElementById('morph-canvas');
     var ctx = cv.getContext('2d');
     var W = cv.width, H = cv.height;
-    ctx.fillStyle = '#0a0a1a';
+	ctx.fillStyle = T.panelBgDeep;
     ctx.fillRect(0, 0, W, H);
 
     if(!morphingData || !morphingData.eigenvalue_flow) return;
@@ -10844,8 +10852,8 @@ function renderJacobianField(){
     var W = cv.width, H = cv.height;
     c.clearRect(0, 0, W, H);
 
-    // Dark background
-    c.fillStyle = '#050510';
+    // Theme-aware background
+    c.fillStyle = T.canvasBg;
     c.fillRect(0, 0, W, H);
 
     var layerIdx = Math.min(+document.getElementById('jf-layer').value, jfData.n_layers - 1);
@@ -10885,7 +10893,7 @@ function renderJacobianField(){
         else if(renderMode === 'eigphase') v = d.eig_phase[0];
         else if(renderMode === 'stretch') v = d.stretch_mag1 / Math.max(d.stretch_mag2, 0.001);
         else if(renderMode === 'flow') v = Math.sqrt(d.flow_x * d.flow_x + d.flow_y * d.flow_y);
-        else v = d.divergence; // composite default
+        else v = d.divergence;
         values.push(v);
     }
 
@@ -10932,6 +10940,12 @@ function renderJacobianField(){
 
     // ---- PASS 2: Stretch ellipses ----
     if(showEllipses){
+        // Parse accent3 for ellipse color
+        var a3 = T.accent3;
+        var a3r = parseInt(a3.slice(1,3),16);
+        var a3g = parseInt(a3.slice(3,5),16);
+        var a3b = parseInt(a3.slice(5,7),16);
+
         var ellipseStep = Math.max(1, Math.floor(N / 12));
         for(var gy = 0; gy < N; gy += ellipseStep){
             for(var gx = 0; gx < N; gx += ellipseStep){
@@ -10942,34 +10956,40 @@ function renderJacobianField(){
                 var cx = SX(d.gx);
                 var cy = SY(d.gy);
 
-                // Draw an ellipse whose axes are the principal stretch directions
                 var maxR = Math.min(cellW, cellH) * ellipseStep * 0.4;
                 var rx = Math.min(maxR, d.stretch_mag1 * maxR * 0.5);
                 var ry = Math.min(maxR, d.stretch_mag2 * maxR * 0.5);
 
-                // Rotation from stretch direction
                 var angle = Math.atan2(d.stretch_dir1[1], d.stretch_dir1[0]);
 
-                // Animate: pulse the ellipse
                 var pulse = animate ? 1.0 + 0.1 * Math.sin(jfTime * 2 + idx * 0.3) : 1.0;
                 rx *= pulse;
                 ry *= pulse;
 
                 c.save();
                 c.translate(cx, cy);
-                c.rotate(-angle); // negative because canvas Y is flipped
+                c.rotate(-angle);
 
-                // Ellipse outline
                 var anisotropy = d.condition;
                 var alpha = Math.min(0.7, 0.15 + anisotropy * 0.05);
-                c.strokeStyle = 'rgba(255,255,255,' + alpha.toFixed(2) + ')';
+
+                // Theme-aware ellipse stroke
+                var tsHex = T.tokenStroke;
+                var tsR = parseInt(tsHex.slice(1,3),16) || 255;
+                var tsG = parseInt(tsHex.slice(3,5),16) || 255;
+                var tsB = parseInt(tsHex.slice(5,7),16) || 255;
+                c.strokeStyle = 'rgba(' + tsR + ',' + tsG + ',' + tsB + ',' + alpha.toFixed(2) + ')';
                 c.lineWidth = 0.8;
                 c.beginPath();
                 c.ellipse(0, 0, Math.max(1, rx), Math.max(1, ry), 0, 0, Math.PI * 2);
                 c.stroke();
 
-                // Fill with subtle color based on area change
-                var detColor = d.det > 1 ? 'rgba(233,69,96,0.08)' : 'rgba(0,119,182,0.08)';
+                // Theme-aware fill based on area change
+                var expandRGB = T.strainExpand;
+                var contractRGB = T.strainContract;
+                var detColor = d.det > 1 ?
+                    'rgba(' + expandRGB[0] + ',' + expandRGB[1] + ',' + expandRGB[2] + ',0.08)' :
+                    'rgba(' + contractRGB[0] + ',' + contractRGB[1] + ',' + contractRGB[2] + ',0.08)';
                 c.fillStyle = detColor;
                 c.fill();
 
@@ -10980,6 +11000,12 @@ function renderJacobianField(){
 
     // ---- PASS 3: Eigenvector directions ----
     if(showEigvecs){
+        // Parse theme colors for eigenvectors
+        var a7 = T.accent7;
+        var a7r = parseInt(a7.slice(1,3),16), a7g = parseInt(a7.slice(3,5),16), a7b = parseInt(a7.slice(5,7),16);
+        var a6 = T.accent6;
+        var a6r = parseInt(a6.slice(1,3),16), a6g = parseInt(a6.slice(3,5),16), a6b = parseInt(a6.slice(5,7),16);
+
         var evecStep = Math.max(1, Math.floor(N / 10));
         for(var gy = 0; gy < N; gy += evecStep){
             for(var gx = 0; gx < N; gx += evecStep){
@@ -10992,27 +11018,26 @@ function renderJacobianField(){
 
                 var evecLen = Math.min(cellW, cellH) * evecStep * 0.35;
 
-                // Eigenvector 1 (cyan)
+                // Eigenvector 1 (theme accent7 / cyan)
                 var ev1x = d.evec1[0] * evecLen * d.eig_mag[0];
                 var ev1y = d.evec1[1] * evecLen * d.eig_mag[0];
-                // Clamp
                 var ev1L = Math.sqrt(ev1x * ev1x + ev1y * ev1y);
                 if(ev1L > evecLen * 2){ ev1x *= evecLen * 2 / ev1L; ev1y *= evecLen * 2 / ev1L; }
 
-                c.strokeStyle = 'rgba(0,200,255,0.4)';
+                c.strokeStyle = 'rgba(' + a7r + ',' + a7g + ',' + a7b + ',0.4)';
                 c.lineWidth = 0.8;
                 c.beginPath();
                 c.moveTo(cx - ev1x, cy + ev1y);
                 c.lineTo(cx + ev1x, cy - ev1y);
                 c.stroke();
 
-                // Eigenvector 2 (magenta)
+                // Eigenvector 2 (theme accent6 / magenta)
                 var ev2x = d.evec2[0] * evecLen * d.eig_mag[1];
                 var ev2y = d.evec2[1] * evecLen * d.eig_mag[1];
                 var ev2L = Math.sqrt(ev2x * ev2x + ev2y * ev2y);
                 if(ev2L > evecLen * 2){ ev2x *= evecLen * 2 / ev2L; ev2y *= evecLen * 2 / ev2L; }
 
-                c.strokeStyle = 'rgba(255,100,255,0.4)';
+                c.strokeStyle = 'rgba(' + a6r + ',' + a6g + ',' + a6b + ',0.4)';
                 c.lineWidth = 0.8;
                 c.beginPath();
                 c.moveTo(cx - ev2x, cy + ev2y);
@@ -11024,6 +11049,10 @@ function renderJacobianField(){
 
     // ---- PASS 4: Flow field (animated streamlines) ----
     if(renderMode === 'flow' || renderMode === 'composite'){
+        // Parse theme vectorArrow color
+        var vaMatch = T.vectorArrow.match(/[\d.]+/g);
+        var vaR = vaMatch[0], vaG = vaMatch[1], vaB = vaMatch[2];
+
         var flowStep = Math.max(1, Math.floor(N / 14));
         var maxArrowLen = Math.min(cellW, cellH) * flowStep * 0.6;
 
@@ -11039,14 +11068,12 @@ function renderJacobianField(){
                 var flowMag = Math.sqrt(d.flow_x * d.flow_x + d.flow_y * d.flow_y);
                 if(flowMag < 1e-8) continue;
 
-                // Scale flow to pixel space
                 var pixPerWorldX = plotW / (xRange[1] - xRange[0]);
                 var pixPerWorldY = plotH / (yRange[1] - yRange[0]);
 
                 var arrowX = d.flow_x * pixPerWorldX * 0.3;
-                var arrowY = -d.flow_y * pixPerWorldY * 0.3; // flip Y
+                var arrowY = -d.flow_y * pixPerWorldY * 0.3;
 
-                // Clamp arrow length
                 var arrowLen = Math.sqrt(arrowX * arrowX + arrowY * arrowY);
                 if(arrowLen > maxArrowLen){
                     arrowX *= maxArrowLen / arrowLen;
@@ -11056,15 +11083,13 @@ function renderJacobianField(){
 
                 if(arrowLen < 1.5) continue;
 
-                // Animate: pulse the arrow
                 var pulse = animate ? 0.7 + 0.3 * Math.sin(jfTime * 3 + idx * 0.2) : 1.0;
                 arrowX *= pulse;
                 arrowY *= pulse;
 
-                // Color by flow magnitude
                 var flowAlpha = Math.min(0.8, 0.2 + flowMag * 2);
-                c.strokeStyle = 'rgba(255,255,100,' + flowAlpha.toFixed(2) + ')';
-                c.fillStyle = 'rgba(255,255,100,' + flowAlpha.toFixed(2) + ')';
+                c.strokeStyle = 'rgba(' + vaR + ',' + vaG + ',' + vaB + ',' + flowAlpha.toFixed(2) + ')';
+                c.fillStyle = 'rgba(' + vaR + ',' + vaG + ',' + vaB + ',' + flowAlpha.toFixed(2) + ')';
                 c.lineWidth = Math.max(0.5, Math.min(1.5, arrowLen / 15));
 
                 // Shaft
@@ -11086,20 +11111,19 @@ function renderJacobianField(){
         }
     }
 
-    // ---- PASS 5: Ghost token positions (faint dots showing where data lives) ----
+    // ---- PASS 5: Ghost token positions ----
     if(showGhosts && field.token_positions_2d){
         var tokPos = field.token_positions_2d;
-        var tc = ['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71',
-                  '#e74c3c','#3498db','#9b59b6','#1abc9c','#e67e22'];
+        var tc = T.tokenColors;
 
         for(var ti = 0; ti < tokPos.length; ti++){
             var tx = SX(tokPos[ti][0]);
             var ty = SY(tokPos[ti][1]);
 
-            // Very faint glow
+            // Theme-aware glow
             var grad = c.createRadialGradient(tx, ty, 0, tx, ty, 8);
-            grad.addColorStop(0, 'rgba(255,255,255,0.06)');
-            grad.addColorStop(1, 'rgba(255,255,255,0)');
+            grad.addColorStop(0, T.probeColor);
+            grad.addColorStop(1, 'rgba(0,0,0,0)');
             c.beginPath();
             c.arc(tx, ty, 8, 0, Math.PI * 2);
             c.fillStyle = grad;
@@ -11113,35 +11137,38 @@ function renderJacobianField(){
             c.fill();
             c.globalAlpha = 1.0;
 
-            // Token label (very faint)
+            // Token label
             if(jfData.tokens && ti < jfData.tokens.length){
                 c.font = '7px monospace';
-                c.fillStyle = 'rgba(255,255,255,0.15)';
+                c.fillStyle = T.hudTextDim;
                 c.textAlign = 'left';
                 c.fillText(jfData.tokens[ti], tx + 4, ty - 3);
             }
         }
     }
 
-    // ---- PASS 6: Animated particle advection (flow tracer particles) ----
+    // ---- PASS 6: Animated particle advection ----
     if(animate && (renderMode === 'flow' || renderMode === 'composite')){
+        // Parse accent3 for particle color
+        var a3p = T.accent3;
+        var a3pr = parseInt(a3p.slice(1,3),16);
+        var a3pg = parseInt(a3p.slice(3,5),16);
+        var a3pb = parseInt(a3p.slice(5,7),16);
+
         var nParticles = 40;
         for(var pi = 0; pi < nParticles; pi++){
-            // Seed particles at pseudo-random positions that drift with time
             var seed = pi * 137.5 + jfTime * 0.3;
             var px = xRange[0] + ((Math.sin(seed * 1.1) * 0.5 + 0.5) +
                      jfTime * 0.02 * Math.sin(pi * 0.7)) % 1.0 * (xRange[1] - xRange[0]);
             var py = yRange[0] + ((Math.cos(seed * 0.9) * 0.5 + 0.5) +
                      jfTime * 0.015 * Math.cos(pi * 0.5)) % 1.0 * (yRange[1] - yRange[0]);
 
-            // Wrap around
             px = xRange[0] + ((px - xRange[0]) % (xRange[1] - xRange[0]) + (xRange[1] - xRange[0])) % (xRange[1] - xRange[0]);
             py = yRange[0] + ((py - yRange[0]) % (yRange[1] - yRange[0]) + (yRange[1] - yRange[0])) % (yRange[1] - yRange[0]);
 
             var sx = SX(px);
             var sy = SY(py);
 
-            // Find nearest grid cell for flow direction
             var gxi = Math.floor(((px - xRange[0]) / (xRange[1] - xRange[0])) * N);
             var gyi = Math.floor(((py - yRange[0]) / (yRange[1] - yRange[0])) * N);
             gxi = Math.max(0, Math.min(N - 1, gxi));
@@ -11149,13 +11176,11 @@ function renderJacobianField(){
             var nearIdx = gyi * N + gxi;
 
             if(nearIdx < data.length){
-                var nd = data[nearIdx];
                 var particleAlpha = 0.3 + 0.3 * Math.sin(jfTime * 2 + pi * 0.8);
 
-                // Draw a small trail
                 c.beginPath();
                 c.arc(sx, sy, 1.5, 0, Math.PI * 2);
-                c.fillStyle = 'rgba(255,255,200,' + particleAlpha.toFixed(2) + ')';
+                c.fillStyle = 'rgba(' + a3pr + ',' + a3pg + ',' + a3pb + ',' + particleAlpha.toFixed(2) + ')';
                 c.fill();
             }
         }
@@ -11163,33 +11188,34 @@ function renderJacobianField(){
 
     // ---- HUD ----
     c.font = '10px monospace';
-    c.fillStyle = 'rgba(255,255,255,0.4)';
+    c.fillStyle = T.hudText;
     c.textAlign = 'left';
     c.fillText(
         'JACOBIAN FIELD  Layer ' + layerIdx + '/' + (jfData.n_layers - 1) +
-        '  Grid ' + N + '×' + N +
+        '  Grid ' + N + '\u00d7' + N +
         '  Mode: ' + renderMode +
-        '  [No Points — Pure Morphing]',
+        '  [No Points \u2014 Pure Morphing]',
         8, H - 8
     );
 
     c.textAlign = 'right';
+    c.fillStyle = T.hudTextDim;
     c.fillText(
         jfData.seq_len + ' tokens (ghosted) | ' +
-        jfData.hidden_dim + 'd → PCA ' + jfData.pca_d + 'd',
+        jfData.hidden_dim + 'd \u2192 PCA ' + jfData.pca_d + 'd',
         W - 8, H - 8
     );
 
     // ---- Legend bar ----
     var legendTitle = {
-        'divergence': 'Divergence (∇·F)',
-        'curl': 'Curl (∇×F)',
+        'divergence': 'Divergence (\u2207\u00b7F)',
+        'curl': 'Curl (\u2207\u00d7F)',
         'shear': 'Shear (traceless strain)',
         'det': 'Determinant (area change)',
         'rotation': 'Rotation angle',
         'condition': 'log(Condition number)',
         'eigphase': 'Eigenvalue phase',
-        'stretch': 'Stretch ratio (σ₁/σ₂)',
+        'stretch': 'Stretch ratio (\u03c3\u2081/\u03c3\u2082)',
         'flow': 'Flow magnitude',
         'composite': 'Composite'
     };
