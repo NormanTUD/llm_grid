@@ -1,3 +1,252 @@
+// ============================================================
+// THEME SYSTEM — Single source of truth for all colors
+// ============================================================
+
+var THEMES = {
+    dark: {
+        // Page & panels
+        bodyBg:         '#1a1a2e',
+        sideBg:         '#16213e',
+        sideBorder:     '#0f3460',
+        canvasBg:       '#0d1117',
+        panelBg:        '#0f3460',
+        panelBgDeep:    '#0a0a1a',
+        textPrimary:    '#e0e0e0',
+        textSecondary:  '#a0a0c0',
+        textMuted:      '#555',
+        textDim:        '#666',
+        accent1:        '#e94560',   // red/pink — primary accent
+        accent2:        '#53a8b6',   // teal — secondary accent
+        accent3:        '#f5a623',   // orange — warnings/predicted
+        accent4:        '#7b68ee',   // purple — tertiary
+        accent5:        '#2ecc71',   // green — success
+        accent6:        '#fd79a8',   // pink — morphing
+        accent7:        '#00bcd4',   // cyan — TDA
+        accent8:        '#ff6b9d',   // salmon — Jacobian
+
+        // Canvas-specific
+        gridRef:        'rgba(255,255,255,0.07)',
+        gridRefEmb:     'rgba(255,255,255,0.15)',
+        gridLine:       'rgba(200,200,200,0.5)',
+        axisText:       'rgba(255,255,255,0.45)',
+        axisTextDim:    'rgba(255,255,255,0.35)',
+        hudText:        'rgba(255,255,255,0.45)',
+        hudTextDim:     'rgba(255,255,255,0.3)',
+        tokenStroke:    '#fff',
+        tokenStrokeSel: '#0f0',
+        selGlow:        'rgba(0,255,0,0.25)',
+        neighborLine:   'rgba(0,255,200,',     // append alpha + ')'
+        neighborDot:    'rgba(0,255,200,0.8)',
+        probeColor:     'rgba(100,200,255,0.2)',
+        vectorArrow:    'rgba(255,255,100,0.6)',
+        arrowHead:      'rgba(255,255,100,0.6)',
+
+        // Strain heatmap
+        strainExpand:   [233, 69, 96],
+        strainContract: [0, 119, 182],
+        strainNeutral:  [120, 100, 100],
+
+        // Room/fibre backgrounds
+        roomBg:         'rgba(30,30,60,',       // append alpha + ')'
+        roomBorder:     'rgba(60,60,100,0.25)',
+        roomBorderActive: 'rgba(233,69,96,0.6)',
+        separator:      'rgba(60,60,100,',
+
+        // Neuron grid
+        neuronBgEmpty:  [10, 5, 20],
+
+        // Compare mode
+        diffPositive:   [233, 50, 30],   // A >> B
+        diffNegative:   [0, 80, 220],    // B >> A
+        diffNeutral:    [0, 0, 0],
+
+        // Legend
+        legendBg:       'rgba(15,52,96,0.9)',
+
+        // Buttons
+        btnPrimary:     '#e94560',
+        btnPrimaryHover:'#c73e54',
+        btnDisabled:    '#555',
+        inputBg:        '#0d1117',
+        inputBorder:    '#0f3460',
+        scrollThumb:    '#0f3460',
+
+        // Token colors (cycle)
+        tokenColors: [
+            '#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71',
+            '#e74c3c','#3498db','#9b59b6','#1abc9c','#e67e22',
+            '#f39c12','#d35400','#c0392b','#16a085','#27ae60',
+            '#2980b9','#8e44ad','#2c3e50','#ecf0f1','#fd79a8'
+        ],
+
+        // Matplotlib (sent to server for plot generation)
+        mpl: {
+            figFace:    '#1a1a2e',
+            axFace:     '#0d1117',
+            textColor:  '#a0a0c0',
+            spineColor: '#0f3460',
+            titleColors: {
+                orc:        '#e94560',
+                scalar:     '#53a8b6',
+                procrustes: '#f5a623',
+                sectional:  '#7b68ee',
+                logdet:     '#2ecc71',
+                singularity:'#e94560',
+            }
+        }
+    },
+
+    light: {
+        bodyBg:         '#f5f5f5',
+        sideBg:         '#ffffff',
+        sideBorder:     '#d0d0d0',
+        canvasBg:       '#ffffff',
+        panelBg:        '#e8eef4',
+        panelBgDeep:    '#f0f0f0',
+        textPrimary:    '#1a1a2e',
+        textSecondary:  '#4a4a6a',
+        textMuted:      '#999',
+        textDim:        '#888',
+        accent1:        '#c0392b',
+        accent2:        '#2980b9',
+        accent3:        '#d35400',
+        accent4:        '#6c3483',
+        accent5:        '#27ae60',
+        accent6:        '#c0392b',
+        accent7:        '#0097a7',
+        accent8:        '#d81b60',
+
+        gridRef:        'rgba(0,0,0,0.08)',
+        gridRefEmb:     'rgba(0,0,0,0.15)',
+        gridLine:       'rgba(60,60,60,0.5)',
+        axisText:       'rgba(0,0,0,0.55)',
+        axisTextDim:    'rgba(0,0,0,0.4)',
+        hudText:        'rgba(0,0,0,0.55)',
+        hudTextDim:     'rgba(0,0,0,0.35)',
+        tokenStroke:    '#333',
+        tokenStrokeSel: '#00aa00',
+        selGlow:        'rgba(0,180,0,0.2)',
+        neighborLine:   'rgba(0,150,120,',
+        neighborDot:    'rgba(0,150,120,0.8)',
+        probeColor:     'rgba(50,100,200,0.2)',
+        vectorArrow:    'rgba(180,150,0,0.7)',
+        arrowHead:      'rgba(180,150,0,0.7)',
+
+        strainExpand:   [192, 57, 43],
+        strainContract: [41, 128, 185],
+        strainNeutral:  [140, 130, 130],
+
+        roomBg:         'rgba(220,225,235,',
+        roomBorder:     'rgba(160,160,180,0.3)',
+        roomBorderActive: 'rgba(192,57,43,0.6)',
+        separator:      'rgba(160,160,180,',
+
+        neuronBgEmpty:  [230, 230, 240],
+
+        diffPositive:   [192, 40, 30],
+        diffNegative:   [30, 80, 180],
+        diffNeutral:    [200, 200, 200],
+
+        legendBg:       'rgba(255,255,255,0.92)',
+
+        btnPrimary:     '#c0392b',
+        btnPrimaryHover:'#a93226',
+        btnDisabled:    '#bbb',
+        inputBg:        '#ffffff',
+        inputBorder:    '#c0c0c0',
+        scrollThumb:    '#b0b0b0',
+
+        tokenColors: [
+            '#c0392b','#d35400','#2980b9','#6c3483','#27ae60',
+            '#e74c3c','#2471a3','#7d3c98','#1abc9c','#ca6f1e',
+            '#d4ac0d','#ba4a00','#922b21','#148f77','#1e8449',
+            '#2471a3','#6c3483','#1c2833','#566573','#d81b60'
+        ],
+
+        mpl: {
+            figFace:    '#f5f5f5',
+            axFace:     '#ffffff',
+            textColor:  '#333333',
+            spineColor: '#cccccc',
+            titleColors: {
+                orc:        '#c0392b',
+                scalar:     '#2980b9',
+                procrustes: '#d35400',
+                sectional:  '#6c3483',
+                logdet:     '#27ae60',
+                singularity:'#c0392b',
+            }
+        }
+    }
+};
+
+// Current active theme — default dark
+var currentThemeName = 'dark';
+var T = THEMES.dark;  // shorthand reference used everywhere
+
+function setTheme(name) {
+    currentThemeName = name;
+    T = THEMES[name];
+    applyThemeToCSS();
+    draw();
+    // If curvature/TDA data exists, re-render those panels too
+    if (curvatureData) {
+        renderCurvatureHeatmap();
+        renderCurvatureSurprisalChart();
+    }
+}
+
+function toggleTheme() {
+    setTheme(currentThemeName === 'dark' ? 'light' : 'dark');
+}
+
+function applyThemeToCSS() {
+    document.body.style.background = T.bodyBg;
+    document.body.style.color = T.textPrimary;
+
+    var side = document.getElementById('side');
+    if (side) {
+        side.style.background = T.sideBg;
+        side.style.borderRightColor = T.sideBorder;
+    }
+
+    var cv = document.getElementById('cv');
+    if (cv) cv.style.background = T.canvasBg;
+
+    // Update CSS custom properties for elements styled via CSS
+    var root = document.documentElement;
+    root.style.setProperty('--body-bg', T.bodyBg);
+    root.style.setProperty('--side-bg', T.sideBg);
+    root.style.setProperty('--canvas-bg', T.canvasBg);
+    root.style.setProperty('--panel-bg', T.panelBg);
+    root.style.setProperty('--text-primary', T.textPrimary);
+    root.style.setProperty('--text-secondary', T.textSecondary);
+    root.style.setProperty('--text-muted', T.textMuted);
+    root.style.setProperty('--accent1', T.accent1);
+    root.style.setProperty('--accent2', T.accent2);
+    root.style.setProperty('--accent3', T.accent3);
+    root.style.setProperty('--btn-primary', T.btnPrimary);
+    root.style.setProperty('--btn-primary-hover', T.btnPrimaryHover);
+    root.style.setProperty('--input-bg', T.inputBg);
+    root.style.setProperty('--input-border', T.inputBorder);
+    root.style.setProperty('--side-border', T.sideBorder);
+    root.style.setProperty('--legend-bg', T.legendBg);
+
+    // Update all panels, inputs, selects dynamically
+    var panels = document.querySelectorAll('#info, #neighbor-panel, #next-token-panel, #strain-stats-panel');
+    panels.forEach(function(el) { el.style.background = T.panelBg; });
+
+    var inputs = document.querySelectorAll('input[type=text], textarea, select');
+    inputs.forEach(function(el) {
+        el.style.background = T.inputBg;
+        el.style.color = T.textPrimary;
+        el.style.borderColor = T.inputBorder;
+    });
+
+    var legend = document.getElementById('legend');
+    if (legend) legend.style.background = T.legendBg;
+}
+
 var diffeoCanvas = document.getElementById('diffeo-canvas');
 var diffeoCtx = diffeoCanvas ? diffeoCanvas.getContext('2d') : null;
 var diffeoAnimId = null;
@@ -1311,10 +1560,26 @@ function nxtD(){
     dx.value=x;dy.value=y;dx.dispatchEvent(new Event('input'));
 }
 
-function s2c(s){
-    if(s<=.5)return[0,180,220];if(s>=1.5)return[233,69,96];
-    if(s<1){var f=(s-.5)/.5;return[~~(f*120),~~(180-f*80),~~(220-f*120)]}
-    var f2=(s-1)/.5;return[~~(120+f2*113),~~(100-f2*31),~~(100-f2*4)];
+function s2c(s) {
+    var exp = T.strainExpand;
+    var con = T.strainContract;
+    var neu = T.strainNeutral;
+    if (s <= 0.5) return con;
+    if (s >= 1.5) return exp;
+    if (s < 1) {
+        var f = (s - 0.5) / 0.5;
+        return [
+            ~~(con[0] + f * (neu[0] - con[0])),
+            ~~(con[1] + f * (neu[1] - con[1])),
+            ~~(con[2] + f * (neu[2] - con[2]))
+        ];
+    }
+    var f2 = (s - 1) / 0.5;
+    return [
+        ~~(neu[0] + f2 * (exp[0] - neu[0])),
+        ~~(neu[1] + f2 * (exp[1] - neu[1])),
+        ~~(neu[2] + f2 * (exp[2] - neu[2]))
+    ];
 }
 
 function draw2D(){
@@ -1556,33 +1821,20 @@ function drawPredictedTokens2D(c, D, fx, fy, nP, SX, SY) {
 }
 
 function drawRealTokenDots2D(c, D, fx, fy, nR, isEmb, SX, SY) {
-    var tc=['#e94560','#f5a623','#53a8b6','#7b68ee','#2ecc71',
-        '#e74c3c','#3498db','#9b59b6','#1abc9c','#e67e22',
-        '#f39c12','#d35400','#c0392b','#16a085','#27ae60',
-        '#2980b9','#8e44ad','#2c3e50','#ecf0f1','#fd79a8'];
-    for(var ti=0;ti<nR;ti++){
-        var tx2=SX(fx[ti]),ty2=SY(fy[ti]),col=tc[ti%tc.length];
-        var isSel=selectedTokens.has(ti);
-        if(isSel){
-            var grad2=c.createRadialGradient(tx2,ty2,0,tx2,ty2,30);
-            grad2.addColorStop(0,'rgba(0,255,0,0.25)');grad2.addColorStop(1,'rgba(0,255,0,0)');
-            c.beginPath();c.arc(tx2,ty2,30,0,Math.PI*2);c.fillStyle=grad2;c.fill();
+    var tc = T.tokenColors;
+    for (var ti = 0; ti < nR; ti++) {
+        var tx2 = SX(fx[ti]), ty2 = SY(fy[ti]), col = tc[ti % tc.length];
+        var isSel = selectedTokens.has(ti);
+        if (isSel) {
+            var grad2 = c.createRadialGradient(tx2, ty2, 0, tx2, ty2, 30);
+            grad2.addColorStop(0, T.selGlow);
+            grad2.addColorStop(1, 'rgba(0,0,0,0)');
+            c.beginPath(); c.arc(tx2, ty2, 30, 0, Math.PI * 2);
+            c.fillStyle = grad2; c.fill();
         }
-        var grad=c.createRadialGradient(tx2,ty2,0,tx2,ty2,20);
-        grad.addColorStop(0,'rgba(255,255,255,0.08)');grad.addColorStop(1,'rgba(255,255,255,0)');
-        c.beginPath();c.arc(tx2,ty2,20,0,Math.PI*2);c.fillStyle=grad;c.fill();
-        c.beginPath();c.arc(tx2,ty2,isSel?9:7,0,Math.PI*2);
-        c.fillStyle=col;c.fill();
-        c.strokeStyle=isSel?'#0f0':'#fff';c.lineWidth=isSel?3:2;c.stroke();
-        c.font='bold 11px monospace';c.lineWidth=3;c.strokeStyle='rgba(0,0,0,0.9)';
-        var lb='['+ti+'] '+D.tokens[ti];
-        c.strokeText(lb,tx2+12,ty2-10);c.fillStyle=isSel?'#0f0':'#fff';c.fillText(lb,tx2+12,ty2-10);
-    }
-    if(isEmb&&nR>1){
-        c.strokeStyle='rgba(233,69,96,0.3)';c.lineWidth=1.5;c.setLineDash([4,4]);
-        c.beginPath();c.moveTo(SX(fx[0]),SY(fy[0]));
-        for(var ti2=1;ti2<nR;ti2++)c.lineTo(SX(fx[ti2]),SY(fy[ti2]));
-        c.stroke();c.setLineDash([]);
+        // ... rest uses T.tokenStroke, T.tokenStrokeSel, etc.
+        c.strokeStyle = isSel ? T.tokenStrokeSel : T.tokenStroke;
+        // ...
     }
 }
 
@@ -1606,15 +1858,20 @@ function drawVocabNeighbors2D(c, D, fx, fy, nR, SX, SY) {
 
 function draw2DHUD(c, W, H, p, dx, dy, isEmb) {
     var decompLabel = getDecompLabel();
-    c.font='11px monospace';c.fillStyle='rgba(255,255,255,0.45)';
-    if(isEmb){
-        c.fillText('EMBEDDING SPACE [2D]  Dims:'+dx+','+dy,42,18);
+    c.font = '11px monospace';
+    c.fillStyle = T.hudText;
+    if (isEmb) {
+        c.fillText('EMBEDDING SPACE [2D]  Dims:' + dx + ',' + dy, 42, 18);
     } else {
         var itpLabel = document.getElementById('sel-itp').value.toUpperCase();
-        c.fillText('Layer '+p.layer+'/'+(D.n_layers-1)+'  t='+p.t.toFixed(2)+'  amp='+p.amp.toFixed(1)+'  Dims:'+dx+','+dy+'  Mode:'+p.mode+'  Decomp:'+decompLabel+'  ITP:'+itpLabel+'  [2D]',42,18);
+        c.fillText('Layer ' + p.layer + '/' + (D.n_layers - 1) + '  t=' + p.t.toFixed(2) +
+            '  amp=' + p.amp.toFixed(1) + '  Dims:' + dx + ',' + dy +
+            '  Mode:' + p.mode + '  Decomp:' + decompLabel +
+            '  ITP:' + itpLabel + '  [2D]', 42, 18);
     }
-    c.font='10px monospace';c.fillStyle='rgba(255,255,255,0.35)';
-    c.fillText('Zoom: '+zoomLevel.toFixed(2)+'x  (Scroll=zoom, Shift+drag=pan, 0=reset)',42,H-10);
+    c.font = '10px monospace';
+    c.fillStyle = T.hudTextDim;
+    c.fillText('Zoom: ' + zoomLevel.toFixed(2) + 'x  (Scroll=zoom, Shift+drag=pan, 0=reset)', 42, H - 10);
 }
 
 // ===================== SAE FEATURE INSPECTOR =====================
@@ -7375,12 +7632,14 @@ function runCurvatureAnalysis(){
     fetch('/curvature', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-            text: D.text,
-            k_neighbors: kNeighbors,
-            pca_d: pcaD,
-            top_k_singularities: topK
-        })
+	    body: JSON.stringify({
+		    text: D.text,
+		    k_neighbors: kNeighbors,
+		    pca_d: pcaD,
+		    top_k_singularities: topK,
+		    theme: currentThemeName
+	    })
+
     })
     .then(function(r){
         if(!r.ok) throw new Error('Server error ' + r.status);

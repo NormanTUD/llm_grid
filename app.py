@@ -33,167 +33,145 @@ from scipy.stats import pearsonr, spearmanr
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 
+MPL_THEMES = {
+    'dark': {
+        'fig_face': '#1a1a2e',
+        'ax_face': '#0d1117',
+        'text_color': '#a0a0c0',
+        'spine_color': '#0f3460',
+        'tick_color': '#a0a0c0',
+        'title_orc': '#e94560',
+        'title_scalar': '#53a8b6',
+        'title_procrustes': '#f5a623',
+        'title_sectional': '#7b68ee',
+        'title_logdet': '#2ecc71',
+        'title_singularity': '#e94560',
+    },
+    'light': {
+        'fig_face': '#f5f5f5',
+        'ax_face': '#ffffff',
+        'text_color': '#333333',
+        'spine_color': '#cccccc',
+        'tick_color': '#333333',
+        'title_orc': '#c0392b',
+        'title_scalar': '#2980b9',
+        'title_procrustes': '#d35400',
+        'title_sectional': '#6c3483',
+        'title_logdet': '#27ae60',
+        'title_singularity': '#c0392b',
+    }
+}
+
 _SAE_RELEASE_ID = None
 _SAE_N_LAYERS = 0
 _SAE_LOAD_ATTEMPTED = set()  # track layers we already tried to load
 default_k = 1
 
-def visualize_curvature_landscape(curvature_data, tokens, save_path=None):
+def visualize_metric_surprisal_correlation(correlation_data, tokens, save_path=None, theme='dark'):
     """
-    Render the Curvature Landscape across the model's depth.
-
-    Args:
-        curvature_data: dict returned by estimate_fiber_curvature().
-        tokens: list of token strings.
-        save_path: if provided, save figure to this path instead of showing.
-
-    Returns:
-        matplotlib Figure object.
+    Visualize the correlation between log det(g) and token surprisal.
     """
-    orc = curvature_data['ollivier_ricci']           # [n_layers+1, seq_len]
-    scalar = curvature_data['scalar_curvature']       # [n_layers, seq_len]
-    log_det = curvature_data['metric_log_det']        # [n_layers+1, seq_len]
-    procrustes = curvature_data['procrustes_deviation']  # [n_layers, seq_len]
-    sectional = curvature_data['sectional_curvature']    # [n_layers, seq_len]
+    surprisal = correlation_data['surprisal']
+    log_det = correlation_data['log_det_g_per_layer']
+    correlations = correlation_data['correlations']
+    best_layer = correlation_data['best_layer']
+    seq_len = len(surprisal)
 
-    n_layers_orc, seq_len = orc.shape
-    n_layers = scalar.shape[0]
+    mt = MPL_THEMES.get(theme, MPL_THEMES['dark'])
 
-    fig, axes = plt.subplots(3, 2, figsize=(18, 14))
-    fig.suptitle('Holographic Curvature Landscape', fontsize=16, fontweight='bold', color='white')
-    fig.patch.set_facecolor('#1a1a2e')
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle('Holographic Decoding: Metric Determinant vs. Information Content',
+                 fontsize=14, fontweight='bold', color=mt['text_color'])
+    fig.patch.set_facecolor(mt['fig_face'])
 
     for ax_row in axes:
         for ax in ax_row:
-            ax.set_facecolor('#0d1117')
-            ax.tick_params(colors='#a0a0c0', labelsize=8)
-            ax.spines['bottom'].set_color('#0f3460')
-            ax.spines['top'].set_color('#0f3460')
-            ax.spines['left'].set_color('#0f3460')
-            ax.spines['right'].set_color('#0f3460')
+            ax.set_facecolor(mt['ax_face'])
+            ax.tick_params(colors=mt['tick_color'], labelsize=8)
+            for spine in ax.spines.values():
+                spine.set_color(mt['spine_color'])
 
     token_labels = [f'[{i}] {t}' for i, t in enumerate(tokens)]
 
-    # ---- Helper: build a safe TwoSlopeNorm centered at 0 ----
-    def safe_two_slope_norm(data_min, data_max, vcenter=0.0):
-        """
-        Build a TwoSlopeNorm that is guaranteed to satisfy vmin < vcenter < vmax.
-        Falls back to a simple Normalize if the data doesn't straddle vcenter.
-        """
-        dmin = float(data_min)
-        dmax = float(data_max)
-
-        # Ensure we have finite values
-        if not np.isfinite(dmin):
-            dmin = -1.0
-        if not np.isfinite(dmax):
-            dmax = 1.0
-
-        # Case 1: data straddles vcenter — normal TwoSlopeNorm
-        if dmin < vcenter < dmax:
-            return mcolors.TwoSlopeNorm(vmin=dmin, vcenter=vcenter, vmax=dmax)
-
-        # Case 2: all data >= vcenter (e.g. all ORC values are positive)
-        if dmin >= vcenter:
-            # Push vmin below vcenter
-            margin = max(dmax - vcenter, 0.01) * 0.1
-            return mcolors.TwoSlopeNorm(vmin=vcenter - margin, vcenter=vcenter, vmax=max(dmax, vcenter + 0.01))
-
-        # Case 3: all data <= vcenter (e.g. all ORC values are negative)
-        if dmax <= vcenter:
-            margin = max(vcenter - dmin, 0.01) * 0.1
-            return mcolors.TwoSlopeNorm(vmin=min(dmin, vcenter - 0.01), vcenter=vcenter, vmax=vcenter + margin)
-
-        # Fallback: shouldn't reach here, but just in case
-        return mcolors.Normalize(vmin=dmin, vmax=dmax)
-
-    # ---- Panel 1: Ollivier-Ricci Curvature ----
+    # ---- Panel 1: Scatter plot at best layer ----
     ax = axes[0, 0]
-    cmap_orc = plt.cm.RdBu_r
-    norm_orc = safe_two_slope_norm(orc.min(), orc.max(), vcenter=0.0)
-    im1 = ax.imshow(orc, aspect='auto', cmap=cmap_orc, norm=norm_orc, interpolation='nearest')
-    ax.set_title('Ollivier-Ricci Curvature', color='#e94560', fontsize=11, fontweight='bold')
-    ax.set_ylabel('Layer', color='#a0a0c0')
-    ax.set_xlabel('Token', color='#a0a0c0')
-    ax.set_xticks(range(seq_len))
-    ax.set_xticklabels(token_labels, rotation=45, ha='right', fontsize=7)
-    fig.colorbar(im1, ax=ax, shrink=0.8, label='ORC')
+    ld_best = log_det[best_layer]
+    valid = np.isfinite(ld_best) & np.isfinite(surprisal)
 
-    # ---- Panel 2: Scalar Curvature (Volumetric Strain) ----
+    colors_scatter = plt.cm.viridis(np.linspace(0, 1, seq_len))
+    edge_color = 'white' if theme == 'dark' else '#333'
+    for i in range(seq_len):
+        if valid[i]:
+            ax.scatter(ld_best[i], surprisal[i], c=[colors_scatter[i]],
+                       s=60, zorder=5, edgecolors=edge_color, linewidths=0.5)
+            ax.annotate(tokens[i], (ld_best[i], surprisal[i]),
+                        fontsize=7, color=mt['text_color'],
+                        textcoords="offset points", xytext=(5, 3))
+
+    if valid.sum() >= 2:
+        z = np.polyfit(ld_best[valid], surprisal[valid], 1)
+        p = np.poly1d(z)
+        x_line = np.linspace(ld_best[valid].min(), ld_best[valid].max(), 100)
+        fit_color = mt.get('title_orc', '#e94560')
+        ax.plot(x_line, p(x_line), '--', color=fit_color, linewidth=1.5, alpha=0.7)
+
+    best_corr = correlations[best_layer]
+    ax.set_title(f'Best Layer {best_layer}: r={best_corr["pearson_r"]:.3f}, '
+                 f'ρ={best_corr["spearman_rho"]:.3f}',
+                 color=mt.get('title_orc', '#e94560'), fontsize=10, fontweight='bold')
+    ax.set_xlabel('log det(g)', color=mt['text_color'])
+    ax.set_ylabel('Surprisal (bits)', color=mt['text_color'])
+
+    # ---- Panel 2: Correlation strength across layers ----
     ax = axes[0, 1]
-    norm_sc = safe_two_slope_norm(scalar.min(), scalar.max(), vcenter=0.0)
-    im2 = ax.imshow(scalar, aspect='auto', cmap='coolwarm', norm=norm_sc, interpolation='nearest')
-    ax.set_title('Scalar Curvature (Volumetric Strain)', color='#53a8b6', fontsize=11, fontweight='bold')
-    ax.set_ylabel('Layer', color='#a0a0c0')
-    ax.set_xlabel('Token', color='#a0a0c0')
-    ax.set_xticks(range(seq_len))
-    ax.set_xticklabels(token_labels, rotation=45, ha='right', fontsize=7)
-    fig.colorbar(im2, ax=ax, shrink=0.8, label='ΔlogVol')
+    layer_indices = [c['layer'] for c in correlations]
+    pearson_vals = [c['pearson_r'] for c in correlations]
+    spearman_vals = [c['spearman_rho'] for c in correlations]
 
-    # ---- Panel 3: Procrustes Deviation (Connection Strength) ----
+    color_pearson = mt.get('title_orc', '#e94560')
+    color_spearman = mt.get('title_scalar', '#53a8b6')
+    color_best = mt.get('title_procrustes', '#f5a623')
+
+    ax.bar(np.array(layer_indices) - 0.15, pearson_vals, width=0.3,
+           color=color_pearson, alpha=0.8, label='Pearson r')
+    ax.bar(np.array(layer_indices) + 0.15, spearman_vals, width=0.3,
+           color=color_spearman, alpha=0.8, label='Spearman ρ')
+    ax.axhline(y=0, color=mt['spine_color'], linewidth=0.5)
+    ax.axvline(x=best_layer, color=color_best, linewidth=2, linestyle='--',
+               alpha=0.7, label=f'Best layer ({best_layer})')
+    ax.set_title('Correlation Strength Across Layers',
+                 color=color_spearman, fontsize=10, fontweight='bold')
+    ax.set_xlabel('Layer', color=mt['text_color'])
+    ax.set_ylabel('Correlation', color=mt['text_color'])
+    ax.legend(fontsize=8, facecolor=mt['ax_face'], edgecolor=mt['spine_color'],
+              labelcolor=mt['text_color'])
+
+    # ---- Panel 3: Surprisal profile ----
     ax = axes[1, 0]
-    im3 = ax.imshow(procrustes, aspect='auto', cmap='magma', interpolation='nearest')
-    ax.set_title('Procrustes Deviation ||R - I||_F (Connection)', color='#f5a623', fontsize=11, fontweight='bold')
-    ax.set_ylabel('Layer', color='#a0a0c0')
-    ax.set_xlabel('Token', color='#a0a0c0')
+    color_surprisal = mt.get('title_sectional', '#7b68ee')
+    ax.bar(range(seq_len), surprisal, color=color_surprisal, alpha=0.8)
     ax.set_xticks(range(seq_len))
     ax.set_xticklabels(token_labels, rotation=45, ha='right', fontsize=7)
-    fig.colorbar(im3, ax=ax, shrink=0.8, label='||R-I||')
+    ax.set_title('Token Surprisal Profile', color=color_surprisal,
+                 fontsize=10, fontweight='bold')
+    ax.set_ylabel('Surprisal (bits)', color=mt['text_color'])
 
-    # ---- Panel 4: Sectional Curvature ----
+    # ---- Panel 4: log det(g) at best layer ----
     ax = axes[1, 1]
-    im4 = ax.imshow(sectional, aspect='auto', cmap='inferno', interpolation='nearest')
-    ax.set_title('Sectional Curvature (Holonomy Proxy)', color='#7b68ee', fontsize=11, fontweight='bold')
-    ax.set_ylabel('Layer', color='#a0a0c0')
-    ax.set_xlabel('Token', color='#a0a0c0')
+    color_logdet = mt.get('title_logdet', '#2ecc71')
+    ax.bar(range(seq_len), ld_best, color=color_logdet, alpha=0.8)
     ax.set_xticks(range(seq_len))
     ax.set_xticklabels(token_labels, rotation=45, ha='right', fontsize=7)
-    fig.colorbar(im4, ax=ax, shrink=0.8, label='Sectional κ')
+    ax.set_title(f'log det(g) at Layer {best_layer}', color=color_logdet,
+                 fontsize=10, fontweight='bold')
+    ax.set_ylabel('log det(g)', color=mt['text_color'])
 
-    # ---- Panel 5: log(det(g)) — Metric Determinant ----
-    ax = axes[2, 0]
-    im5 = ax.imshow(log_det, aspect='auto', cmap='viridis', interpolation='nearest')
-    ax.set_title('log det(g) — Metric Volume Element', color='#2ecc71', fontsize=11, fontweight='bold')
-    ax.set_ylabel('Layer', color='#a0a0c0')
-    ax.set_xlabel('Token', color='#a0a0c0')
-    ax.set_xticks(range(seq_len))
-    ax.set_xticklabels(token_labels, rotation=45, ha='right', fontsize=7)
-    fig.colorbar(im5, ax=ax, shrink=0.8, label='log det(g)')
-
-    # ---- Panel 6: Curvature Singularity Detection ----
-    ax = axes[2, 1]
-    # Combine ORC and sectional curvature to find singularities
-    # Use the layer-aligned portion of ORC (skip embedding layer for alignment)
-    if orc.shape[0] > n_layers:
-        orc_layers = orc[1:, :]  # (n_layers, seq_len) — skip embedding
-    else:
-        orc_layers = orc[:n_layers, :]
-    combined = np.abs(orc_layers) + sectional  # both are (n_layers, seq_len)
-
-    # Find top singularities
-    flat_idx = np.argsort(combined.ravel())[::-1][:10]
-    sing_layers, sing_tokens = np.unravel_index(flat_idx, combined.shape)
-
-    ax.imshow(combined, aspect='auto', cmap='hot', interpolation='nearest')
-    for sl, st in zip(sing_layers, sing_tokens):
-        ax.plot(st, sl, 'o', markersize=8, markeredgecolor='cyan',
-                markerfacecolor='none', markeredgewidth=2)
-        if st < len(tokens):
-            ax.annotate(f'{tokens[st]}', (st, sl), textcoords="offset points",
-                        xytext=(5, -10), fontsize=7, color='cyan', fontweight='bold')
-
-    ax.set_title('Curvature Singularities (|ORC| + Sectional)', color='#e94560',
-                 fontsize=11, fontweight='bold')
-    ax.set_ylabel('Layer', color='#a0a0c0')
-    ax.set_xlabel('Token', color='#a0a0c0')
-    ax.set_xticks(range(seq_len))
-    ax.set_xticklabels(token_labels, rotation=45, ha='right', fontsize=7)
-
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
 
     if save_path:
-        fig.savefig(save_path, dpi=150, bbox_inches='tight', facecolor=fig.get_facecolor())
-        print(f"[Curvature] Saved landscape to {save_path}")
+        fig.savefig(save_path, dpi=150, bbox_inches='tight',
+                    facecolor=fig.get_facecolor())
+        print(f"[Curvature] Saved correlation plot to {save_path}")
 
     return fig
 
@@ -601,11 +579,13 @@ def handle_curvature_analysis(body_bytes):
     Full holographic curvature analysis endpoint.
     Computes fiber curvature, singularities, and metric-surprisal correlation.
     """
+
     req = json.loads(body_bytes)
     text = req.get("text", "").strip()
     k_neighbors = req.get("k_neighbors", 8)
     pca_d = req.get("pca_d", 16)
     top_k_singularities = req.get("top_k_singularities", 10)
+    theme = req.get("theme", "dark")
 
     if not text:
         return json.dumps({"error": "Empty text"}).encode()
@@ -662,13 +642,13 @@ def handle_curvature_analysis(body_bytes):
     # Stage 5: Generate visualizations
     # ================================================================
     fig_landscape = visualize_curvature_landscape(
-        curvature_data, tokens, save_path='/tmp/curvature_landscape.png'
+        curvature_data, tokens, save_path='/tmp/curvature_landscape.png', theme=theme
     )
     plt.close(fig_landscape)
 
     if correlation_data:
         fig_corr = visualize_metric_surprisal_correlation(
-            correlation_data, tokens, save_path='/tmp/curvature_correlation.png'
+            correlation_data, tokens, save_path='/tmp/curvature_correlation.png', theme=theme
         )
         plt.close(fig_corr)
 
@@ -2268,6 +2248,37 @@ script_js_file_content = Path("scripts.js").read_text(encoding="utf-8")
 HTML_PAGE = r"""<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><title>Metric Space Explorer</title>
 <style>
+:root {
+  --body-bg: #1a1a2e;
+  --side-bg: #16213e;
+  --canvas-bg: #0d1117;
+  --panel-bg: #0f3460;
+  --text-primary: #e0e0e0;
+  --text-secondary: #a0a0c0;
+  --text-muted: #555;
+  --accent1: #e94560;
+  --accent2: #53a8b6;
+  --accent3: #f5a623;
+  --btn-primary: #e94560;
+  --btn-primary-hover: #c73e54;
+  --input-bg: #0d1117;
+  --input-border: #0f3460;
+  --side-border: #0f3460;
+  --legend-bg: rgba(15,52,96,0.9);
+}
+
+body { background: var(--body-bg); color: var(--text-primary); /* ... */ }
+#side { background: var(--side-bg); border-right: 2px solid var(--side-border); /* ... */ }
+canvas { background: var(--canvas-bg); }
+#info { background: var(--panel-bg); padding:6px;border-radius:4px;font-size:10px;line-height:1.4 /* ... */ }
+#side h2 { color: var(--accent1); font-size:14px;margin-bottom:4px }
+#side h3 { color: var(--accent2); font-size:11px;margin-top:5px;border-bottom:1px solid #0f3460;padding-bottom:2px }
+#btn-run { background: var(--btn-primary); border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:bold }
+#btn-run:hover { background: var(--btn-primary-hover); }
+#txt-in { background: var(--input-bg); color: var(--text-primary); border-color: var(--input-border); }
+#sel-model { background: var(--input-bg); color: var(--text-primary); border-color: var(--input-border); }
+#legend { background: var(--legend-bg); }
+
 #curvature-singularities::-webkit-scrollbar{width:4px}
 #curvature-singularities::-webkit-scrollbar-track{background:#0a0a1a}
 #curvature-singularities::-webkit-scrollbar-thumb{background:#0f3460;border-radius:2px}
@@ -2284,8 +2295,6 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:'Segoe UI',sans-serif;display:
   line-height:1.5;max-height:300px;overflow-y:auto;display:none;flex-shrink: 0;}
 #selected-tokens{display:flex;flex-wrap:wrap;gap:3px;margin-top:4px;
   min-height:20px;max-height:120px;overflow-y:auto}
-#side h2{color:#e94560;font-size:14px;margin-bottom:4px}
-#side h3{color:#53a8b6;font-size:11px;margin-top:5px;border-bottom:1px solid #0f3460;padding-bottom:2px}
 .cr{display:flex;align-items:center;gap:5px;font-size:11px}
 .cr label{min-width:90px;text-align:right;color:#a0a0c0}
 .cr input[type=range]{flex:1;accent-color:#e94560}
@@ -2294,19 +2303,12 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:'Segoe UI',sans-serif;display:
   padding:2px;font-size:10px;min-width:0}
 .cb{display:flex;align-items:center;gap:5px;font-size:11px;color:#a0a0c0}
 .cb input{accent-color:#e94560}
-#info{background:#0f3460;padding:6px;border-radius:4px;font-size:10px;line-height:1.4}
 #info span{color:#e94560}
 #text-area{display:flex;gap:4px;margin-bottom:4px}
-#txt-in{flex:1;background:#0d1117;color:#e0e0e0;border:1px solid #0f3460;padding:6px;font-size:12px;border-radius:4px;font-family:monospace}
-#btn-run{background:#e94560;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:11px;font-weight:bold}
-#btn-run:hover{background:#c73e54}
 #btn-run:disabled{background:#555;cursor:wait}
 #model-area{display:flex;gap:4px;margin-bottom:4px;align-items:center}
 #model-area label{font-size:11px;color:#a0a0c0;min-width:50px}
-#sel-model{flex:1;background:#0d1117;color:#e0e0e0;border:1px solid #0f3460;padding:4px;font-size:11px;border-radius:4px}
 #main{flex:1;display:flex;align-items:center;justify-content:center;position:relative}
-canvas{background:#0d1117}
-#legend{position:absolute;top:8px;right:8px;background:rgba(15,52,96,.9);padding:5px 8px;border-radius:5px;font-size:9px}
 .li{display:flex;align-items:center;gap:4px;margin:2px 0}
 .lc{width:16px;height:7px;border-radius:2px}
 #keys{font-size:8px;color:#555;margin-top:4px;line-height:1.3}
@@ -2353,7 +2355,14 @@ canvas{background:#0d1117}
 <!-- ═══════════════════════════════════════════════ -->
 <!-- SECTION: HEADER & STATUS                        -->
 <!-- ═══════════════════════════════════════════════ -->
-<h2>Metric Space Explorer</h2>
+<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+  <h2 style="margin:0">Metric Space Explorer</h2>
+  <button id="btn-theme" onclick="toggleTheme()"
+    style="background:none;border:1px solid var(--side-border,#0f3460);
+           color:var(--text-secondary,#a0a0c0);padding:3px 8px;
+           border-radius:4px;cursor:pointer;font-size:11px"
+    title="Toggle light/dark mode">🌓</button>
+</div>
 <div id="status">Enter text and click Run</div>
 
 <!-- ═══════════════════════════════════════════════ -->
