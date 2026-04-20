@@ -8403,19 +8403,21 @@ function drawMultiCanvas() {
   ];
   var tabH = 28;
   var tabW = W / tabs.length;
-  for (var ti = 0; ti < tabs.length; ti++) {
-    var tx = ti * tabW;
-    var isActive = (tabs[ti].id === multiViewTab);
-    c.fillStyle = isActive ? '#1a1a4e' : '#0d1117';
-    c.fillRect(tx, 0, tabW, tabH);
-    c.strokeStyle = isActive ? '#7b68ee' : '#0f3460';
-    c.lineWidth = isActive ? 2 : 0.5;
-    c.strokeRect(tx, 0, tabW, tabH);
-    c.font = (isActive ? 'bold ' : '') + '11px monospace';
-    c.fillStyle = isActive ? '#7b68ee' : '#888';
-    c.textAlign = 'center';
-    c.fillText(tabs[ti].label, tx + tabW / 2, tabH / 2 + 4);
-  }
+  // Replace hardcoded colors with theme-aware colors:
+	for (var ti = 0; ti < tabs.length; ti++) {
+		var tx = ti * tabW;
+		var isActive = (tabs[ti].id === multiViewTab);
+		c.fillStyle = isActive ? T.panelBg : T.canvasBg;
+		c.fillRect(tx, 0, tabW, tabH);
+		c.strokeStyle = isActive ? T.accent4 : T.sideBorder;
+		c.lineWidth = isActive ? 2 : 0.5;
+		c.strokeRect(tx, 0, tabW, tabH);
+		c.font = (isActive ? 'bold ' : '') + '11px monospace';
+		c.fillStyle = isActive ? T.accent4 : T.textMuted;
+		c.textAlign = 'center';
+		c.fillText(tabs[ti].label, tx + tabW / 2, tabH / 2 + 4);
+	}
+
 
   var drawArea = { x: 0, y: tabH + 4, w: W, h: H - tabH - 4 };
 
@@ -8472,20 +8474,21 @@ function drawMultiSideBySide(c, cv, area) {
   ];
   var svBarH = 22;
   var svBarW = area.w / subViews.length;
-  for (var svi = 0; svi < subViews.length; svi++) {
-    var svx = area.x + svi * svBarW;
-    var svy = area.y;
-    var isAct = (subViews[svi].id === subView);
-    c.fillStyle = isAct ? '#0f3460' : '#0a0a1a';
-    c.fillRect(svx, svy, svBarW, svBarH);
-    c.strokeStyle = isAct ? '#53a8b6' : '#0f3460';
-    c.lineWidth = isAct ? 1.5 : 0.5;
-    c.strokeRect(svx, svy, svBarW, svBarH);
-    c.font = (isAct ? 'bold ' : '') + '10px monospace';
-    c.fillStyle = isAct ? '#53a8b6' : '#666';
-    c.textAlign = 'center';
-    c.fillText(subViews[svi].label, svx + svBarW / 2, svy + svBarH / 2 + 3);
-  }
+	for (var svi = 0; svi < subViews.length; svi++) {
+		var svx = area.x + svi * svBarW;
+		var svy = area.y;
+		var isAct = (subViews[svi].id === subView);
+		c.fillStyle = isAct ? T.panelBg : T.panelBgDeep;
+		c.fillRect(svx, svy, svBarW, svBarH);
+		c.strokeStyle = isAct ? T.accent2 : T.sideBorder;
+		c.lineWidth = isAct ? 1.5 : 0.5;
+		c.strokeRect(svx, svy, svBarW, svBarH);
+		c.font = (isAct ? 'bold ' : '') + '10px monospace';
+		c.fillStyle = isAct ? T.accent2 : T.textDim;
+		c.textAlign = 'center';
+		c.fillText(subViews[svi].label, svx + svBarW / 2, svy + svBarH / 2 + 3);
+	}
+
 
   // Adjust area below the sub-view bar
   var panelArea = {
